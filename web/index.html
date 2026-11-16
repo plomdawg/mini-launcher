@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#101311">
+  <title>Plomcase — Game case art studio</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=DM+Sans:wght@400;500;600;700&family=Rubik:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="#" aria-label="Plomcase home"><span class="brand-mark">P</span><span>plomcase</span></a>
+    <div class="topbar-meta"><span class="status-dot"></span> Local project <span class="meta-divider">·</span> SSD cartridge edition</div>
+    <div class="top-actions">
+      <button class="button quiet" id="newProject">New</button>
+      <button class="button quiet" id="importProject">Open project</button>
+      <button class="button quiet" id="exportProject">Export JSON</button>
+      <button class="button" id="saveProject">Save project</button>
+      <input class="visually-hidden" type="file" id="projectFile" accept="application/json,.json">
+    </div>
+  </header>
+
+  <main class="layout">
+    <aside class="inspector" aria-label="Artwork settings">
+      <div class="inspector-heading"><div><p class="eyebrow">CASE STUDIO</p><h1>Artwork setup</h1></div><span class="step-badge">01</span></div>
+      <label class="field project-name-field"><span>Project name <i>also used on spine</i></span><input id="projectName" placeholder="Game title" maxlength="80"></label>
+
+      <details class="section" open>
+        <summary><span class="section-icon">▧</span><span><b>Cover artwork</b><small>Portrait art, 2:3 ratio</small></span><span class="chevron">⌄</span></summary>
+        <div class="section-body">
+          <div class="upload-grid">
+            <label class="upload-card" for="backFile"><span class="upload-symbol">↥</span><b>Back cover</b><small id="backFileName">Add image</small><input type="file" id="backFile" accept="image/*"></label>
+            <label class="upload-card" for="frontFile"><span class="upload-symbol">↥</span><b>Front cover</b><small id="frontFileName">Add image</small><input type="file" id="frontFile" accept="image/*"></label>
+          </div>
+          <p class="hint">600 × 900 SteamGridDB grids fit the 2:3 front panel. Drop an image on either tile or browse. Artwork stays in this browser unless you export a project file.</p>
+          <button class="button sgdb-open-button" id="openSgdbPicker" type="button">Choose art from SteamGridDB</button>
+          <a class="steam-link" id="steamGridSearch" href="https://www.steamgriddb.com/search/grids?term=" target="_blank" rel="noopener noreferrer"><span>Search <b>SteamGridDB</b> for <span id="steamSearchTerm">game title</span></span><span aria-hidden="true">↗</span></a>
+          <label class="field"><span>Image fit <small class="setting-source" id="imageFitSource">(default)</small></span><select id="imageFit"><option value="cover">Fill panel (crop edges)</option><option value="contain">Fit whole image</option></select></label>
+          <div class="default-actions"><button class="button" type="button" data-default-action="save" data-default-group="artwork">Save as default</button><button class="button quiet" type="button" data-default-action="reset" data-default-group="artwork">Use default</button></div>
+        </div>
+      </details>
+
+      <details class="section" open>
+        <summary><span class="section-icon">▤</span><span><b>Case layout</b><small>Adjust to your printed case</small></span><span class="chevron">⌄</span></summary>
+        <div class="section-body">
+          <div class="field-row">
+            <label class="field"><span>Face height <small class="setting-source" id="faceHeightSource">(default)</small> <i>mm</i></span><input type="number" id="faceHeight" min="40" max="350" step="0.5" value="120"></label>
+            <label class="field"><span>Spine width <small class="setting-source" id="spineWidthSource">(default)</small> <i>mm</i></span><input type="number" id="spineWidth" min="3" max="60" step="0.5" value="13"></label>
+          </div>
+          <div class="field-row">
+            <label class="field"><span>Bleed <small class="setting-source" id="bleedSource">(default)</small> <i>mm</i></span><input type="number" id="bleed" min="0" max="10" step="0.5" value="0"></label>
+            <label class="field"><span>Export resolution <small class="setting-source" id="dpiSource">(default)</small></span><select id="dpi"><option value="300" selected>300 DPI</option><option value="600">600 DPI</option><option value="150">150 DPI</option></select></label>
+          </div>
+          <label class="check-row crop-guides"><input type="checkbox" id="cropMarks"><span><span>Add cut guides (crop marks) in the bleed <i class="setting-source" id="cropMarksSource">(default)</i></span><small>Corner marks show the trim edge for hand cutting.</small></span></label>
+          <div class="default-actions"><button class="button" type="button" data-default-action="save" data-default-group="layout">Save as default</button><button class="button quiet" type="button" data-default-action="reset" data-default-group="layout">Use default</button></div>
+        </div>
+      </details>
+
+      <details class="section" open>
+        <summary><span class="section-icon">T</span><span><b>Spine &amp; theme</b><small>One consistent shelf style</small></span><span class="chevron">⌄</span></summary>
+        <div class="section-body">
+          <div class="field-row">
+            <label class="field"><span>Spine direction <small class="setting-source" id="spineDirectionSource">(default)</small></span><select id="spineDirection"><option value="90">Read top to bottom</option><option value="-90">Read bottom to top</option></select></label>
+            <label class="field"><span>Typeface <small class="setting-source" id="fontFamilySource">(default)</small></span><select id="fontFamily"><option value="'Rubik', sans-serif">Rubik Bold</option><option value="Impact, Haettenschweiler, 'Arial Narrow Bold', sans-serif">Impact</option></select></label>
+          </div>
+          <div class="field-row">
+            <label class="field"><span>Title size <small class="setting-source" id="spineFontSizeSource">(default)</small> <i>mm</i></span><input type="number" id="spineFontSize" min="2" max="24" step="0.1" value="8"></label>
+            <p class="font-fit-note" id="spineFitNote" aria-live="polite">Enter a project name to check fit.</p>
+          </div>
+          <div class="color-row">
+            <label class="color-field"><span>Solid fill <small class="setting-source" id="spineColorSource">(default)</small></span><input id="spineColor" type="color" value="#ffffff"></label>
+            <label class="color-field"><span>Text <small class="setting-source" id="textColorSource">(default)</small></span><input id="textColor" type="color" value="#000000"></label>
+          </div>
+          <div class="field-row">
+            <label class="field"><span>Spine fill <small class="setting-source" id="spineFillModeSource">(default)</small></span><select id="spineFillMode"><option value="back-front" selected>Back → front blend</option><option value="front-back">Front → back blend</option><option value="dark-blend">Dark blend</option><option value="light-blend">Light blend</option><option value="back-edge">Back edge color</option><option value="front-edge">Front edge color</option><option value="center-mix">Mixed center color</option><option value="solid">Solid color</option></select></label>
+            <label class="field"><span>Title outline <small class="setting-source" id="spineTextOutlineSource">(default)</small></span><select id="spineTextOutline"><option value="auto" selected>Auto contrast</option><option value="none">None</option><option value="white">White keyline</option><option value="black">Black keyline</option></select></label>
+          </div>
+          <p class="hint spine-fill-hint">Blend colors are sampled from the cover edges beside the spine. Upload both covers to compare the full range.</p>
+          <label class="upload-card spine-logo-upload" for="logoFile"><span class="upload-symbol">↥</span><b>Optional spine logo</b><small id="logoFileName">Add image</small><input type="file" id="logoFile" accept="image/*,.ico"></label>
+          <label class="field logo-rotation-field"><span>Spine logo rotation <small class="setting-source" id="logoRotationSource">(default)</small> <output id="logoRotationValue">0°</output></span><input type="range" id="logoRotation" min="-180" max="180" step="15" value="0"></label>
+          <button class="button quiet remove-logo-button" id="removeSpineLogo" type="button" hidden>Remove spine logo</button>
+          <div class="default-actions"><button class="button" type="button" data-default-action="save" data-default-group="theme">Save as default</button><button class="button quiet" type="button" data-default-action="reset" data-default-group="theme">Use default</button></div>
+        </div>
+      </details>
+
+      <div class="inspector-footer"><span>Prototype v0.1</span><span>Files stay on this device</span></div>
+    </aside>
+
+    <section class="workspace" aria-label="Print preview">
+      <div class="workspace-head">
+        <div><p class="eyebrow">PRINT LAYOUT</p><h2>Full wrap preview</h2></div>
+        <div class="preview-actions"><button class="button quiet" id="downloadSvg">Download SVG</button><button class="button primary" id="downloadPng">Export print PNG</button></div>
+      </div>
+      <div class="preview-toolbar"><span class="preview-chip"><span class="chip-dot"></span> Live preview</span><span class="preview-hint">Back <span>›</span> spine <span>›</span> front</span><button id="toggleGuides" class="guide-button" aria-pressed="false">Show panel guides</button></div>
+      <div class="preview-stage" id="previewStage">
+        <div class="preview-empty" id="emptyHint"><span>▤</span><b>Your wrap starts here</b><small>Add cover art or customize the spine to see the print layout.</small></div>
+        <svg id="preview" role="img" aria-label="Printable back, spine, and front cover preview"></svg>
+      </div>
+      <div class="preview-foot"><div class="legend"><span><i class="legend-back"></i>Back</span><span><i class="legend-spine"></i>Spine</span><span><i class="legend-front"></i>Front</span></div><span id="exportDimensions">178 × 126 mm with bleed</span></div>
+      <div class="export-note"><span class="note-mark">✳</span><p><b>Print at 100% scale.</b> The PNG export uses the selected DPI and includes the bleed. Confirm your case's final dimensions before printing a batch.</p></div>
+    </section>
+
+    <aside class="library" aria-label="Saved projects">
+      <div class="library-heading"><p class="eyebrow">LOCAL LIBRARY</p><h2>Your cases <span id="projectCount">0</span></h2><p>Projects saved in this browser.</p></div>
+      <div id="projectList" class="project-list"><div class="library-empty">Saved case designs will appear here.</div></div>
+      <div class="library-tip"><span>↗</span><p>Use <b>Save project</b> to keep a design here, or export a JSON file to move it to another browser.</p></div>
+    </aside>
+  </main>
+  <dialog class="sgdb-dialog" id="sgdbDialog" aria-labelledby="sgdbTitle">
+    <div class="sgdb-modal-header"><div><p class="eyebrow">ARTWORK PICKER</p><h2 id="sgdbTitle">SteamGridDB</h2></div><button class="button quiet sgdb-close" id="closeSgdbPicker" type="button" aria-label="Close picker">×</button></div>
+    <div class="sgdb-key-area">
+      <label class="field"><span>SteamGridDB API key</span><input type="password" id="sgdbKey" autocomplete="off" spellcheck="false" placeholder="Paste your personal API key"></label>
+      <div class="sgdb-key-footer"><label class="check-row"><input type="checkbox" id="rememberSgdbKey"><span>Remember on this device</span></label><a href="https://www.steamgriddb.com/profile/preferences/api" target="_blank" rel="noopener noreferrer">Get an API key ↗</a></div>
+      <p class="hint">The key is relayed through this app's server to SteamGridDB and is never saved on the server or added to project files. Use a server you trust. Run Plomcase with <code>python server.py</code>; opening this HTML file directly will not enable the picker.</p>
+    </div>
+    <div class="sgdb-tabs" role="tablist" aria-label="Artwork type"><button class="sgdb-tab active" type="button" data-mode="grid" role="tab" aria-selected="true">Cover grids</button><button class="sgdb-tab" type="button" data-mode="logo" role="tab" aria-selected="false">Spine logos</button></div>
+    <div class="sgdb-search-row"><label class="field"><span>Game title</span><input id="sgdbSearchTerm" type="search" placeholder="Search games"></label><button class="button primary" id="sgdbSearch" type="button">Search</button></div>
+    <div class="sgdb-grid-options" id="sgdbGridOptions"><label class="check-row"><input type="checkbox" id="sgdbExactSize" checked><span>Only show 600 × 900 grids</span></label><label class="sgdb-target">Apply grid to <select id="sgdbTarget"><option value="front">Front cover</option><option value="back">Back cover</option></select></label></div>
+    <div class="sgdb-status" id="sgdbStatus" role="status" aria-live="polite">Enter your API key, then search for a game.</div>
+    <div class="sgdb-content" id="sgdbContent"></div>
+    <div class="sgdb-pagination" id="sgdbPagination" hidden><button class="button quiet" id="sgdbPrev" type="button">← Previous</button><span id="sgdbPageLabel"></span><button class="button quiet" id="sgdbNext" type="button">Next →</button></div>
+  </dialog>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <script src="app.js"></script>
+</body>
+</html>
