@@ -1,12 +1,17 @@
 //! [`Pn532Hsu`]: the hardware [`Reader`] on top of the PN532 driver.
 //!
-//! Each poll lists one ISO/IEC 14443-A target, reads the NTAG213 user memory
-//! (pages 4..=39), decodes it into a [`Payload`] and releases the target.
+//! Each poll lists one ISO/IEC 14443-A target, reads its user memory (at most
+//! the NTAG213's pages 4..=39, stopping as soon as the NDEF data is complete,
+//! so smaller Type 2 tags are never read past their end), decodes it into a
+//! [`Payload`] and releases the target.
 //! Flaky radio or serial traffic (timeouts, stray frames, a tag pulled
 //! mid-read) counts as a missed poll; the debouncer absorbs it. A failed read
 //! is retried on every poll while the tag stays present, so a cart that is
-//! still sliding in is reported once a read succeeds. Only port I/O
-//! errors (adapter unplugged) are returned, and those are fatal.
+//! still sliding in is reported once a read succeeds. A tag whose reads keep
+//! failing ([`UNREADABLE_AFTER`] polls in a row) is reported as present with
+//! an unusable payload, so it can still be mapped by UID; that fallback is
+//! not cached, so reads keep being retried. Only port I/O errors (adapter
+//! unplugged) are returned, and those are fatal.
 
 use std::time::Duration;
 
@@ -30,6 +35,14 @@ pub const COMMAND_TIMEOUT: Duration = Duration::from_millis(500);
 /// target (e.g. MIFARE Classic, DESFire) is reported with an unusable payload
 /// without trying to read it, so it can still be mapped by UID.
 pub const TYPE2_SAK: u8 = 0x00;
+/// Consecutive failed reads of the same tag before it is reported with an
+/// unusable payload (about 2 s at the default poll interval; longer in
+/// practice, since a failed READ waits for its timeout). Long enough that a
+/// cart still sliding in is read properly first.
+pub const UNREADABLE_AFTER: u32 = 10;
+/// Consecutive polls without a tag before a failing tag's count is forgotten;
+/// matches the default debounce removal threshold.
+const FORGET_AFTER_MISSES: u32 = 5;
 
 /// True for errors that mean the reader is gone (port I/O), as opposed to a
 /// transient hiccup that should count as a missed poll.
@@ -59,6 +72,10 @@ pub struct Pn532Hsu<T> {
     /// The tag read on the previous poll; a tag sitting on the reader is not
     /// re-read every poll. Only successful readings are cached.
     cached: Option<Reading>,
+    /// The tag whose reads are failing, and how many polls in a row failed.
+    failing: Option<(Uid, u32)>,
+    /// Consecutive polls without any tag.
+    misses: u32,
 }
 
 impl<T: Transport> Pn532Hsu<T> {
@@ -68,7 +85,12 @@ impl<T: Transport> Pn532Hsu<T> {
         dev.wakeup()?;
         dev.sam_configuration()?;
         dev.rf_configuration_max_retries(PASSIVE_RETRIES)?;
-        Ok(Pn532Hsu { dev, cached: None })
+        Ok(Pn532Hsu {
+            dev,
+            cached: None,
+            failing: None,
+            misses: 0,
+        })
     }
 
     /// Looks for a tag. Transient errors are logged and reported as no tag.
@@ -78,11 +100,18 @@ impl<T: Transport> Pn532Hsu<T> {
             .or_else(|e| transient(e, "InListPassiveTarget").map(|()| None))
     }
 
-    /// Reads the user memory (pages 4..=39) of the listed tag.
+    /// Reads the user memory of the listed tag, four pages per READ, from
+    /// page 4 until the NDEF data is complete (see
+    /// [`ndef::tlv_area_complete`]) or page 39 has been read. Stopping early
+    /// keeps tags with fewer user pages (MIFARE Ultralight, NTAG210) from
+    /// failing on a READ past their end.
     pub fn read_user_memory(&mut self) -> Result<Vec<u8>, Pn532Error> {
         let mut mem = Vec::with_capacity(USER_MEMORY_LEN);
         for page in (FIRST_USER_PAGE..=LAST_USER_PAGE).step_by(4) {
             mem.extend_from_slice(&self.dev.ntag_read(page)?);
+            if ndef::tlv_area_complete(&mem) {
+                break;
+            }
         }
         Ok(mem)
     }
@@ -105,8 +134,13 @@ impl<T: Transport> Reader for Pn532Hsu<T> {
     fn poll(&mut self) -> Result<Option<Reading>, Pn532Error> {
         let Some(target) = self.detect()? else {
             self.cached = None;
+            self.misses = self.misses.saturating_add(1);
+            if self.misses >= FORGET_AFTER_MISSES {
+                self.failing = None;
+            }
             return Ok(None);
         };
+        self.misses = 0;
         let reading = match Uid::new(&target.uid) {
             Err(e) => {
                 tracing::debug!(error = %e, "ignoring target");
@@ -119,18 +153,41 @@ impl<T: Transport> Reader for Pn532Hsu<T> {
             },
         };
         self.release()?;
-        self.cached.clone_from(&reading);
+        // A failing tag (including the unreadable fallback) is not cached, so
+        // its reads keep being retried.
+        let failing =
+            matches!((&self.failing, &reading), (Some((f, _)), Some((uid, _))) if f == uid);
+        self.cached = if failing { None } else { reading.clone() };
         Ok(reading)
     }
 }
 
 impl<T: Transport> Pn532Hsu<T> {
-    /// A failed read is a missed poll; it is retried on the next one.
+    /// A failed read is a missed poll and is retried on the next one, until
+    /// the same tag has failed [`UNREADABLE_AFTER`] polls in a row; from then
+    /// on each failed read reports it with an unusable payload, so it stays
+    /// present for the debouncer (one `Inserted`, then `Removed` once gone).
     fn read_payload(&mut self, uid: Uid) -> Result<Option<Reading>, Pn532Error> {
-        match self.read_user_memory() {
-            Ok(mem) => Ok(Some((uid, payload_from_memory(&mem)))),
-            Err(e) => transient(e, "NTAG READ").map(|()| None),
+        let e = match self.read_user_memory() {
+            Ok(mem) => {
+                self.failing = None;
+                return Ok(Some((uid, payload_from_memory(&mem))));
+            }
+            Err(e) => e,
+        };
+        transient(e, "NTAG READ")?;
+        let failures = match self.failing {
+            Some((failing, n)) if failing == uid => n.saturating_add(1),
+            _ => 1,
+        };
+        self.failing = Some((uid, failures));
+        if failures < UNREADABLE_AFTER {
+            return Ok(None);
         }
+        if failures == UNREADABLE_AFTER {
+            tracing::warn!(%uid, "tag detected but its pages cannot be read; treating it as unusable");
+        }
+        Ok(Some((uid, Payload::Unusable)))
     }
 }
 
@@ -208,10 +265,15 @@ mod tests {
 
     /// Text record "steam:440" in an NDEF TLV, padded to 144 bytes.
     fn memory() -> Vec<u8> {
-        let text = b"steam:440";
+        text_memory("steam:440")
+    }
+
+    /// Text record `text` in an NDEF TLV, padded to 144 bytes.
+    fn text_memory(text: &str) -> Vec<u8> {
+        let text = text.as_bytes();
         let rec = [
             &[0xD1, 0x01, 3 + text.len() as u8, b'T', 0x02, b'e', b'n'],
-            &text[..],
+            text,
         ]
         .concat();
         let mut mem = [&[0x03, rec.len() as u8][..], &rec, &[0xFE]].concat();
@@ -219,10 +281,32 @@ mod tests {
         mem
     }
 
+    /// READ replies for the 4-page chunks the reader asks for: up to the
+    /// one that completes the NDEF data.
     fn read_replies(mem: &[u8]) -> Vec<Option<Vec<u8>>> {
+        let chunks = (1..=mem.len().div_ceil(16))
+            .find(|&n| ndef::tlv_area_complete(&mem[..(n * 16).min(mem.len())]))
+            .unwrap_or(mem.len().div_ceil(16));
         mem.chunks(16)
+            .take(chunks)
             .flat_map(|c| reply(&[&[0x41, 0x00], c].concat()))
             .collect()
+    }
+
+    /// One poll of a present tag whose first READ fails.
+    fn failed_read_poll() -> Vec<Option<Vec<u8>>> {
+        let mut poll = list_tag().to_vec();
+        poll.extend(reply(&[0x41, 0x01])); // READ status: timeout
+        poll.extend(reply(&[0x53, 0x00]));
+        poll
+    }
+
+    /// Every scripted reply was consumed: no command more or less was sent.
+    fn assert_drained(r: Pn532Hsu<Mock>) {
+        assert!(
+            r.into_inner().into_inner().0.is_empty(),
+            "replies left over"
+        );
     }
 
     #[test]
@@ -238,6 +322,99 @@ mod tests {
         assert_eq!(r.poll().unwrap(), want);
         assert_eq!(r.poll().unwrap(), want);
         assert_eq!(r.poll().unwrap(), None);
+        assert_drained(r);
+    }
+
+    #[test]
+    fn stops_reading_once_the_ndef_data_is_complete() {
+        // "steam:440" ends in the second chunk: two READs, not nine.
+        let mut polls = list_tag().to_vec();
+        polls.extend(read_replies(&memory()));
+        polls.extend(reply(&[0x53, 0x00]));
+        assert_eq!(read_replies(&memory()).len(), 2 * 2);
+        let mut r = reader(polls);
+        assert_eq!(r.poll().unwrap().unwrap().1, Payload::Steam(440));
+        assert_drained(r);
+    }
+
+    #[test]
+    fn small_tag_launches_when_reads_past_its_end_would_fail() {
+        // MIFARE Ultralight: 12 user pages (4..=15). The message fills them,
+        // so a READ of page 16 would NAK; it must never be sent.
+        // 9 bytes of TLV/record framing + 39 of text = exactly 48 bytes.
+        let text = "id:a-slug-long-enough-to-fill-12-pages1";
+        assert_eq!(text.len(), 39);
+        let mem = text_memory(text);
+        let mem = &mem[..48];
+        assert!(ndef::tlv_area_complete(mem));
+        assert!(!ndef::tlv_area_complete(&mem[..32]));
+        let mut polls = list_tag().to_vec();
+        polls.extend(read_replies(mem));
+        polls.extend(reply(&[0x53, 0x00]));
+        let mut r = reader(polls);
+        let (_, payload) = r.poll().unwrap().unwrap();
+        assert!(matches!(payload, Payload::Id(_)), "{payload:?}");
+        assert_drained(r);
+    }
+
+    #[test]
+    fn unreadable_tag_is_reported_once_and_still_removed() {
+        // An NTAG whose pages can never be read (read-protected): after
+        // UNREADABLE_AFTER failed polls it is present with an unusable
+        // payload, every later poll still tries a READ (nothing is cached),
+        // and it debounces as removed once gone.
+        const POLLS: u32 = UNREADABLE_AFTER + 20;
+        let mut polls = Vec::new();
+        for _ in 0..POLLS {
+            polls.extend(failed_read_poll());
+        }
+        let config = DebounceConfig::default();
+        for _ in 0..config.miss_threshold {
+            polls.extend(reply(&[0x4B, 0x00])); // gone
+        }
+        let mut r = reader(polls);
+        let mut debouncer = Debouncer::new(config);
+        let now = Instant::now();
+        let uid = Uid::new(&UID).unwrap();
+        let mut events = Vec::new();
+        for i in 0..POLLS {
+            let reading = r.poll().unwrap();
+            let want = (i + 1 >= UNREADABLE_AFTER).then_some((uid, Payload::Unusable));
+            assert_eq!(reading, want, "poll {i}");
+            events.extend(debouncer.update(reading, now));
+        }
+        for _ in 0..config.miss_threshold {
+            events.extend(debouncer.update(r.poll().unwrap(), now));
+        }
+        let payload = Payload::Unusable;
+        assert_eq!(
+            events,
+            [Event::Inserted { uid, payload }, Event::Removed { uid }]
+        );
+        assert_drained(r);
+    }
+
+    #[test]
+    fn unreadable_fallback_is_not_cached() {
+        // Reported as unusable, then a read finally succeeds: the real
+        // payload is returned (and cached from then on).
+        let mut polls = Vec::new();
+        for _ in 0..UNREADABLE_AFTER {
+            polls.extend(failed_read_poll());
+        }
+        polls.extend(list_tag());
+        polls.extend(read_replies(&memory()));
+        polls.extend(reply(&[0x53, 0x00]));
+        polls.extend(list_tag()); // cached: no READ
+        polls.extend(reply(&[0x53, 0x00]));
+        let mut r = reader(polls);
+        for _ in 1..UNREADABLE_AFTER {
+            assert_eq!(r.poll().unwrap(), None);
+        }
+        assert_eq!(r.poll().unwrap().unwrap().1, Payload::Unusable);
+        assert_eq!(r.poll().unwrap().unwrap().1, Payload::Steam(440));
+        assert_eq!(r.poll().unwrap().unwrap().1, Payload::Steam(440));
+        assert_drained(r);
     }
 
     #[test]
@@ -262,9 +439,7 @@ mod tests {
         const FAILED_READS: usize = 6;
         let mut polls = Vec::new();
         for _ in 0..FAILED_READS {
-            polls.extend(list_tag());
-            polls.extend(reply(&[0x41, 0x01])); // READ status: timeout
-            polls.extend(reply(&[0x53, 0x00]));
+            polls.extend(failed_read_poll());
         }
         polls.extend(list_tag());
         polls.extend(read_replies(&memory()));
