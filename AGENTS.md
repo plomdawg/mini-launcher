@@ -66,6 +66,9 @@ Tag contents are untrusted input.
 
 - Every PR: `cargo fmt --check`, `cargo clippy -D warnings`, `cargo test` on windows-latest +
   ubuntu-latest; CI uploads the built binaries as artifacts.
+- The Rust toolchain is pinned in `app/rust-toolchain.toml` (rustup and CI both read it; MSRV =
+  `rust-version` in `app/Cargo.toml`). To bump: update both to the new stable version in one PR
+  and fix any new fmt/clippy findings there.
 - Releases are Windows-only for now: tags `app-v*` → GitHub Release with the `.exe` +
   `SHA256SUMS`. Windows code signing via SignPath (free for OSS) is planned later; until then
   document SmartScreen "More info → Run anyway". Keep ubuntu-latest in the CI matrix.

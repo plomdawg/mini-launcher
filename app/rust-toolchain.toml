@@ -1,0 +1,7 @@
+# Pinned Rust toolchain for the workspace (local builds and CI).
+# To bump: change `channel` here and `rust-version` in Cargo.toml together,
+# then fix any new fmt/clippy findings in the same PR.
+[toolchain]
+channel = "1.100.0"
+components = ["rustfmt", "clippy"]
+profile = "minimal"
