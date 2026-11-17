@@ -275,8 +275,13 @@ fn tap(ui: &mut Ui, s: &mut Settings) {
         .map(|p| wizard::payload_text(&p))
         .unwrap_or_default();
     let writing = matches!(w.step, Step::Writing { .. });
+    // Until the run loop takes up the session, launches may still be on:
+    // don't ask for the cart yet.
+    let starting = w.has_reader() && !w.armed();
     let headline = if writing {
         "WRITING..."
+    } else if starting {
+        "GETTING THE READER..."
     } else {
         "HOLD THE CART ON THE READER"
     };
@@ -305,7 +310,11 @@ fn tap(ui: &mut Ui, s: &mut Settings) {
                 false,
                 "Reader not connected. Plug it in; the wizard keeps waiting.",
             ),
-            (true, None) => marked(ui, false, "Waiting for the reader..."),
+            (true, None) => marked(
+                ui,
+                false,
+                "Taking over the reader; wait a moment before putting the cart on.",
+            ),
         }
     });
     if let Some(problem) = &w.problem {

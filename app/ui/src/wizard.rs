@@ -290,7 +290,9 @@ impl Wizard {
     pub fn on_update(&mut self, update: Update, library: &mut Library) {
         match update {
             Update::Reader { connected } => self.reader = Some(connected),
-            Update::Tag { uid, payload } if self.step == Step::Tap => {
+            // Only once the run loop confirmed the session (its first
+            // `Reader` update): before that, launches may not be off yet.
+            Update::Tag { uid, payload } if self.step == Step::Tap && self.armed() => {
                 self.tag(uid, payload, library)
             }
             Update::Written { uid, result } if self.step == (Step::Writing { uid }) => match result
@@ -418,6 +420,13 @@ impl Wizard {
     /// Whether the wizard holds the reader (launches are suspended).
     pub fn has_reader(&self) -> bool {
         self.link.is_some()
+    }
+
+    /// Whether the run loop has taken up the session (it sent its first
+    /// reader state), so launches are off and a tag may go on: only then
+    /// does the tap step ask for the cart.
+    pub fn armed(&self) -> bool {
+        self.has_reader() && self.reader.is_some()
     }
 }
 
@@ -638,6 +647,8 @@ mod tests {
             link,
         };
         assert_eq!(rig.sent(), [Sent::Watch(None)]);
+        let mut rig = rig;
+        rig.send(Update::Reader { connected: true });
         rig
     }
 
@@ -818,6 +829,24 @@ mod tests {
             }
         );
         assert!(r.config().games.iter().any(|g| g.name == "Celeste"));
+    }
+
+    #[test]
+    fn a_tag_before_the_run_loop_took_up_the_session_is_ignored() {
+        let mut r = rig("unarmed");
+        // As if the run loop had not answered yet.
+        r.wizard.reader = None;
+        assert!(!r.wizard.armed());
+        r.tag(A, Payload::Unusable);
+        assert_eq!(r.wizard.step, Step::Tap);
+        assert_eq!(r.sent(), []);
+        r.send(Update::Reader { connected: false });
+        assert!(
+            r.wizard.armed(),
+            "a disconnected reader still means launches are off"
+        );
+        r.tag(A, Payload::Unusable);
+        assert_eq!(r.wizard.step, Step::Writing { uid: uid(A) });
     }
 
     #[test]

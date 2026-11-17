@@ -354,6 +354,10 @@ fn wizard_adds_a_steam_game_by_writing_the_tag_while_launches_wait() {
     h.run();
     h.get_by_label("Next").click();
     h.run();
+    // The cart is asked for only once the run loop has the session.
+    h.get_by_label("GETTING THE READER...");
+    run_loop.pump(1);
+    h.run();
     h.get_by_label("HOLD THE CART ON THE READER");
     // A blank tag goes on the reader: it is reported, written, verified.
     run_loop.line("insert 04a1b2c3d4e5f6");
