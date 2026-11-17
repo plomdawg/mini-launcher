@@ -217,6 +217,94 @@ pub fn vanished(location: &ConfigLocation, default_dir: &Path) -> Option<ConfigL
     Some(ConfigLocation::resolve(default_dir)).filter(|l| !l.is_available())
 }
 
+/// The tray's view of the config folder: the worker's location, plus a
+/// problem "Open config" found before the worker noticed. That one is only
+/// provisional: the worker is asked to check again (see
+/// [`ConfigStatus::open_config_unavailable`]) and its answer replaces it, so
+/// the state always converges, whether or not the folder came back.
+#[derive(Debug, Default)]
+pub struct ConfigStatus {
+    location: Option<ConfigLocation>,
+    problem: Option<String>,
+}
+
+impl ConfigStatus {
+    /// Why the config folder is unavailable, if it is.
+    pub fn problem(&self) -> Option<&str> {
+        self.problem.as_deref()
+    }
+
+    /// The location "Open config" should try: the worker's, if it is
+    /// available, even when "Open config" itself found it gone before (so a
+    /// folder that came back opens at once). `None`: just warn.
+    pub fn to_open(&self) -> Option<&ConfigLocation> {
+        self.location.as_ref().filter(|l| l.is_available())
+    }
+
+    /// The worker resolved `location`: the balloon to show, if the state
+    /// changed.
+    pub fn set_location(
+        &mut self,
+        location: ConfigLocation,
+    ) -> Option<(Level, &'static str, String)> {
+        let problem = location.config_file().err().map(|e| e.to_string());
+        let balloon = match (&problem, &self.problem) {
+            (None, Some(_)) => {
+                let path = location.config_file().unwrap_or_default();
+                let text = format!("Loaded {}", path.display());
+                Some((Level::Info, "Config folder available", text))
+            }
+            (Some(p), old) if old.as_ref() != Some(p) => Some(unavailable_balloon(p)),
+            _ => None,
+        };
+        self.location = Some(location);
+        self.problem = problem;
+        balloon
+    }
+
+    /// "Open config" found the folder gone (`problem`) before the worker
+    /// did. Returns the balloon; the caller asks the worker to re-check.
+    pub fn open_config_unavailable(&mut self, problem: String) -> (Level, &'static str, String) {
+        let balloon = unavailable_balloon(&problem);
+        self.problem = Some(problem);
+        balloon
+    }
+
+    /// "Open config" worked: whatever it found missing before is back.
+    /// Returns whether the state changed.
+    pub fn open_config_ready(&mut self) -> bool {
+        self.to_open().is_some() && self.problem.take().is_some()
+    }
+}
+
+/// The warning for an unavailable config folder, the same from wherever it
+/// was found.
+pub fn unavailable_balloon(problem: &str) -> (Level, &'static str, String) {
+    let text = format!("{problem}. Only steam:// tags work until it is.");
+    (Level::Warning, CONFIG_UNAVAILABLE, text)
+}
+
+/// What the worker does with its config retry thread's channel.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Retry {
+    /// Nothing found yet.
+    Wait,
+    /// The location changed: switch to it.
+    Switch(Option<ConfigLocation>),
+    /// The thread ended without a result (it panicked): start it again.
+    Respawn,
+}
+
+impl From<Result<Option<ConfigLocation>, std::sync::mpsc::TryRecvError>> for Retry {
+    fn from(received: Result<Option<ConfigLocation>, std::sync::mpsc::TryRecvError>) -> Retry {
+        match received {
+            Ok(location) => Retry::Switch(location),
+            Err(std::sync::mpsc::TryRecvError::Empty) => Retry::Wait,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => Retry::Respawn,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -420,6 +508,89 @@ mod tests {
             None
         );
         std::fs::remove_dir_all(default).unwrap();
+    }
+
+    #[test]
+    fn open_config_problem_converges_when_the_folder_comes_back() {
+        let dir = temp("converge");
+        let synced = dir.join("synced");
+        std::fs::create_dir(&synced).unwrap();
+        let location = ConfigLocation::Override(synced.clone());
+        let mut status = ConfigStatus::default();
+        assert!(status.set_location(location.clone()).is_none());
+        // Open config finds the folder gone before the worker does.
+        std::fs::remove_dir(&synced).unwrap();
+        let OpenConfig::Unavailable(problem) = ensure_config(&location).unwrap() else {
+            panic!("folder is gone");
+        };
+        let (_, _, text) = status.open_config_unavailable(problem.clone());
+        assert_eq!(status.problem(), Some(problem.as_str()));
+        // Same text as the worker's balloon would show.
+        assert!(
+            text.ends_with("Only steam:// tags work until it is."),
+            "{text}"
+        );
+        // Open config still tries the folder rather than only warning...
+        assert_eq!(status.to_open(), Some(&location));
+        std::fs::create_dir(&synced).unwrap();
+        // ...and the worker's re-check (same location) clears the problem.
+        let (level, title, _) = status.set_location(location.clone()).unwrap();
+        assert_eq!((level, title), (Level::Info, "Config folder available"));
+        assert_eq!(status.problem(), None);
+        // Or Open config itself succeeding clears it.
+        status.open_config_unavailable(problem);
+        assert!(matches!(
+            ensure_config(&location).unwrap(),
+            OpenConfig::Ready { .. }
+        ));
+        assert!(status.open_config_ready());
+        assert_eq!(status.problem(), None);
+        assert!(!status.open_config_ready());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn worker_confirming_an_open_config_problem_does_not_repeat_the_balloon() {
+        let dir = temp("confirm");
+        let synced = dir.join("synced");
+        let text = format!("dir = '{}'\n", synced.display());
+        std::fs::write(dir.join("location.toml"), text).unwrap();
+        let mut status = ConfigStatus::default();
+        status.set_location(ConfigLocation::Override(synced.clone()));
+        let OpenConfig::Unavailable(problem) =
+            ensure_config(&ConfigLocation::Override(synced)).unwrap()
+        else {
+            panic!("folder is missing");
+        };
+        let (_, _, ui_text) = status.open_config_unavailable(problem);
+        // What the worker resolves when it re-checks.
+        let gone = ConfigLocation::resolve(&dir);
+        assert!(!gone.is_available(), "{gone:?}");
+        assert!(status.set_location(gone).is_none());
+        assert_eq!(status.to_open(), None);
+        assert_eq!(unavailable_balloon(status.problem().unwrap()).2, ui_text);
+        // A different problem is news.
+        let other = ConfigLocation::OverrideUnavailable {
+            dir: None,
+            reason: "bad pointer".into(),
+        };
+        assert!(status.set_location(other).is_some());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn retry_thread_that_died_is_respawned() {
+        use std::sync::mpsc::TryRecvError;
+        assert_eq!(Retry::from(Err(TryRecvError::Empty)), Retry::Wait);
+        assert_eq!(Retry::from(Err(TryRecvError::Disconnected)), Retry::Respawn);
+        assert_eq!(Retry::from(Ok(None)), Retry::Switch(None));
+        let (tx, rx) = std::sync::mpsc::channel::<Option<ConfigLocation>>();
+        let _ = std::thread::spawn(move || {
+            let _tx = tx;
+            panic!("retry thread panics");
+        })
+        .join();
+        assert_eq!(Retry::from(rx.try_recv()), Retry::Respawn);
     }
 
     /// `app.rs` `balloon()` reaches into tray-icon internals (its window
