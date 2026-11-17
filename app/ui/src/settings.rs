@@ -10,10 +10,11 @@ use mini_launcher_core::config::format_uid;
 use mini_launcher_core::config::location::ConfigLocation;
 use mini_launcher_core::launch::LaunchPlan;
 use mini_launcher_core::payload::Slug;
-use mini_launcher_core::session::SessionClient;
+use mini_launcher_core::steam::SteamGame;
 
 use crate::library::{Field, Form, Library};
 use crate::theme::{self, BIG, BLUE, FACE, INK, PAPER, ROW, SHADE, SIGNAL, TEXT, U};
+use crate::wizard::{Link, Wizard};
 
 /// What the window needs from the app hosting it (the tray).
 pub trait Host: Send + Sync {
@@ -25,7 +26,11 @@ pub trait Host: Send + Sync {
     fn saved(&self);
     /// Borrows the reader from the run loop (launches stop until the
     /// session is dropped); `None` if this host has no reader.
-    fn tag_session(&self) -> Option<SessionClient>;
+    fn tag_session(&self) -> Option<Box<dyn Link>>;
+    /// The installed Steam games, or why they can't be listed.
+    fn steam_games(&self) -> Result<Vec<SteamGame>, String>;
+    /// Starts `plan` now (the wizard's "Launch now").
+    fn launch(&self, plan: &LaunchPlan) -> Result<(), String>;
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -38,6 +43,8 @@ pub struct ReaderStatus {
 pub enum Screen {
     Library,
     Edit,
+    /// The add-game wizard (see [`crate::wizard`]).
+    Wizard,
 }
 
 /// Which path a Browse button fills in.
@@ -59,7 +66,10 @@ pub struct Settings {
     pub confirm_remove: Option<Slug>,
     /// Why the last change on the library screen failed.
     pub problem: Option<String>,
-    browse: Option<Pick>,
+    /// The add-game wizard, while it is open. Dropping it gives the reader
+    /// back to the run loop.
+    pub wizard: Option<Wizard>,
+    pub(crate) browse: Option<Pick>,
 }
 
 impl Settings {
@@ -74,6 +84,7 @@ impl Settings {
             form: Form::new(),
             confirm_remove: None,
             problem: None,
+            wizard: None,
             browse: None,
         }
     }
@@ -87,10 +98,88 @@ impl Settings {
         }
     }
 
-    /// Opens an empty form for a new game.
+    /// Opens the add-game wizard on its pick step.
     pub fn add(&mut self) {
         self.form = Form::new();
-        self.screen = Screen::Edit;
+        self.wizard = Some(Wizard::new(self.host.steam_games()));
+        self.screen = Screen::Wizard;
+    }
+
+    /// The edit form's "Write tag...": validates the form, then opens the
+    /// wizard on its tap step for that game.
+    pub fn write_tag(&mut self) {
+        let Some(config) = self.library.config() else {
+            return;
+        };
+        self.form.problem = None;
+        match self.form.to_game(config) {
+            Ok(game) => {
+                self.form.errors.clear();
+                let mut wizard = Wizard::for_game(game);
+                wizard.begin(self.host.tag_session());
+                self.wizard = Some(wizard);
+                self.screen = Screen::Wizard;
+            }
+            Err(errors) => self.form.errors = errors,
+        }
+    }
+
+    /// The wizard's Next on the pick and program steps.
+    pub fn wizard_next(&mut self) {
+        let (Some(w), Some(config)) = (&mut self.wizard, self.library.config()) else {
+            return;
+        };
+        let next = match w.step {
+            crate::wizard::Step::Pick => w.pick_steam(config),
+            crate::wizard::Step::Program => w.program_next(&mut self.form, config),
+            _ => false,
+        };
+        if next {
+            w.begin(self.host.tag_session());
+        }
+    }
+
+    /// The wizard's "Program...": the program form.
+    pub fn wizard_program(&mut self) {
+        if let (Some(w), Some(config)) = (&mut self.wizard, self.library.config()) {
+            w.program(&mut self.form, config);
+        }
+    }
+
+    /// Closes the wizard (giving the reader back): to the edit form if it
+    /// came from there and nothing was saved, else to the library.
+    pub fn wizard_close(&mut self) {
+        let Some(w) = self.wizard.take() else {
+            return;
+        };
+        let done = matches!(w.step, crate::wizard::Step::Test { .. });
+        if let (true, Some(game)) = (done, &w.game) {
+            self.selected = self.library.games().iter().position(|g| g.id == game.id);
+        }
+        self.screen = if w.from_edit && !done {
+            Screen::Edit
+        } else {
+            Screen::Library
+        };
+    }
+
+    /// The test step's "Launch now".
+    pub fn launch_now(&mut self) {
+        if let Some(w) = &mut self.wizard {
+            if let Some(game) = &w.game {
+                w.launched = Some(self.host.launch(&game.plan));
+            }
+        }
+    }
+
+    /// Lets the wizard handle what the run loop sent.
+    fn poll_wizard(&mut self) {
+        if let Some(w) = &mut self.wizard {
+            w.poll(&mut self.library);
+            if w.take_saved() {
+                self.host.saved();
+            }
+        }
     }
 
     /// Validates and saves the form; back to the library on success.
@@ -183,10 +272,20 @@ pub fn show(ui: &mut Ui, s: &mut Settings) {
     if s.screen == Screen::Library {
         s.refresh();
     }
+    if s.screen == Screen::Wizard {
+        s.poll_wizard();
+        // Updates from the run loop don't wake the window: look again soon.
+        if s.wizard.as_ref().is_some_and(Wizard::has_reader) {
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_millis(100));
+        }
+    }
     let title = match (s.screen, &s.form.id) {
         (Screen::Library, _) => "LIBRARY",
         (Screen::Edit, Some(_)) => "EDIT GAME",
         (Screen::Edit, None) => "ADD GAME",
+        (Screen::Wizard, _) if s.wizard.as_ref().is_some_and(|w| w.from_edit) => "WRITE TAG",
+        (Screen::Wizard, _) => "ADD GAME",
     };
     egui::Panel::top("masthead")
         .frame(egui::Frame::NONE.fill(BLUE))
@@ -210,6 +309,7 @@ pub fn show(ui: &mut Ui, s: &mut Settings) {
         .show(ui, |ui| match s.screen {
             Screen::Library => library(ui, s),
             Screen::Edit => edit(ui, s),
+            Screen::Wizard => crate::wizard_view::show(ui, s),
         });
 }
 
@@ -429,6 +529,7 @@ fn form(ui: &mut Ui, s: &mut Settings) {
     };
     let f = &mut s.form;
     let mut browse = None;
+    let mut write = false;
     theme::group(ui, "Game", |ui| {
         let row = |ui: &mut Ui, label: &str, add: &mut dyn FnMut(&mut Ui, egui::Id)| {
             ui.horizontal(|ui| {
@@ -498,11 +599,14 @@ fn form(ui: &mut Ui, s: &mut Settings) {
         });
         ui.horizontal(|ui| {
             ui.add_space(indent);
-            theme::button(ui, "Write tag...", false, false);
-            ui.colored_label(SHADE, "Writing tags here comes in a later version.");
+            write = theme::button(ui, "Write tag...", true, false).clicked();
+            ui.colored_label(SHADE, "Hold a cart on the reader to write or bind it.");
         });
     });
     if browse.is_some() {
         s.browse = browse;
+    }
+    if write {
+        s.write_tag();
     }
 }
