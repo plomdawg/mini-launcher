@@ -1,0 +1,20 @@
+[package]
+name = "mini-launcher-ui"
+description = "Mini Launcher's settings window: retro theme and screens (egui)"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[features]
+# The native window (eframe + wgpu). Off by default so the theme and screens
+# build and test anywhere without a windowing stack.
+window = ["dep:eframe"]
+
+[dependencies]
+egui = { version = "=0.37.0", default-features = false }
+eframe = { version = "=0.37.0", optional = true, default-features = false, features = ["accesskit", "wgpu"] }
+
+[dev-dependencies]
+egui_kittest = { version = "=0.37.0", features = ["wgpu", "snapshot"] }

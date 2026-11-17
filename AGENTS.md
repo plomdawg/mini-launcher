@@ -13,6 +13,7 @@ for diagnostics); Linux support is planned later. Kits are sold (shop.plom.one).
 ```
 app/        Rust workspace — core (reader, NDEF, payload, config, launch, debounce, run loop)
             + cli (the `mini-launcher` console exe and the windowless `mini-launcher-tray`)
+            + ui (settings window: egui retro theme + screens; `assets/fonts/` = Departure Mono, OFL)
 web/        Box-art generator ("Plomcase" prototype): vanilla JS + Python stdlib server
 hardware/   STL/3MF/STEP, BOM.md, wiring diagrams
 installer/  Inno Setup script (per-user setup.exe) + its silent install/uninstall test

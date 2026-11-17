@@ -32,6 +32,8 @@ tracing-appender = "0.2"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "env-filter", "ansi", "std", "registry"] }
 
 [target.'cfg(windows)'.dependencies]
+# The settings window (egui/eframe + wgpu, ADR 0001); only the tray uses it.
+mini-launcher-ui = { path = "../ui", features = ["window"] }
 open = { version = "5.4.5", features = ["shellexecute-on-windows"] }
 # Pinned exactly: the tray's balloon notifications rely on how this version
 # registers its icon (see src/tray/app.rs). `muda` is its menu crate.

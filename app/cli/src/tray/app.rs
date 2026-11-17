@@ -142,6 +142,12 @@ fn run(log_dir: Option<PathBuf>) -> Result<()> {
     };
     refresh(None, None);
 
+    // Each `--settings` opens the window once more after the previous one
+    // closes (CI repeats it to check re-opening on eframe's kept event loop).
+    for _ in std::env::args_os().skip(1).filter(|a| a == "--settings") {
+        settings_window();
+    }
+
     'ui: loop {
         if !pump_messages() {
             break;
@@ -235,6 +241,18 @@ fn run(log_dir: Option<PathBuf>) -> Result<()> {
     // The worker notices `stop` within one poll (or one reopen attempt).
     let _ = worker.join();
     Ok(())
+}
+
+/// Opens the settings window on this (the UI) thread and blocks until it
+/// closes. Tray messages keep flowing meanwhile: winit pumps this thread's
+/// message queue, and queued menu clicks and worker updates are handled after.
+/// The window's wgpu device and surface are dropped before this returns.
+fn settings_window() {
+    tracing::info!("opening the settings window");
+    match mini_launcher_ui::window::open() {
+        Ok(()) => tracing::info!("settings window closed"),
+        Err(e) => tracing::error!("settings window failed: {e}"),
+    }
 }
 
 /// The worker: the shared run loop, with the reader opened (and reopened)
