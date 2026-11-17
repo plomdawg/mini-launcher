@@ -21,7 +21,9 @@ pub fn run(out: &mut impl Write, explicit: Option<&str>, stop: &AtomicBool) -> R
     )?;
     out.flush()?;
     let miss_threshold = DebounceConfig::default().miss_threshold;
-    let (mut seen, mut misses) = (None::<Vec<u8>>, 0);
+    // `seen`: the tag on the reader, with whether its pages have been read.
+    // A failed read is reported once, then retried silently every poll.
+    let (mut seen, mut misses) = (None::<(Vec<u8>, bool)>, 0);
     while !stop.load(Ordering::Relaxed) {
         std::thread::sleep(DEFAULT_POLL_INTERVAL);
         let Some(t) = reader.detect().map_err(|e| port::lost(&name, e))? else {
@@ -32,14 +34,18 @@ pub fn run(out: &mut impl Write, explicit: Option<&str>, stop: &AtomicBool) -> R
             continue;
         };
         misses = 0;
-        if seen.as_ref() != Some(&t.uid) {
+        let known = seen.as_ref().filter(|(uid, _)| *uid == t.uid);
+        if !known.is_some_and(|&(_, read)| read) {
             let mem = match reader.read_user_memory() {
                 Err(e) if is_fatal(&e) => return Err(port::lost(&name, e)),
                 mem => mem.map_err(|e| e.to_string()),
             };
-            report(out, &t, mem)?;
-            out.flush()?;
-            seen = Some(t.uid);
+            let read = mem.is_ok();
+            if read || known.is_none() {
+                report(out, &t, mem)?;
+                out.flush()?;
+            }
+            seen = Some((t.uid, read));
         }
         reader.release().map_err(|e| port::lost(&name, e))?;
     }
@@ -60,7 +66,11 @@ fn report(out: &mut impl Write, t: &Target, mem: Result<Vec<u8>, String>) -> Res
     let mem = match mem {
         Ok(mem) => mem,
         Err(e) => {
-            writeln!(out, "  cannot read pages: {e} (not an NTAG21x tag?)")?;
+            writeln!(
+                out,
+                "  cannot read pages: {e} (not an NTAG21x tag?); \
+                 retrying while it stays on the reader"
+            )?;
             return Ok(());
         }
     };

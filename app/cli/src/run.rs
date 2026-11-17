@@ -30,9 +30,13 @@ struct Ctx {
 
 /// Runs until `stop` is set or simulated input ends.
 pub fn run(out: &mut impl Write, opts: Options, stop: &AtomicBool) -> Result<()> {
-    let path = opts.config.or_else(Config::default_path);
+    // An explicit --config must exist; a missing default config is empty.
+    let (path, load): (_, fn(&Path) -> _) = match opts.config {
+        Some(p) => (Some(p), Config::load),
+        None => (Config::default_path(), Config::load_or_empty),
+    };
     let config = match &path {
-        Some(p) => Config::load(p).with_context(|| format!("cannot load {}", p.display()))?,
+        Some(p) => load(p).with_context(|| format!("cannot load {}", p.display()))?,
         None => {
             tracing::warn!("no config directory on this system; only steam:// tags will work");
             Config::default()

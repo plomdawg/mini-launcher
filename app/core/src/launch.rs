@@ -113,6 +113,7 @@ pub fn execute(plan: &LaunchPlan, dry_run: bool) -> std::io::Result<Outcome> {
             if let Some(cwd) = cwd {
                 cmd.current_dir(cwd);
             }
+            detach(&mut cmd);
             let mut child = cmd.spawn()?;
             // Reap the child when it exits so it doesn't linger as a zombie.
             std::thread::spawn(move || child.wait());
@@ -120,6 +121,29 @@ pub fn execute(plan: &LaunchPlan, dry_run: bool) -> std::io::Result<Outcome> {
     }
     Ok(Outcome::Started)
 }
+
+/// Keeps the launcher's Ctrl-C away from the game (killing games loses
+/// saves): Ctrl-C is delivered to the whole console process group on Windows
+/// and to the terminal's foreground process group on Unix.
+#[cfg(unix)]
+fn detach(cmd: &mut Command) {
+    use std::os::unix::process::CommandExt;
+    cmd.process_group(0);
+}
+
+/// See the Unix version. `CREATE_NEW_PROCESS_GROUP` alone: GUI games never
+/// see the console anyway, and console games keep sharing (and showing in)
+/// the launcher's console instead of being hidden (`DETACHED_PROCESS`,
+/// `CREATE_NO_WINDOW`) or popping up a second window (`CREATE_NEW_CONSOLE`).
+#[cfg(windows)]
+fn detach(cmd: &mut Command) {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+    cmd.creation_flags(CREATE_NEW_PROCESS_GROUP);
+}
+
+#[cfg(not(any(unix, windows)))]
+fn detach(_: &mut Command) {}
 
 #[cfg(test)]
 mod tests {
