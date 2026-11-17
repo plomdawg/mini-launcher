@@ -3,7 +3,7 @@
 use std::io::Write;
 
 use anyhow::Result;
-use mini_launcher_core::config::Config;
+use mini_launcher_core::config::{location, Config};
 use mini_launcher_core::logs;
 use mini_launcher_core::pn532::FirmwareVersion;
 use mini_launcher_core::ports;
@@ -32,6 +32,16 @@ pub fn run(out: &mut impl Write, explicit: Option<&str>, all: bool) -> Result<()
     }
 
     writeln!(out)?;
+    if let Some(dir) = Config::default_dir() {
+        let pointer = dir.join(location::POINTER_FILE);
+        match location::resolve(&dir) {
+            Err(e) => writeln!(out, "Config folder override ignored: {e}")?,
+            Ok(_) if pointer.exists() => {
+                writeln!(out, "Config folder override: {}", pointer.display())?
+            }
+            Ok(_) => {}
+        }
+    }
     match Config::default_path() {
         Some(path) => {
             let state = if path.exists() {

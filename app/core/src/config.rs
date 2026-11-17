@@ -17,6 +17,11 @@
 //!
 //! Each entry has exactly one of `steam_appid` or `exe`; `args` and `cwd` are
 //! only allowed with `exe`. Unknown keys are rejected so typos surface early.
+//! [`edit`] changes the file without losing comments; [`location`] handles
+//! the optional config folder override.
+
+pub mod edit;
+pub mod location;
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -79,12 +84,23 @@ struct RawGame {
 }
 
 impl Config {
-    /// The per-user config file, if the OS has a config dir: on Windows
-    /// `%APPDATA%\mini-launcher\config\config.toml`, on Linux
-    /// `$XDG_CONFIG_HOME/mini-launcher/config.toml` (usually `~/.config/...`).
-    pub fn default_path() -> Option<PathBuf> {
+    /// The per-user config directory, if the OS has one: on Windows
+    /// `%APPDATA%\mini-launcher\config`, on Linux
+    /// `$XDG_CONFIG_HOME/mini-launcher` (usually `~/.config/...`).
+    pub fn default_dir() -> Option<PathBuf> {
         directories::ProjectDirs::from("", "", "mini-launcher")
-            .map(|dirs| dirs.config_dir().join("config.toml"))
+            .map(|dirs| dirs.config_dir().to_owned())
+    }
+
+    /// The effective `config.toml`: in [`Config::default_dir`], or in the
+    /// folder its `location.toml` names. An unusable `location.toml` is
+    /// logged and ignored (`diagnose` reports it).
+    pub fn default_path() -> Option<PathBuf> {
+        let dir = Config::default_dir()?;
+        Some(location::resolve(&dir).unwrap_or_else(|e| {
+            tracing::warn!("{e}; using the default config folder");
+            dir.join(location::CONFIG_FILE)
+        }))
     }
 
     /// Loads and validates `path`, which must exist (e.g. a path the user
@@ -100,14 +116,7 @@ impl Config {
     /// Like [`Config::load`], but a missing file is an empty library, so
     /// `steam://` tags work with zero configuration. For the default location.
     pub fn load_or_empty(path: &Path) -> Result<Config, ConfigError> {
-        match Config::load(path) {
-            Err(ConfigError::Io { source, .. })
-                if source.kind() == std::io::ErrorKind::NotFound =>
-            {
-                Ok(Config::default())
-            }
-            result => result,
-        }
+        Config::parse(&read_text_or_empty(path)?)
     }
 
     /// Parses and validates TOML text.
@@ -140,6 +149,17 @@ impl Config {
     /// The entry mapped to this tag UID.
     pub fn by_uid(&self, uid: &[u8]) -> Option<&Game> {
         self.games.iter().find(|g| g.uid.as_deref() == Some(uid))
+    }
+}
+
+/// The text of `path`, or `""` if it does not exist.
+pub fn read_text_or_empty(path: &Path) -> Result<String, ConfigError> {
+    match std::fs::read_to_string(path) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
+        result => result.map_err(|source| ConfigError::Io {
+            path: path.to_owned(),
+            source,
+        }),
     }
 }
 

@@ -294,6 +294,9 @@ Rules:
 - `args` and `cwd` are only allowed with `exe`. Unknown keys are an error, so typos show up right
   away.
 
+Backups, export/import and keeping the config in a synced folder are covered in
+[config.md](config.md).
+
 Restart `run` after you edit the config. If the file has a mistake, `run` stops with
 `error: cannot load ...config.toml: ...` and the message names the problem, e.g.
 `games[1]: "my-game": set one of steam_appid or exe`. `games[1]` is the second block (counting
