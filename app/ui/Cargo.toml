@@ -15,10 +15,12 @@ window = ["dep:eframe", "dep:winit", "dep:rfd"]
 [dependencies]
 mini-launcher-core = { path = "../core" }
 egui = { version = "=0.37.0", default-features = false }
+# Bump together with the `winit` pin below (it must match eframe's winit).
 eframe = { version = "=0.37.0", optional = true, default-features = false, features = ["accesskit", "wgpu"] }
 
 # The window runs its event loop off the main thread (src/window.rs), which
-# needs winit's Windows extension; same version as eframe's.
+# needs winit's Windows extension. Must equal the winit version eframe uses:
+# bump it together with eframe.
 [target.'cfg(windows)'.dependencies]
 winit = { version = "=0.30.13", optional = true, default-features = false }
 # Native file dialogs for the edit form's Browse buttons.

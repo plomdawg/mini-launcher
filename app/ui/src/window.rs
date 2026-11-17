@@ -29,6 +29,10 @@ pub enum Event {
 
 /// A handle to the settings window thread. Dropping it closes the window
 /// (if open) and ends the thread.
+///
+/// Running the event loop off the main thread is only enabled on Windows
+/// (`with_any_thread`); on other platforms winit would refuse it, so a
+/// Linux port must add the X11/Wayland equivalents first.
 pub struct SettingsWindow {
     requests: Option<mpsc::Sender<()>>,
     thread: Option<JoinHandle<()>>,
