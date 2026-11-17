@@ -61,19 +61,22 @@ impl Library {
 
     /// Adds or updates `game` and saves.
     pub fn save_game(&mut self, game: &Game) -> Result<(), String> {
-        self.change(|doc| doc.upsert_game(game))
+        self.change(&game.id, |doc| doc.upsert_game(game))
     }
 
     /// Removes the game with this id and saves.
     pub fn remove(&mut self, id: &Slug) -> Result<(), String> {
-        self.change(|doc| doc.remove_game(id))
+        self.change(id, |doc| doc.remove_game(id))
     }
 
     /// Applies `edit` to the file as it is now on disk (so an outside edit
     /// made meanwhile is kept), then saves it through [`ConfigDocument`]
-    /// (validated, atomic, comments kept).
+    /// (validated, atomic, comments kept). If game `id` on disk is no longer
+    /// what this library shows (added, changed or removed outside the app),
+    /// nothing is saved: the library is reloaded and the error says why.
     fn change(
         &mut self,
+        id: &Slug,
         edit: impl FnOnce(
             &mut ConfigDocument,
         ) -> Result<(), mini_launcher_core::config::edit::EditError>,
@@ -83,12 +86,31 @@ impl Library {
             .clone()
             .ok_or("this system has no config folder")?;
         let path = location.writable_file().map_err(|e| e.to_string())?;
+        let stamp = modified(&path);
         let mut doc = ConfigDocument::load_or_empty(&path).map_err(|e| chain(&e))?;
+        let shown = self.config().and_then(|c| c.by_id(id));
+        if let Some(e) = conflict(id, shown, doc.config().by_id(id)) {
+            (self.doc, self.stamp) = (Ok(doc), stamp);
+            return Err(format!(
+                "{e} outside the app. The library was reloaded: check it and try again."
+            ));
+        }
         edit(&mut doc).map_err(|e| chain(&e))?;
         doc.save_to(&location).map_err(|e| chain(&e))?;
         self.stamp = modified(&path);
         self.doc = Ok(doc);
         Ok(())
+    }
+}
+
+/// How game `id` on disk differs from the one `shown` (`None`: a new game
+/// or already gone), if it does.
+fn conflict(id: &Slug, shown: Option<&Game>, on_disk: Option<&Game>) -> Option<String> {
+    match (shown, on_disk) {
+        (None, Some(g)) => Some(format!("\"{}\" (id {id}) was added", g.name)),
+        (Some(g), None) => Some(format!("\"{}\" was removed", g.name)),
+        (Some(g), Some(d)) if g != d => Some(format!("\"{}\" was changed", g.name)),
+        _ => None,
     }
 }
 
@@ -472,5 +494,46 @@ mod tests {
             .problem()
             .unwrap()
             .contains("not mounted"));
+    }
+    #[test]
+    fn save_refuses_games_changed_outside() {
+        let location = temp_location("conflict", Some(LIBRARY));
+        let path = location.config_file().unwrap();
+        let hand = "\n[[games]]\nid = \"celeste\"\nname = \"Hand\"\nsteam_appid = 1\n";
+
+        // A new game whose id was hand-added meanwhile is not overwritten.
+        let mut library = Library::load(Some(location.clone()));
+        let mut form = Form::new();
+        form.name = "Celeste".into();
+        form.app_id = "504230".into();
+        let game = form.to_game(library.config().unwrap()).unwrap();
+        std::fs::write(&path, format!("{LIBRARY}{hand}")).unwrap();
+        let e = library.save_game(&game).unwrap_err();
+        assert!(
+            e.contains("\"Hand\" (id celeste) was added outside the app"),
+            "{e}"
+        );
+        assert!(read(&location).contains("name = \"Hand\""));
+        // Reloaded, so trying again gets a free id.
+        let game = form.to_game(library.config().unwrap()).unwrap();
+        assert_eq!(game.id.as_str(), "celeste-2");
+        library.save_game(&game).unwrap();
+        assert_eq!(library.games().len(), 4);
+
+        // Editing a game removed or changed outside is refused too.
+        let doom = Form::from_game(library.config().unwrap().by_id(&slug("doom")).unwrap());
+        let doom = doom.to_game(library.config().unwrap()).unwrap();
+        std::fs::write(&path, LIBRARY.replace("DOOM", "DOOM II")).unwrap();
+        let e = library.save_game(&doom).unwrap_err();
+        assert!(e.contains("\"DOOM\" was changed"), "{e}");
+        std::fs::write(&path, "").unwrap();
+        let e = library.save_game(&doom).unwrap_err();
+        assert!(e.contains("\"DOOM II\" was removed"), "{e}");
+        assert_eq!(read(&location), "");
+        assert!(library.remove(&slug("hades")).is_err());
+    }
+
+    fn slug(s: &str) -> Slug {
+        Slug::new(s).unwrap()
     }
 }

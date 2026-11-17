@@ -208,6 +208,39 @@ fn remove_asks_first() {
     assert_eq!(h.state().library.games().len(), GAMES.len() - 1);
 }
 
+#[test]
+fn remove_targets_the_game_by_id_after_outside_edits() {
+    let host = host("remove-id");
+    let mut h = harness(host.clone(), 1.0);
+    h.run();
+    h.get_by_label("Remove").click();
+    h.run();
+    // While the dialog is open, Hades moves down the file by hand.
+    let text = host.config();
+    let hades = "\n[[games]]\nid = \"hades\"\nname = \"Hades\"\nuid = \"04:A2:3B:1C:5D:80:00\"\nsteam_appid = 1145360\n";
+    let path = host.dir.join("config.toml");
+    std::fs::write(&path, format!("{}{hades}", text.replace(hades, ""))).unwrap();
+    h.run();
+    h.get_all_by_label("Remove").last().unwrap().click();
+    h.run();
+    let text = host.config();
+    assert!(
+        !text.contains("Hades") && text.contains("Celeste"),
+        "{text}"
+    );
+
+    // Removed by hand while the dialog is open: says so, touches nothing.
+    h.state_mut().ask_remove(0);
+    h.run();
+    std::fs::write(&path, "").unwrap();
+    h.run();
+    h.get_all_by_label("Remove").last().unwrap().click();
+    h.run();
+    let problem = h.state().problem.clone().unwrap();
+    assert!(problem.contains("no longer in the library"), "{problem}");
+    assert_eq!(host.config(), "");
+}
+
 /// `cargo test -p mini-launcher-ui -- --ignored` writes the PNGs (needs a
 /// wgpu adapter; on Linux, Mesa's lavapipe works).
 #[test]
@@ -225,7 +258,7 @@ fn design_screenshots() {
             s.form.args = "-iwad \"doom2.wad".into();
             s.save();
         }),
-        ("remove-game", |s| s.confirm_remove = Some(0)),
+        ("remove-game", |s| s.ask_remove(0)),
     ];
     for (name, setup) in shots {
         for scale in [1.0, 2.0] {
