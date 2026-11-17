@@ -44,7 +44,7 @@ click **More info**, then **Run anyway**. If Windows still blocks it, right-clic
 **Properties** → tick **Unblock** → **OK**, or run `Unblock-File` on it in PowerShell.
 
 The tray app runs in the background without a console window: use its notification-area icon
-to pause, open the config or logs, turn **Start at login** on or off, or quit. It works like
+to open **Settings…**, pause, open the config or logs, turn **Start at login** on or off, or quit. It works like
 `mini-launcher run`, and only one of the two can use the reader at a time. Pausing switches the
 reader's antenna off until you resume; a cart left in the reader does not launch on resume.
 
@@ -240,7 +240,9 @@ exits with `mini-launcher is already running`.
 ## 7. The config file
 
 The config file lets you launch games that aren't on Steam, and use tags you can't or don't want
-to rewrite. On Windows it lives at:
+to rewrite. With the tray app you rarely need to edit it by hand: **Settings…** in the tray
+menu lists your games and adds, edits and removes them (including unbinding a tag's UID), and
+saves keep your comments. The tray picks up the change right away. On Windows it lives at:
 
 ```
 %APPDATA%\mini-launcher\config\config.toml
