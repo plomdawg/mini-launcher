@@ -10,8 +10,12 @@
 //! panics. Malformed structure is an error; a Text/URI record that is UTF-16,
 //! not valid UTF-8, or uses a reserved URI prefix is skipped in favour of the
 //! next record.
+//!
+//! [`encode_payload`] is the inverse for the payloads the launcher writes.
 
 use std::fmt;
+
+use crate::payload::Payload;
 
 /// A decoded Text or URI record.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -283,6 +287,33 @@ fn decode_uri(payload: &[u8]) -> Option<String> {
     let prefix = URI_PREFIXES.get(usize::from(code))?;
     let rest = std::str::from_utf8(rest).ok()?;
     Some(format!("{prefix}{rest}"))
+}
+
+/// Encodes a payload as Type 2 tag user memory: an NDEF Message TLV with one
+/// record, then a Terminator TLV. `steam://<appid>` becomes a URI record
+/// (prefix code `0x00`, no abbreviation exists), `id:<slug>` a UTF-8 Text
+/// record with language `en`. Built only from the parsed appid / validated
+/// slug, in canonical form; `None` for [`Payload::Unusable`].
+pub fn encode_payload(payload: &Payload) -> Option<Vec<u8>> {
+    let (record_type, body) = match payload {
+        Payload::Steam(appid) => (
+            b'U',
+            [&[0x00][..], format!("steam://{appid}").as_bytes()].concat(),
+        ),
+        Payload::Id(slug) => (b'T', [b"\x02en", format!("id:{slug}").as_bytes()].concat()),
+        Payload::Unusable => return None,
+    };
+    // A 64-char slug gives a 70-byte payload: short records and a 1-byte TLV
+    // length always suffice.
+    let payload_len = u8::try_from(body.len()).ok()?;
+    let header = 0x80 | FLAG_ME | FLAG_SR | TNF_WELL_KNOWN; // MB|ME|SR, TNF 1
+    let mut msg = vec![header, 0x01, payload_len, record_type];
+    msg.extend_from_slice(&body);
+    let msg_len = u8::try_from(msg.len()).ok().filter(|&n| n < 0xFF)?;
+    let mut out = vec![TLV_NDEF_MESSAGE, msg_len];
+    out.extend_from_slice(&msg);
+    out.push(TLV_TERMINATOR);
+    Some(out)
 }
 
 #[cfg(test)]

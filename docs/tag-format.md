@@ -112,6 +112,16 @@ Tag contents are untrusted input: anyone can write anything to a tag and put it 
 The worst a malicious tag can do is launch a Steam app by ID or launch an entry the user has
 already configured.
 
+## Writing a tag with the launcher
+
+`mini-launcher write steam://440` (or `id:my-game`, optionally `--port COM7`) waits for a tag,
+writes the payload and reads it back to verify. Quit the tray app first: it holds the reader.
+`steam://` payloads are written as a URI record (prefix code `0x00`), `id:` payloads as a UTF-8
+Text record (language `en`). Only user pages are written (page 4 up to the end of the data area
+in the capability container, never past page 39); the UID, lock bytes, capability container and
+config pages are never touched, and the tag is never locked. A read-only, too-small or
+non-NDEF tag is refused; map its UID in `config.toml` instead.
+
 ## Writing a tag with a phone
 
 Any NDEF-capable writer works. With **NFC Tools** (Android or iOS):

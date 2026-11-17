@@ -256,3 +256,93 @@ fn random_buffers_never_panic() {
         assert_early_stop_agrees(&mem, 16);
     }
 }
+
+mod encode {
+    use super::*;
+    use crate::payload::{Payload, Slug};
+
+    fn round_trip(p: &Payload) {
+        let mem = encode_payload(p).expect("encodable");
+        assert!(mem.len() <= 80, "{p:?}: {} bytes", mem.len());
+        assert!(tlv_area_complete(&mem));
+        let record = parse_user_memory(&tag(&mem)).unwrap();
+        assert_eq!(&Payload::parse(record.as_str()), p, "{mem:02X?}");
+        // Every strict prefix is incomplete, so a torn read never parses.
+        for n in 0..mem.len() - 1 {
+            assert!(parse_user_memory(&mem[..n]).is_err(), "prefix {n}");
+        }
+    }
+
+    #[test]
+    fn fixtures() {
+        // Byte-identical to what NFC Tools writes for "Custom URI".
+        let steam = encode_payload(&Payload::Steam(440)).unwrap();
+        assert_eq!(steam, NFC_TOOLS_URI);
+        let id = encode_payload(&Payload::Id(Slug::new("my-game").unwrap())).unwrap();
+        let want = [
+            &[0x03, 0x11, 0xD1, 0x01, 0x0D, b'T', 0x02, b'e', b'n'][..],
+            b"id:my-game",
+            &[0xFE],
+        ]
+        .concat();
+        assert_eq!(id, want);
+        assert_eq!(parse_user_memory(&id), text("id:my-game"));
+    }
+
+    #[test]
+    fn round_trips_appids_and_slugs() {
+        for appid in [1, 9, 10, 440, 1_234_567, u32::MAX - 1, u32::MAX] {
+            round_trip(&Payload::Steam(appid));
+        }
+        for slug in ["0", "a", "a-", "9-9", "half-life-2", &"z".repeat(64)] {
+            round_trip(&Payload::Id(Slug::new(slug).unwrap()));
+        }
+        // Pseudo-random appids and valid slugs (xorshift, fixed seed).
+        let mut state: u64 = 0x2545_F491_4F6C_DD1D;
+        let mut next = || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        const FIRST: &[u8] = b"abcdefghijklmnopqrstuvwxyz0123456789";
+        for _ in 0..5_000 {
+            round_trip(&Payload::Steam((next() as u32).max(1)));
+            let len = 1 + (next() % 64) as usize;
+            let slug: String = (0..len)
+                .map(|i| {
+                    let r = next() as usize;
+                    match (i, r % 37) {
+                        (0, _) => FIRST[r % FIRST.len()] as char,
+                        (_, 36) => '-',
+                        (_, k) => FIRST[k] as char,
+                    }
+                })
+                .collect();
+            round_trip(&Payload::Id(Slug::new(&slug).unwrap()));
+        }
+    }
+
+    #[test]
+    fn unusable_is_not_encodable() {
+        assert_eq!(encode_payload(&Payload::Unusable), None);
+    }
+
+    #[test]
+    fn zero_length_tlv_is_nothing_usable() {
+        // The tag writer's intermediate state (TLV length 0, record bytes
+        // after it) must read as an empty tag, never as a payload.
+        for p in [
+            Payload::Steam(440),
+            Payload::Id(Slug::new("my-game").unwrap()),
+        ] {
+            let mut mem = encode_payload(&p).unwrap();
+            mem[1] = 0;
+            assert!(tlv_area_complete(&mem));
+            assert_eq!(
+                parse_user_memory(&tag(&mem)),
+                Err(NdefError::NoUsableRecord)
+            );
+        }
+    }
+}

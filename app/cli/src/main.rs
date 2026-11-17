@@ -10,6 +10,7 @@ mod diagnose;
 mod run;
 mod scan;
 mod steam;
+mod write;
 
 /// Launch games by inserting NFC-tagged carts into a reader.
 #[derive(Debug, Parser)]
@@ -39,6 +40,18 @@ enum Command {
     Scan {
         #[command(flatten)]
         port: PortArgs,
+    },
+    /// Write `steam://<appid>` or `id:<slug>` to the next tag placed on the
+    /// reader, then read it back to verify. Never locks the tag.
+    Write {
+        /// The payload, validated like a tag's: `steam://<appid>` or `id:<slug>`.
+        #[arg(value_name = "PAYLOAD", value_parser = write::parse)]
+        payload: mini_launcher_core::payload::Payload,
+        #[command(flatten)]
+        port: PortArgs,
+        /// Give up if no tag is placed within this many seconds.
+        #[arg(long, value_name = "SECS", default_value_t = 60)]
+        timeout: u64,
     },
     /// Launch the game for each cart inserted into the reader.
     Run {
@@ -138,6 +151,15 @@ fn main() -> ExitCode {
             handle_ctrl_c();
             scan::run(&mut out, port.port.as_deref(), &STOP)
         }
+        Command::Write {
+            payload,
+            port,
+            timeout,
+        } => {
+            handle_ctrl_c();
+            let timeout = std::time::Duration::from_secs(timeout);
+            write::run(&mut out, &payload, port.port.as_deref(), timeout, &STOP)
+        }
         Command::Run {
             port,
             simulate,
@@ -217,6 +239,26 @@ mod tests {
         };
         assert!(simulate && dry_run);
         assert!(parse(&["-p", "COM7"]).is_ok());
+    }
+
+    #[test]
+    fn write_validates_its_payload() {
+        let parse =
+            |args: &[&str]| Cli::try_parse_from([&["mini-launcher", "write"], args].concat());
+        let Command::Write {
+            payload,
+            port,
+            timeout,
+        } = parse(&["steam://440", "--port", "COM7"]).unwrap().command
+        else {
+            panic!("not write")
+        };
+        assert_eq!(payload, mini_launcher_core::payload::Payload::Steam(440));
+        assert_eq!((port.port.as_deref(), timeout), (Some("COM7"), 60));
+        assert!(parse(&["id:my-game", "--timeout", "5"]).is_ok());
+        for bad in [&["id:../x"][..], &["steam://440 && calc"], &[]] {
+            assert!(parse(bad).is_err(), "{bad:?}");
+        }
     }
 
     #[test]

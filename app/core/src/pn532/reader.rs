@@ -122,6 +122,14 @@ impl<T: Transport> Pn532Hsu<T> {
         self.dev.in_release().or_else(|e| transient(e, "InRelease"))
     }
 
+    /// The driver, e.g. for [`super::write::write_payload`] on a tag just
+    /// returned by [`Self::detect`]. Drops the cached reading, since the tag
+    /// may be rewritten.
+    pub fn driver(&mut self) -> &mut Pn532<T> {
+        self.cached = None;
+        &mut self.dev
+    }
+
     /// Returns the driver.
     pub fn into_inner(self) -> Pn532<T> {
         self.dev

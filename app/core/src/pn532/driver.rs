@@ -34,6 +34,10 @@ const CMD_IN_DATA_EXCHANGE: u8 = 0x40;
 const CMD_IN_LIST_PASSIVE_TARGET: u8 = 0x4A;
 const CMD_IN_RELEASE: u8 = 0x52;
 const NTAG_READ: u8 = 0x30;
+const NTAG_WRITE: u8 = 0xA2;
+/// Pages below this (UID, static lock bytes, capability container) are never
+/// written; see [`Pn532::ntag_write`].
+pub const FIRST_WRITABLE_PAGE: u8 = 4;
 /// Target number used for data exchange: we only ever list one target.
 const TG: u8 = 0x01;
 
@@ -58,6 +62,8 @@ pub enum Pn532Error {
     Malformed { cmd: u8, len: usize },
     #[error("PN532 reported status {0:#04x}")]
     Status(u8),
+    #[error("refusing to write protected page {0}")]
+    ProtectedPage(u8),
 }
 
 /// Result of `GetFirmwareVersion`.
@@ -199,6 +205,25 @@ impl<T: Transport> Pn532<T> {
         check_status(status)?;
         data.try_into()
             .map_err(|_| malformed(CMD_IN_DATA_EXCHANGE, &d))
+    }
+
+    /// NTAG `WRITE` of one 4-byte page on target 1.
+    ///
+    /// Pages 0-3 (UID, static lock bytes, capability container) are refused
+    /// here without sending anything. The upper bound (dynamic lock and
+    /// config pages) depends on the tag; [`super::write`] derives it.
+    pub fn ntag_write(&mut self, page: u8, data: [u8; 4]) -> Result<(), Pn532Error> {
+        if page < FIRST_WRITABLE_PAGE {
+            return Err(Pn532Error::ProtectedPage(page));
+        }
+        let [a, b, c, d] = data;
+        let cmd = [CMD_IN_DATA_EXCHANGE, TG, NTAG_WRITE, page, a, b, c, d];
+        let resp = self.command(&cmd)?;
+        // The tag's 4-bit ACK is not passed on: just the status byte.
+        let &status = resp
+            .first()
+            .ok_or_else(|| malformed(CMD_IN_DATA_EXCHANGE, &resp))?;
+        check_status(status)
     }
 
     /// Releases all targets.
@@ -389,6 +414,12 @@ mod tests {
     ];
     /// Status 01 (timeout), no data.
     const READ_FAIL: &[u8] = &[0x00, 0x00, 0xFF, 0x03, 0xFD, 0xD5, 0x41, 0x01, 0xE9, 0x00];
+    /// WRITE page 4 with 03 11 D1 01.
+    const WRITE_REQ: &[u8] = &[
+        0x00, 0x00, 0xFF, 0x09, 0xF7, 0xD4, 0x40, 0x01, 0xA2, 0x04, 0x03, 0x11, 0xD1, 0x01, 0x5F,
+        0x00,
+    ];
+    const WRITE_RESP: &[u8] = &[0x00, 0x00, 0xFF, 0x03, 0xFD, 0xD5, 0x41, 0x00, 0xEA, 0x00];
     const REL_REQ: &[u8] = &[0x00, 0x00, 0xFF, 0x03, 0xFD, 0xD4, 0x52, 0x00, 0xDA, 0x00];
     const REL_RESP: &[u8] = &[0x00, 0x00, 0xFF, 0x03, 0xFD, 0xD5, 0x53, 0x00, 0xD8, 0x00];
     /// Response frame with no response code (LEN 1).
@@ -483,6 +514,30 @@ mod tests {
             let page: Vec<u8> = (0x10..0x20).collect();
             assert_eq!(p.ntag_read(4).unwrap()[..], page[..]);
             assert_eq!(written(p), [LIST_REQ, READ_REQ].concat());
+        }
+    }
+
+    #[test]
+    fn ntag_write_frame_and_status() {
+        for mut p in drivers(&[&ACK, WRITE_RESP, &ACK, READ_FAIL]) {
+            p.ntag_write(4, [0x03, 0x11, 0xD1, 0x01]).unwrap();
+            assert!(matches!(
+                p.ntag_write(4, [0; 4]),
+                Err(Pn532Error::Status(0x01))
+            ));
+            assert_eq!(written(p)[..WRITE_REQ.len()], *WRITE_REQ);
+        }
+    }
+
+    #[test]
+    fn ntag_write_refuses_pages_0_to_3() {
+        for page in 0..FIRST_WRITABLE_PAGE {
+            let [mut p, _] = drivers(&[]);
+            assert!(matches!(
+                p.ntag_write(page, [0; 4]),
+                Err(Pn532Error::ProtectedPage(n)) if n == page
+            ));
+            assert!(written(p).is_empty(), "nothing sent for page {page}");
         }
     }
 
