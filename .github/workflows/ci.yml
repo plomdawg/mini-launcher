@@ -147,6 +147,25 @@ jobs:
                   }, IntPtr.Zero);
                   return found;
               }
+              [DllImport("user32")] static extern bool IsWindowVisible(IntPtr hwnd);
+              [DllImport("user32", CharSet = CharSet.Unicode)] static extern int GetWindowTextW(IntPtr hwnd, StringBuilder text, int max);
+              // The tray's visible top-level window titled "Mini Launcher" (the settings window).
+              public static IntPtr SettingsWindow(int pid) {
+                  IntPtr found = IntPtr.Zero;
+                  EnumWindows((h, p) => {
+                      uint owner; GetWindowThreadProcessId(h, out owner);
+                      if (owner != pid || !IsWindowVisible(h)) return true;
+                      var title = new StringBuilder(64); GetWindowTextW(h, title, 64);
+                      if (title.ToString() == "Mini Launcher") { found = h; return false; }
+                      return true;
+                  }, IntPtr.Zero);
+                  return found;
+              }
+              public static string Describe(IntPtr hwnd) {
+                  var title = new StringBuilder(64); GetWindowTextW(hwnd, title, 64);
+                  var name = new StringBuilder(64); GetClassNameW(hwnd, name, 64);
+                  return string.Format("0x{0:X} \"{1}\" class {2}", hwnd.ToInt64(), title, name);
+              }
               public static uint Thread(IntPtr hwnd) { uint pid; return GetWindowThreadProcessId(hwnd, out pid); }
               // WM_NULL with SMTO_ABORTIFHUNG; true if the window's thread answered within 2 s.
               public static bool Responds(IntPtr hwnd) { IntPtr r; return SendMessageTimeoutW(hwnd, 0, IntPtr.Zero, IntPtr.Zero, 2, 2000, out r) != IntPtr.Zero; }
@@ -173,12 +192,14 @@ jobs:
                   # MainWindowHandle can still name while it is going away).
                   $hwnd = [IntPtr]::Zero
                   for ($i = 0; $i -lt 60; $i++) {
-                      $p.Refresh(); $hwnd = $p.MainWindowHandle
+                      $hwnd = [TrayThreads]::SettingsWindow($p.Id)
                       if ($hwnd -ne [IntPtr]::Zero -and $hwnd -ne $prev) { break }
                       Start-Sleep -Milliseconds 500
                   }
                   if ($hwnd -eq [IntPtr]::Zero -or $hwnd -eq $prev) { throw "the settings window did not open (cycle $cycle)" }
                   $prev = $hwnd
+                  Write-Host "cycle ${cycle}: settings window $([TrayThreads]::Describe($hwnd))"
+                  $p.Refresh(); Write-Host "cycle ${cycle}: MainWindowHandle $([TrayThreads]::Describe($p.MainWindowHandle))"
                   Start-Sleep 3
                   Write-Host "cycle ${cycle}: window open:  $(Mem $p)"
                   $tray = [TrayThreads]::TrayWindow($p.Id)
