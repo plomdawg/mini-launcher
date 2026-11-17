@@ -17,6 +17,7 @@ pub mod pn532;
 pub mod ports;
 pub mod reader;
 pub mod reconnect;
+pub mod runner;
 
 /// Version of the core library, taken from `Cargo.toml`.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

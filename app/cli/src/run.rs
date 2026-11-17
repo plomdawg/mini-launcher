@@ -3,16 +3,15 @@
 use std::fmt::Display;
 use std::io::{BufReader, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
 use std::time::Instant;
 
 use anyhow::{Context, Result};
 use mini_launcher_core::config::Config;
-use mini_launcher_core::debounce::{DebounceConfig, Debouncer, Event, DEFAULT_POLL_INTERVAL};
 use mini_launcher_core::instance;
-use mini_launcher_core::launch::{self, Outcome, Resolution, Via};
 use mini_launcher_core::reader::{Reader, Simulated, Uid};
 use mini_launcher_core::reconnect::{Backoff, Clock, Reconnector, SystemClock, Tick};
+use mini_launcher_core::runner::{self, describe, Notice, Runner};
 
 use crate::port;
 
@@ -101,116 +100,73 @@ pub fn run(out: &mut impl Write, opts: Options, stop: &AtomicBool) -> Result<()>
     }
 }
 
-/// Feeds `next` ticks to the debouncer once per poll interval until `stop`
-/// is set or `next` returns `None` (the source is closed).
+/// Runs the shared loop, printing each notice to `out`.
 fn poll_loop<E: Display>(
     out: &mut impl Write,
     ctx: &Ctx,
     stop: &AtomicBool,
     clock: &mut impl Clock,
-    mut next: impl FnMut(Instant) -> Option<Tick<E>>,
+    next: impl FnMut(Instant) -> Option<Tick<E>>,
 ) -> Result<()> {
-    let mut debouncer = Debouncer::new(DebounceConfig::default());
-    while !stop.load(Ordering::Relaxed) {
-        let now = clock.now();
-        let Some(tick) = next(now) else { break };
-        let events = match tick {
-            Tick::Reading(reading) => debouncer.update(reading, now),
-            Tick::Lost { port, error } => {
-                tracing::warn!(
-                    "lost the reader on {port} ({error}); was the adapter unplugged? \
-                     Reconnecting when it is back"
-                );
-                debouncer.disconnect().into_iter().collect()
-            }
-            Tick::Reconnected { port } => {
-                tracing::info!(%port, "reader reconnected");
-                writeln!(out, "reader reconnected on {port}")?;
-                out.flush()?;
-                Vec::new()
-            }
-            Tick::Stuck {
-                port,
-                attempts,
-                error,
-            } => {
-                tracing::warn!(
-                    "the reader on {port} is still not back after {attempts} attempts: {error}; \
-                     still retrying"
-                );
-                writeln!(
-                    out,
-                    "reader still not back after {attempts} attempts: {error}"
-                )?;
-                out.flush()?;
-                Vec::new()
-            }
-            Tick::Waiting => Vec::new(),
-        };
-        for event in events {
-            handle(out, ctx, event)?;
-            out.flush()?;
-        }
-        clock.sleep(DEFAULT_POLL_INTERVAL);
-    }
-    Ok(())
+    let mut runner = Runner::new(ctx.config.clone(), ctx.dry_run);
+    runner::poll_loop(&mut runner, stop, clock, next, |notice| {
+        print(out, ctx.path.as_deref(), notice)?;
+        Ok(out.flush()?)
+    })
 }
 
-fn handle(out: &mut impl Write, ctx: &Ctx, event: Event) -> Result<()> {
-    let (uid, payload) = match event {
-        Event::Inserted { uid, payload } => (uid, payload),
-        Event::Reseated { uid, .. } => {
-            tracing::info!(%uid, "reseated; not relaunching");
-            return Ok(writeln!(out, "reseated {uid}: not relaunching")?);
+fn print(out: &mut impl Write, path: Option<&Path>, notice: Notice) -> Result<()> {
+    match notice {
+        Notice::Launched {
+            uid,
+            plan,
+            via,
+            dry_run,
+        } => {
+            let suffix = if dry_run { " [dry run]" } else { "" };
+            writeln!(out, "launch {uid}: {plan} ({}){suffix}", describe(&via))?;
         }
-        Event::Removed { uid } => {
-            tracing::info!(%uid, "removed");
-            return Ok(writeln!(out, "removed {uid}")?);
+        Notice::LaunchFailed {
+            uid,
+            plan,
+            via,
+            error,
+        } => {
+            let via = describe(&via);
+            writeln!(
+                out,
+                "launch {uid}: {plan} ({via}): failed to start: {error}"
+            )?;
         }
-    };
-    match launch::resolve(&ctx.config, uid.as_bytes(), &payload) {
-        Resolution::Launch { plan, via } => {
-            let via = match via {
-                Via::Uid(slug) => format!("uid mapped to \"{slug}\""),
-                Via::TagSteam => "tag steam:".to_owned(),
-                Via::TagId(slug) => format!("tag id:{slug}"),
-            };
-            let line = format!("launch {uid}: {plan} ({via})");
-            match launch::execute(&plan, ctx.dry_run) {
-                Ok(Outcome::DryRun) => {
-                    tracing::info!("{line} [dry run]");
-                    writeln!(out, "{line} [dry run]")?;
-                }
-                Ok(Outcome::Started) => {
-                    tracing::info!("{line}");
-                    writeln!(out, "{line}")?;
-                }
-                Err(e) => {
-                    tracing::warn!("{line}: failed to start: {e}");
-                    writeln!(out, "{line}: failed to start: {e}")?;
-                }
-            }
-        }
-        Resolution::UnknownId(slug) => {
-            tracing::warn!(%uid, "tag says id:{slug}, which is not in the config");
+        Notice::Reseated { uid } => writeln!(out, "reseated {uid}: not relaunching")?,
+        Notice::Removed { uid } => writeln!(out, "removed {uid}")?,
+        Notice::UnknownId { uid, slug } => {
             writeln!(
                 out,
                 "unknown tag {uid}: it says id:{slug}, but the config has no game with that id; \
                  not launching. Add {}:",
-                config_name(ctx.path.as_deref())
+                config_name(path)
             )?;
             snippet(out, &slug.to_string(), None)?;
         }
-        Resolution::Unmapped => {
-            tracing::warn!(%uid, "unknown tag: nothing usable on it and its UID is not mapped");
+        Notice::Unmapped { uid } => {
             writeln!(
                 out,
                 "unknown tag {uid}: nothing usable on it and its UID is not mapped; \
                  not launching. To map it, add {}:",
-                config_name(ctx.path.as_deref())
+                config_name(path)
             )?;
             snippet(out, "my-game", Some(uid))?;
         }
+        // Logged by the runner; the user sees the removal it causes.
+        Notice::ReaderLost { .. } => {}
+        Notice::ReaderReconnected { port } => writeln!(out, "reader reconnected on {port}")?,
+        Notice::ReaderStuck {
+            attempts, error, ..
+        } => writeln!(
+            out,
+            "reader still not back after {attempts} attempts: {error}"
+        )?,
     }
     Ok(())
 }
@@ -243,6 +199,7 @@ mod tests {
     use mini_launcher_core::payload::Payload;
     use std::collections::VecDeque;
     use std::io;
+    use std::sync::atomic::Ordering;
     use std::time::Duration;
 
     /// Advances on `sleep`; sets `stop` after `ticks` sleeps.
