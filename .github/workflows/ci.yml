@@ -62,6 +62,39 @@ jobs:
       - name: Release build
         run: cargo build --workspace --release --locked
 
+      # Fails unless the exe carries an icon group resource (RT_GROUP_ICON)
+      # embedded by app/cli/build.rs.
+      - name: Check exe icon resource (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Add-Type -TypeDefinition @'
+          using System;
+          using System.Runtime.InteropServices;
+          public static class PeIcons {
+              delegate bool EnumNameProc(IntPtr module, IntPtr type, IntPtr name, IntPtr param);
+              [DllImport("kernel32", SetLastError = true, CharSet = CharSet.Unicode)]
+              static extern IntPtr LoadLibraryExW(string path, IntPtr file, uint flags);
+              [DllImport("kernel32", SetLastError = true)]
+              static extern bool EnumResourceNamesW(IntPtr module, IntPtr type, EnumNameProc cb, IntPtr param);
+              [DllImport("kernel32")]
+              static extern bool FreeLibrary(IntPtr module);
+              public static int CountIconGroups(string path) {
+                  // LOAD_LIBRARY_AS_DATAFILE | LOAD_LIBRARY_AS_IMAGE_RESOURCE
+                  IntPtr module = LoadLibraryExW(path, IntPtr.Zero, 0x22);
+                  if (module == IntPtr.Zero) throw new System.ComponentModel.Win32Exception();
+                  int count = 0;
+                  EnumResourceNamesW(module, (IntPtr)14, (m, t, n, p) => { count++; return true; }, IntPtr.Zero);
+                  FreeLibrary(module);
+                  return count;
+              }
+          }
+          '@
+          $exe = Resolve-Path target/release/mini-launcher.exe
+          $groups = [PeIcons]::CountIconGroups($exe)
+          Write-Host "icon groups in ${exe}: $groups"
+          if ($groups -lt 1) { throw "mini-launcher.exe has no embedded icon" }
+
       - name: Upload binary
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
