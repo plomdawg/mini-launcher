@@ -9,6 +9,7 @@ mod autostart;
 mod diagnose;
 mod run;
 mod scan;
+mod steam;
 
 /// Launch games by inserting NFC-tagged carts into a reader.
 #[derive(Debug, Parser)]
@@ -59,6 +60,17 @@ enum Command {
         #[command(subcommand)]
         action: AutostartAction,
     },
+    /// Installed Steam games.
+    Steam {
+        #[command(subcommand)]
+        action: SteamAction,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum SteamAction {
+    /// List installed games (appid and name), sorted by name.
+    List,
 }
 
 #[derive(Debug, Subcommand)]
@@ -149,6 +161,9 @@ fn main() -> ExitCode {
             };
             autostart::run(&mut out, action)
         }
+        Command::Steam {
+            action: SteamAction::List,
+        } => steam::list(&mut out),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -224,6 +239,18 @@ mod tests {
         assert_eq!(port.as_deref(), Some("COM7"));
         assert!(Cli::try_parse_from(["mini-launcher", "autostart", "status"]).is_ok());
         assert!(Cli::try_parse_from(["mini-launcher", "autostart"]).is_err());
+    }
+
+    #[test]
+    fn steam_list_parses() {
+        let cli = Cli::try_parse_from(["mini-launcher", "steam", "list"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::Steam {
+                action: SteamAction::List
+            }
+        ));
+        assert!(Cli::try_parse_from(["mini-launcher", "steam"]).is_err());
     }
 
     #[test]

@@ -40,4 +40,9 @@ mod other {
     pub(crate) fn delete_run_value(_name: &str) -> Option<io::Result<()>> {
         None
     }
+
+    /// No registry: Steam's default paths are probed by `steam` instead.
+    pub(crate) fn steam_paths() -> Vec<std::path::PathBuf> {
+        Vec::new()
+    }
 }

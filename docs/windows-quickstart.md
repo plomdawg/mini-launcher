@@ -155,7 +155,8 @@ Write one tag with your phone using **NFC Tools**:
 
 1. Open **Write** → **Add a record** → **Text**.
 2. Enter `steam://` followed by the game's Steam app ID, for example `steam://440`. The app ID is
-   the number in the game's Steam store URL: `store.steampowered.com/app/440/...`.
+   the number in the game's Steam store URL: `store.steampowered.com/app/440/...`, or run
+   `.\mini-launcher.exe steam list` to see the app IDs of the games you have installed.
 3. Tap **Write** and hold the phone on the tag until it confirms.
 
 Use the **Text** record. Don't use the plain **URL** record: it adds `https://` in front, so the
