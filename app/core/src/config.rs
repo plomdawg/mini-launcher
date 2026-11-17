@@ -342,7 +342,7 @@ fn validate(raw: RawGame, emulators: &[Emulator]) -> Result<Game, String> {
 
 /// The plan for `rom` on `emulator`: its args with the `{rom}` argument
 /// replaced by the ROM path as one argument (never split or interpolated).
-fn emulator_plan(emulator: &Emulator, rom: PathBuf) -> LaunchPlan {
+pub fn emulator_plan(emulator: &Emulator, rom: PathBuf) -> LaunchPlan {
     let args = emulator
         .args
         .iter()

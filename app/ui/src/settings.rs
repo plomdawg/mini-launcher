@@ -69,6 +69,8 @@ pub enum Pick {
     Cwd,
     /// The emulator form's exe.
     EmulatorExe,
+    /// An emulator game's ROM file.
+    Rom,
 }
 
 pub struct Settings {
@@ -111,19 +113,10 @@ impl Settings {
         }
     }
 
-    /// Opens the form on game `i`. Emulator games are read-only here for
-    /// now: they are edited in `config.toml`.
+    /// Opens the form on game `i`.
     pub fn edit(&mut self, i: usize) {
-        self.problem = None;
         if let Some(game) = self.library.games().get(i) {
             self.selected = Some(i);
-            if matches!(game.plan, LaunchPlan::Emulator { .. }) {
-                self.problem = Some(format!(
-                    "\"{}\" uses an emulator; edit it in config.toml for now.",
-                    game.name
-                ));
-                return;
-            }
             self.form = Form::from_game(game);
             self.screen = Screen::Edit;
         }
@@ -270,6 +263,7 @@ impl Settings {
             Pick::EmulatorExe => PathBuf::from(&self.emulators.form.exe)
                 .parent()
                 .map(PathBuf::from),
+            Pick::Rom => PathBuf::from(&self.form.rom).parent().map(PathBuf::from),
         };
         Some((pick, current.filter(|p| p.is_dir())))
     }
@@ -288,6 +282,7 @@ impl Settings {
             }
             Pick::Cwd => self.form.cwd = text,
             Pick::EmulatorExe => self.emulators.form.exe = text,
+            Pick::Rom => self.form.rom = text,
         }
     }
 
@@ -604,6 +599,7 @@ fn field_w(ui: &Ui, button: bool) -> f32 {
 
 fn form(ui: &mut Ui, s: &mut Settings) {
     let indent = LABEL_W + ui.spacing().item_spacing.x;
+    let emulators = s.library.emulators();
     let f = &mut s.form;
     let mut browse = None;
     let mut write = false;
@@ -614,15 +610,40 @@ fn form(ui: &mut Ui, s: &mut Settings) {
             theme::field(ui, &mut f.name, field_w(ui, false), true, id);
         });
         note(ui, Field::Name);
+        let emulator = f.emulator.is_some();
         row(ui, "Launch with", |ui, _| {
-            if theme::choice(ui, f.steam, "Steam").clicked() {
-                f.steam = true;
+            if theme::choice(ui, f.steam && !emulator, "Steam").clicked() {
+                (f.steam, f.emulator) = (true, None);
             }
             ui.add_space(2.0 * U);
-            if theme::choice(ui, !f.steam, "Program").clicked() {
-                f.steam = false;
+            if theme::choice(ui, !f.steam && !emulator, "Program").clicked() {
+                (f.steam, f.emulator) = (false, None);
+            }
+            ui.add_space(2.0 * U);
+            // Offered once an emulator is set up (on the Emulators screen).
+            let first = emulators.first().map(|e| e.id.clone());
+            if first.is_some() && theme::choice(ui, emulator, "Emulator").clicked() && !emulator {
+                f.emulator = first;
             }
         });
+        if let Some(current) = f.emulator.clone() {
+            row(ui, "Runs on", |ui, _| {
+                for e in emulators {
+                    if theme::choice(ui, e.id == current, &e.name).clicked() {
+                        f.emulator = Some(e.id.clone());
+                    }
+                    ui.add_space(2.0 * U);
+                }
+            });
+            row(ui, "Game file", |ui, id| {
+                theme::field(ui, &mut f.rom, field_w(ui, true), true, id);
+                if theme::button(ui, "Browse", true, false).clicked() {
+                    browse = Some(Pick::Rom);
+                }
+            });
+            note(ui, Field::Rom);
+            return;
+        }
         let steam = f.steam;
         row(ui, "Steam app ID", |ui, id| {
             theme::field(ui, &mut f.app_id, 24.0 * U, steam, id);
