@@ -6,6 +6,7 @@
 pub mod library;
 pub mod settings;
 pub mod theme;
+pub mod transfer;
 #[cfg(feature = "window")]
 pub mod window;
 pub mod wizard;

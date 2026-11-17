@@ -96,7 +96,10 @@ struct TestHost {
 
 impl Host for TestHost {
     fn location(&self) -> Option<ConfigLocation> {
-        Some(ConfigLocation::Default(self.dir.clone()))
+        Some(ConfigLocation::resolve(&self.dir))
+    }
+    fn default_dir(&self) -> Option<PathBuf> {
+        Some(self.dir.clone())
     }
     fn reader(&self) -> ReaderStatus {
         ReaderStatus {
@@ -168,10 +171,21 @@ fn host(name: &str) -> Arc<TestHost> {
 }
 
 fn host_with_loop(name: &str) -> (Arc<TestHost>, Loop) {
-    let dir = std::env::temp_dir().join(format!(
+    host_at(std::env::temp_dir().join(format!(
         "mini-launcher-screens-{name}-{}",
         std::process::id()
-    ));
+    )))
+}
+
+/// The screenshots' host: a fixed folder, so the paths the config folder
+/// dialogs show are the same on every run.
+fn design_host() -> Arc<TestHost> {
+    let (host, run_loop) = host_at(std::env::temp_dir().join("mini-launcher").join("config"));
+    *host.server.lock().unwrap() = Some(run_loop.server);
+    host
+}
+
+fn host_at(dir: PathBuf) -> (Arc<TestHost>, Loop) {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let mut text = String::from("# My carts\n");
@@ -214,6 +228,13 @@ fn host_with_loop(name: &str) -> (Arc<TestHost>, Loop) {
         notices: Vec::new(),
     };
     (host, run_loop)
+}
+
+fn config_dir(s: &Settings) -> PathBuf {
+    match s.library.location() {
+        Some(ConfigLocation::Default(d)) => d.clone(),
+        other => panic!("{other:?}"),
+    }
 }
 
 fn harness(host: Arc<TestHost>, scale: f32) -> Harness<'static, Settings> {
@@ -414,6 +435,88 @@ fn write_tag_from_the_edit_form_and_cancel_goes_back_to_it() {
     assert!(!run_loop.server.is_active(), "cancel gives the reader back");
 }
 
+#[test]
+fn export_and_import_with_summary_and_confirm() {
+    let host = host("import");
+    let out = host.dir.join("backup.toml");
+    let mut h = harness(host.clone(), 1.0);
+    h.run();
+    h.state_mut().export_to(out.clone());
+    h.run();
+    h.get_by_label(&format!("Saved 11 games to {}.", out.display()));
+    h.get_by_label("OK").click();
+    h.run();
+    assert!(h.state().transfer.dialog.is_none());
+
+    std::fs::write(host.dir.join("config.toml"), "").unwrap();
+    h.run();
+    assert_eq!(h.state().library.games().len(), 0);
+    h.state_mut().import_from(out.clone());
+    h.run();
+    // Cancel changes nothing.
+    h.get_by_label("Cancel").click();
+    h.run();
+    assert_eq!(host.config(), "");
+    h.state_mut().import_from(out);
+    h.run();
+    h.get_all_by_label("Import").last().unwrap().click();
+    h.run();
+    assert_eq!(h.state().library.games().len(), GAMES.len());
+    assert_eq!(host.saves.load(Ordering::SeqCst), 1);
+
+    // A bad file is reported inline and imports nothing.
+    let bad = host.dir.join("bad.toml");
+    std::fs::write(&bad, "[[games]]\nid = \"x\"\n").unwrap();
+    h.get_by_label("OK").click();
+    h.run();
+    h.state_mut().import_from(bad);
+    h.run();
+    assert!(h
+        .state()
+        .problem
+        .as_deref()
+        .unwrap()
+        .starts_with("Not imported"));
+    assert!(h.state().transfer.dialog.is_none());
+}
+
+#[test]
+fn config_folder_moves_and_resets() {
+    let host = host("folder");
+    let synced = host.dir.join("synced");
+    std::fs::create_dir(&synced).unwrap();
+    let mut h = harness(host.clone(), 1.0);
+    h.run();
+    h.get_by_label("Folder...").click();
+    h.run();
+    h.get_by_label("Default folder:");
+    h.state_mut().move_to(synced.clone());
+    h.run();
+    // Empty folder: the library is copied there and the tray told.
+    assert_eq!(
+        host.location(),
+        Some(ConfigLocation::Override(synced.clone()))
+    );
+    assert_eq!(h.state().library.games().len(), GAMES.len());
+    assert_eq!(host.saves.load(Ordering::SeqCst), 1);
+    h.get_by_label("OK").click();
+    h.run();
+
+    // Reset: the default folder has a config, so the user chooses.
+    std::fs::write(host.dir.join("config.toml"), "").unwrap();
+    h.get_by_label("Folder...").click();
+    h.run();
+    h.get_by_label("Reset to default").click();
+    h.run();
+    h.get_by_label("Use the one there").click();
+    h.run();
+    assert_eq!(
+        host.location(),
+        Some(ConfigLocation::Default(host.dir.clone()))
+    );
+    assert_eq!(h.state().library.games().len(), 0);
+}
+
 /// `cargo test -p mini-launcher-ui -- --ignored` writes the PNGs (needs a
 /// wgpu adapter; on Linux, Mesa's lavapipe works).
 #[test]
@@ -422,7 +525,7 @@ fn design_screenshots() {
     let out = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/design");
     std::fs::create_dir_all(&out).unwrap();
     type Setup = fn(&mut Settings);
-    let shots: [(&str, Setup); 11] = [
+    let shots: [(&str, Setup); 14] = [
         ("library", |_| {}),
         ("edit-game", |s| s.edit(0)),
         ("add-game-errors", |s| {
@@ -483,10 +586,23 @@ fn design_screenshots() {
                 },
             };
         }),
+        ("import-confirm", |s| {
+            let dir = config_dir(s);
+            let out = dir.join("mini-launcher-backup-2026-11-17.toml");
+            s.export_to(out.clone());
+            s.import_from(out);
+        }),
+        ("config-folder", |s| s.open_folder()),
+        ("config-folder-existing", |s| {
+            let synced = config_dir(s).parent().unwrap().join("OneDrive");
+            std::fs::create_dir_all(&synced).unwrap();
+            std::fs::write(synced.join("config.toml"), "").unwrap();
+            s.move_to(synced);
+        }),
     ];
     for (name, setup) in shots {
         for scale in [1.0, 2.0] {
-            let mut h = harness(host(name), scale);
+            let mut h = harness(design_host(), scale);
             setup(h.state_mut());
             h.run();
             let image = h.render().expect("render");

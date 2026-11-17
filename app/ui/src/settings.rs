@@ -2,12 +2,14 @@
 //! the real config (see [`crate::library`]). Plain egui, so they are
 //! tested headlessly; the native window is in `window`.
 
+pub mod backup;
+
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use egui::{pos2, vec2, Align, Layout, Rect, Sense, Ui};
-use mini_launcher_core::config::format_uid;
 use mini_launcher_core::config::location::ConfigLocation;
+use mini_launcher_core::config::{format_uid, Config};
 use mini_launcher_core::launch::LaunchPlan;
 use mini_launcher_core::payload::Slug;
 use mini_launcher_core::steam::SteamGame;
@@ -31,6 +33,15 @@ pub trait Host: Send + Sync {
     fn steam_games(&self) -> Result<Vec<SteamGame>, String>;
     /// Starts `plan` now (the wizard's "Launch now").
     fn launch(&self, plan: &LaunchPlan) -> Result<(), String>;
+    /// The default config folder, where `location.toml` lives.
+    fn default_dir(&self) -> Option<PathBuf> {
+        Config::default_dir()
+    }
+    /// The window changed `location.toml`: switch to the new folder now
+    /// (so [`Host::location`] returns it from this call on).
+    fn moved(&self) {
+        self.saved();
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -70,6 +81,8 @@ pub struct Settings {
     /// back to the run loop.
     pub wizard: Option<Wizard>,
     pub(crate) browse: Option<Pick>,
+    /// Export / import / config folder dialogs.
+    pub transfer: backup::Transfer,
 }
 
 impl Settings {
@@ -86,6 +99,7 @@ impl Settings {
             problem: None,
             wizard: None,
             browse: None,
+            transfer: backup::Transfer::default(),
         }
     }
 
@@ -421,12 +435,11 @@ fn library(ui: &mut Ui, s: &mut Settings) {
             s.ask_remove(s.selected.unwrap_or_default());
         }
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            // Export and import come with #78.
-            theme::button(ui, "Import", false, false);
-            theme::button(ui, "Export", false, false);
+            backup::toolbar(ui, s);
         });
     });
     ui.add_space(U);
+    backup::dialogs(ui, s);
     if let Some(problem) = s.library.problem() {
         let problem = format!("The library can't be shown: {problem}");
         theme::warning(ui, 0.0, &problem);
