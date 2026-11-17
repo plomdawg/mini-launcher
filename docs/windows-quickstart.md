@@ -23,8 +23,11 @@ Actions. You need to be signed in to GitHub to download it.
 5. Unzip it. Inside is `nfc-launcher.exe`. Move it somewhere permanent, for example
    `C:\Tools\nfc-launcher\`.
 
-The `.exe` isn't code-signed yet, so the first time you run it Windows SmartScreen may say
-"Windows protected your PC". Click **More info**, then **Run anyway**.
+The `.exe` isn't code-signed yet. If you start it from File Explorer, Windows SmartScreen may
+say "Windows protected your PC": click **More info**, then **Run anyway**. Starting it from
+PowerShell (below) usually skips that prompt. If Windows still blocks it, right-click the zip →
+**Properties** → tick **Unblock** → **OK** before unzipping, or run
+`Unblock-File .\nfc-launcher.exe` in PowerShell.
 
 `nfc-launcher.exe` is a **console program**: double-clicking it just flashes a window. Run it
 from PowerShell or Windows Terminal instead:
@@ -52,11 +55,16 @@ writes the commands as `.\nfc-launcher.exe ...`.
    |---|---|
    | TX | RX |
    | RX | TX |
-   | VCC | VCC |
+   | **5V** | VCC |
    | GND | GND |
 
    TX and RX are **crossed**: the adapter's TX goes to the board's RX, and the adapter's RX goes to
    the board's TX.
+
+   Power the board from the adapter's **5V** pin, **not 3V3**. The board has its own 3.3 V
+   regulator, so 5V is safe. The adapter's 3V3 pin can't supply enough current for the reader,
+   which then doesn't answer. If the adapter has a jumper for the logic level (3.3V / 5V), set it
+   to **3.3V**. If it has no jumper, that's fine too.
 3. **Plug the adapter into a USB port.** Windows normally installs the driver by itself.
 4. **Find the COM port.** Open **Device Manager** (right-click the Start button) and expand
    **Ports (COM & LPT)**. The adapter shows up as **USB-SERIAL CH340 (COMx)**, for example
@@ -90,7 +98,7 @@ OK: the reader is answering.
 
 Note the **`Config:`** line: that's where your config file goes (step 6).
 
-If it fails, the last line starts with `error:`:
+If it fails, it prints a message starting with `error:`, often followed by a hint:
 
 | Error says | What to do |
 |---|---|
@@ -98,7 +106,7 @@ If it fails, the last line starts with `error:`:
 | `no CH340 reader adapter found among these ports` | Your adapter isn't a CH340. Pick its port from the list and run `diagnose --port COM3` (with your number). |
 | `more than one CH340 adapter found` | Unplug the other one, or pick one with `--port`. |
 | `COM port not found or in use by another program` | Wrong port number, or another program has the port open. Close serial monitors, the Arduino IDE, and any other `nfc-launcher` window. |
-| `no reply from the PN532` | The adapter works but the board doesn't answer. Check that both DIP switches are OFF, that TX/RX are crossed, and that VCC and GND are connected. |
+| `no reply from the PN532` or `cannot configure the PN532 on COM3` | The adapter works but the board doesn't answer properly. Check that both DIP switches are OFF, that TX/RX are crossed, that the board's VCC is on the adapter's **5V** pin (not 3V3), and that GND is connected. |
 
 `diagnose --all` also lists non-USB ports (like a motherboard `COM1`), which are hidden by
 default.
@@ -179,8 +187,8 @@ to rewrite. On Windows it lives at:
 which is usually `C:\Users\<you>\AppData\Roaming\nfc-launcher\config\config.toml`. Note the extra
 `config` folder. `diagnose` prints the exact path on its `Config:` line. The file isn't created
 for you: make the folders and create the file with Notepad (in the Save dialog, choose **All
-files** so Notepad doesn't add `.txt`). `run --config <PATH>` loads a different file instead,
-which is handy for trying out changes.
+files** so Notepad doesn't add `.txt`). `run --config <PATH>` loads that file instead of the
+default one, which is handy for trying out changes.
 
 Example with one Steam game, one game started from an `.exe`, and one tag mapped by its UID:
 
@@ -203,7 +211,7 @@ cwd = 'C:\Games\MyGame'
 [[games]]
 id = "portal"
 name = "Portal"
-uid = "04A1B2C3D4E5F6"
+uid = "04C1D2E3F40A1B"
 steam_appid = 400
 ```
 
@@ -254,7 +262,7 @@ gets a similar message with that `id` filled in.
 |---|---|
 | Double-clicking the `.exe` just flashes a window | It's a console program. Run it from PowerShell (step 1). |
 | "Windows protected your PC" | **More info** → **Run anyway**. |
-| `no reply from the PN532` | DIP switches both OFF, TX/RX crossed, VCC and GND connected. |
+| `no reply from the PN532` or `cannot configure the PN532` | DIP switches both OFF, TX/RX crossed, board VCC on the adapter's **5V** pin (not 3V3), GND connected. |
 | `COM port not found or in use by another program` | Check the COM number in Device Manager. Close any other program using the port, including a second `nfc-launcher` window. |
 | `no CH340 reader adapter found` | Your adapter is a different chip. Pass `--port COM3` (your number). |
 | `lost the reader on COM3` | The adapter was unplugged or dropped off USB. Plug it back in and start again. |
