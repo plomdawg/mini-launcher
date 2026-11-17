@@ -8,8 +8,15 @@
 //! (`run_and_return`) for every opening. The window, its wgpu surface and
 //! device belong to one opening and are dropped when it closes, so the
 //! process goes back to its idle footprint.
+//!
+//! Closing: eframe drops the window on `CloseRequested` and only leaves the
+//! loop on a later window event (`Destroyed`). winit queues events that
+//! arrive while one is being handled and delivers them on the next wake-up,
+//! so with `ControlFlow::Wait` and nothing else coming, the loop could sleep
+//! forever on a destroyed window (#88). [`App::on_exit`] therefore starts a
+//! [`Nudge`] that wakes the thread until the loop has returned.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -41,6 +48,55 @@ pub struct SettingsWindow {
     open: Arc<AtomicBool>,
     /// The open window's context, to focus or close it from another thread.
     ctx: Arc<Mutex<Option<egui::Context>>>,
+    nudge: Nudge,
+}
+
+/// Wakes the window thread's event loop while a closed window's loop has
+/// not returned yet.
+#[derive(Clone, Default)]
+struct Nudge {
+    /// Set by `on_exit` (the window is gone) until the loop has returned.
+    closing: Arc<AtomicBool>,
+    /// The window thread's id (Win32), 0 until it started.
+    #[cfg_attr(not(windows), allow(dead_code))]
+    thread_id: Arc<AtomicU32>,
+}
+
+impl Nudge {
+    const EVERY: Duration = Duration::from_millis(50);
+    const GIVE_UP: Duration = Duration::from_secs(10);
+
+    /// Wakes the loop until it returns (or for [`Self::GIVE_UP`]).
+    fn start(&self) {
+        self.closing.store(true, Ordering::SeqCst);
+        let nudge = self.clone();
+        let spawned = thread::Builder::new()
+            .name("settings-window-nudge".into())
+            .spawn(move || {
+                let start = Instant::now();
+                while nudge.closing.load(Ordering::SeqCst) && start.elapsed() < Self::GIVE_UP {
+                    thread::sleep(Self::EVERY);
+                    nudge.wake();
+                }
+            });
+        if spawned.is_err() {
+            self.wake();
+        }
+    }
+
+    /// Posts an empty thread message: winit wakes up and delivers the
+    /// events it queued (and the dispatcher ignores the message itself).
+    fn wake(&self) {
+        #[cfg(windows)]
+        {
+            use windows_sys::Win32::UI::WindowsAndMessaging::{PostThreadMessageW, WM_NULL};
+            let id = self.thread_id.load(Ordering::SeqCst);
+            if id != 0 {
+                // SAFETY: plain message post; fails harmlessly if the thread is gone.
+                unsafe { PostThreadMessageW(id, WM_NULL, 0, 0) };
+            }
+        }
+    }
 }
 
 impl SettingsWindow {
@@ -49,15 +105,23 @@ impl SettingsWindow {
         let (requests, rx) = mpsc::channel::<()>();
         let open = Arc::new(AtomicBool::new(false));
         let ctx = Arc::new(Mutex::new(None));
+        let nudge = Nudge::default();
         let thread = thread::Builder::new()
             .name("settings-window".into())
             .spawn({
-                let (open, ctx) = (open.clone(), ctx.clone());
+                let (open, ctx, nudge) = (open.clone(), ctx.clone(), nudge.clone());
                 move || {
+                    #[cfg(windows)]
+                    nudge.thread_id.store(
+                        // SAFETY: no preconditions.
+                        unsafe { windows_sys::Win32::System::Threading::GetCurrentThreadId() },
+                        Ordering::SeqCst,
+                    );
                     while rx.recv().is_ok() {
                         let _ = events.send(Event::Opened);
-                        let result = run(&ctx, &host).map_err(|e| e.to_string());
+                        let result = run(&ctx, &host, &nudge).map_err(|e| e.to_string());
                         *lock(&ctx) = None;
+                        nudge.closing.store(false, Ordering::SeqCst);
                         open.store(false, Ordering::SeqCst);
                         let _ = events.send(Event::Closed(result));
                     }
@@ -68,12 +132,17 @@ impl SettingsWindow {
             thread: Some(thread),
             open,
             ctx,
+            nudge,
         })
     }
 
     /// Opens the window, or brings the open one to the front.
     pub fn show(&self) {
         if self.open.swap(true, Ordering::SeqCst) {
+            // Still closing: make sure the loop gets to finish.
+            if self.nudge.closing.load(Ordering::SeqCst) {
+                self.nudge.wake();
+            }
             if let Some(ctx) = lock(&self.ctx).as_ref() {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
                 ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
@@ -140,6 +209,7 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 fn run(
     ctx_slot: &Arc<Mutex<Option<egui::Context>>>,
     host: &Arc<dyn Host>,
+    nudge: &Nudge,
 ) -> Result<(), eframe::Error> {
     let mut viewport = egui::ViewportBuilder::default()
         .with_title("Mini Launcher")
@@ -164,19 +234,19 @@ fn run(
         })),
         ..Default::default()
     };
-    let (ctx_slot, host) = (ctx_slot.clone(), host.clone());
+    let (ctx_slot, host, nudge) = (ctx_slot.clone(), host.clone(), nudge.clone());
     eframe::run_native(
         "mini-launcher-settings",
         options,
         Box::new(move |cc| {
             theme::install(&cc.egui_ctx);
             *lock(&ctx_slot) = Some(cc.egui_ctx.clone());
-            Ok(Box::new(App(Settings::new(host))))
+            Ok(Box::new(App(Settings::new(host), nudge)))
         }),
     )
 }
 
-struct App(Settings);
+struct App(Settings, Nudge);
 
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
@@ -195,6 +265,11 @@ impl eframe::App for App {
                 }
             }
         }
+    }
+
+    /// The window is being dropped: see the module docs.
+    fn on_exit(&mut self) {
+        self.1.start();
     }
 }
 
