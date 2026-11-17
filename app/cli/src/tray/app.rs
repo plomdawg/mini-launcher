@@ -233,7 +233,10 @@ fn work(
     let mut last_state = None;
     let mut polls = 0u32;
     let next = |runner: &mut Runner, now| {
-        runner.set_paused(paused.load(Ordering::Relaxed));
+        // Paused: the reader idles with its RF field off (no polling).
+        let is_paused = paused.load(Ordering::Relaxed);
+        runner.set_paused(is_paused);
+        reader.set_paused(is_paused);
         polls = polls.wrapping_add(1);
         if let Some(path) = config_path
             .as_deref()

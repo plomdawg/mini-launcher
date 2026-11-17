@@ -170,6 +170,14 @@ impl<T: Transport> Pn532<T> {
         Ok(())
     }
 
+    /// RFConfiguration item `RF field`: switches the antenna field on or
+    /// off. Bit 0 is the field, bit 1 AutoRFCA (collision avoidance, only
+    /// used in active mode), which stays off as after power-up.
+    pub fn rf_field(&mut self, on: bool) -> Result<(), Pn532Error> {
+        self.command(&[CMD_RF_CONFIGURATION, 0x01, u8::from(on)])?;
+        Ok(())
+    }
+
     /// Looks for one ISO/IEC 14443 type A target at 106 kbps.
     pub fn in_list_passive_target_106a(&mut self) -> Result<Option<Target>, Pn532Error> {
         const CMD: u8 = CMD_IN_LIST_PASSIVE_TARGET;
@@ -400,6 +408,12 @@ mod tests {
         0x00, 0x00, 0xFF, 0x06, 0xFA, 0xD4, 0x32, 0x05, 0x02, 0x01, 0xFE, 0xF4, 0x00,
     ];
     const RF_RESP: &[u8] = &[0x00, 0x00, 0xFF, 0x02, 0xFE, 0xD5, 0x33, 0xF8, 0x00];
+    const FIELD_OFF_REQ: &[u8] = &[
+        0x00, 0x00, 0xFF, 0x04, 0xFC, 0xD4, 0x32, 0x01, 0x00, 0xF9, 0x00,
+    ];
+    const FIELD_ON_REQ: &[u8] = &[
+        0x00, 0x00, 0xFF, 0x04, 0xFC, 0xD4, 0x32, 0x01, 0x01, 0xF8, 0x00,
+    ];
     const LIST_REQ: &[u8] = &[
         0x00, 0x00, 0xFF, 0x04, 0xFC, 0xD4, 0x4A, 0x01, 0x00, 0xE1, 0x00,
     ];
@@ -508,6 +522,15 @@ mod tests {
             p.rf_configuration_max_retries(0xFF).unwrap(); // clamped to 0xFE
             p.in_release().unwrap();
             assert_eq!(written(p), [&WAKEUP, SAM_REQ, RF_REQ, REL_REQ].concat());
+        }
+    }
+
+    #[test]
+    fn rf_field_off_and_on() {
+        for mut p in drivers(&[&ACK, RF_RESP, &ACK, RF_RESP]) {
+            p.rf_field(false).unwrap();
+            p.rf_field(true).unwrap();
+            assert_eq!(written(p), [FIELD_OFF_REQ, FIELD_ON_REQ].concat());
         }
     }
 

@@ -45,7 +45,8 @@ click **More info**, then **Run anyway**. If Windows still blocks it, right-clic
 
 The tray app runs in the background without a console window: use its notification-area icon
 to pause, open the config or logs, turn **Start at login** on or off, or quit. It works like
-`mini-launcher run`, and only one of the two can use the reader at a time.
+`mini-launcher run`, and only one of the two can use the reader at a time. Pausing switches the
+reader's antenna off until you resume; a cart left in the reader does not launch on resume.
 
 **Updating:** run the newer setup; it replaces the installed version and keeps your settings.
 If Mini Launcher is running, setup asks you to quit it first (tray icon → **Quit**).

@@ -109,6 +109,9 @@ pub enum Tick<E> {
     },
     /// Disconnected, waiting for the next reopen attempt.
     Waiting,
+    /// Paused (see [`Reconnector::set_paused`]): the reader is idle and was
+    /// not polled.
+    Paused,
 }
 
 /// A reader that is reopened by `open` whenever polling it fails. `open`
@@ -124,6 +127,10 @@ pub struct Reconnector<R, F> {
     lost_at: Option<Instant>,
     /// Whether [`Tick::Stuck`] was reported for the current outage.
     stuck_reported: bool,
+    /// Whether polling should stop (see [`Self::set_paused`]).
+    paused: bool,
+    /// Whether the open reader has been paused ([`Reader::pause`]).
+    idle: bool,
 }
 
 impl<R, F, E> Reconnector<R, F>
@@ -142,6 +149,8 @@ where
             retry_at: None,
             lost_at: None,
             stuck_reported: false,
+            paused: false,
+            idle: false,
         }
     }
 
@@ -162,7 +171,18 @@ where
             retry_at: None,
             lost_at: None,
             stuck_reported: false,
+            paused: false,
+            idle: false,
         }
+    }
+
+    /// While paused the reader is idled once ([`Reader::pause`], e.g. RF
+    /// field off) and then left alone: no traffic at all, so a reader
+    /// unplugged meanwhile is only noticed on resume, when
+    /// [`Reader::resume`] or the first poll fails. Reopening after a loss
+    /// goes on while paused, and a reopened reader is idled straight away.
+    pub fn set_paused(&mut self, paused: bool) {
+        self.paused = paused;
     }
 
     pub fn state(&self) -> &ReaderState {
@@ -173,10 +193,20 @@ where
     /// passed. Call once per poll interval.
     pub fn tick(&mut self, now: Instant) -> Tick<R::Error> {
         if let Some(reader) = &mut self.reader {
-            return match reader.poll() {
-                Ok(reading) => Tick::Reading(reading),
+            let polled = match (self.paused, self.idle) {
+                (true, true) => return Tick::Paused,
+                (true, false) => reader.pause().map(|()| None),
+                (false, true) => reader.resume().and_then(|()| reader.poll().map(Some)),
+                (false, false) => reader.poll().map(Some),
+            };
+            return match polled {
+                Ok(polled) => {
+                    self.idle = self.paused;
+                    polled.map_or(Tick::Paused, Tick::Reading)
+                }
                 Err(error) => {
                     self.reader = None;
+                    self.idle = false;
                     let port = match &self.state {
                         ReaderState::Connected { port } => port.clone(),
                         ReaderState::Reconnecting { last_port, .. } => last_port.clone(),
@@ -199,6 +229,7 @@ where
         match (self.open)() {
             Ok((port, reader)) => {
                 self.reader = Some(reader);
+                self.idle = false;
                 self.backoff.reset();
                 self.retry_at = None;
                 self.lost_at = None;
@@ -248,16 +279,43 @@ mod tests {
     use super::*;
     use crate::payload::Payload;
     use crate::reader::Uid;
+    use std::cell::RefCell;
     use std::collections::VecDeque;
     use std::io;
+    use std::rc::Rc;
 
-    /// Replays polls; `Err` is a port I/O error. Runs dry → no tag.
-    struct Fake(VecDeque<io::Result<Option<Reading>>>);
+    /// Replays polls; `Err` is a port I/O error. Runs dry → no tag. Calls
+    /// go to `log`; `resume` fails if the next scripted poll is an error.
+    struct Fake {
+        polls: VecDeque<io::Result<Option<Reading>>>,
+        log: Rc<RefCell<String>>,
+    }
+
+    impl Fake {
+        fn new<const N: usize>(polls: [io::Result<Option<Reading>>; N]) -> Fake {
+            Fake {
+                polls: polls.into(),
+                log: Rc::default(),
+            }
+        }
+    }
 
     impl Reader for Fake {
         type Error = io::Error;
         fn poll(&mut self) -> io::Result<Option<Reading>> {
-            self.0.pop_front().unwrap_or(Ok(None))
+            self.log.borrow_mut().push('.');
+            self.polls.pop_front().unwrap_or(Ok(None))
+        }
+        fn pause(&mut self) -> io::Result<()> {
+            self.log.borrow_mut().push('P');
+            Ok(())
+        }
+        fn resume(&mut self) -> io::Result<()> {
+            self.log.borrow_mut().push('R');
+            match self.polls.front() {
+                Some(Err(_)) => self.polls.pop_front().unwrap().map(drop),
+                _ => Ok(()),
+            }
         }
     }
 
@@ -289,10 +347,10 @@ mod tests {
             if opens < 3 {
                 Err("no reader")
             } else {
-                Ok(("COM9".to_owned(), Fake([tag()].into())))
+                Ok(("COM9".to_owned(), Fake::new([tag()])))
             }
         };
-        let first = Fake([tag(), gone()].into());
+        let first = Fake::new([tag(), gone()]);
         let mut r = Reconnector::new("COM7".into(), first, open, Backoff::default());
         let t0 = Instant::now();
         let at = |ms| t0 + Duration::from_millis(ms);
@@ -326,13 +384,8 @@ mod tests {
 
     #[test]
     fn backoff_restarts_after_a_successful_reopen() {
-        let open = || Ok::<_, &str>(("COM7".to_owned(), Fake([gone()].into())));
-        let mut r = Reconnector::new(
-            "COM7".into(),
-            Fake([gone()].into()),
-            open,
-            Backoff::default(),
-        );
+        let open = || Ok::<_, &str>(("COM7".to_owned(), Fake::new([gone()])));
+        let mut r = Reconnector::new("COM7".into(), Fake::new([gone()]), open, Backoff::default());
         let t0 = Instant::now();
         for _ in 0..5 {
             assert!(matches!(r.tick(t0), Tick::Lost { .. }));
@@ -360,7 +413,7 @@ mod tests {
     #[test]
     fn a_stuck_reconnect_is_reported_once_with_the_latest_reason() {
         let open = failing(&["port busy", "port busy", "no reply from the PN532"]);
-        let first = Fake([gone()].into());
+        let first = Fake::new([gone()]);
         let mut r = Reconnector::new("COM7".into(), first, open, Backoff::default());
         let t0 = Instant::now();
         let mut now = t0;
@@ -404,7 +457,7 @@ mod tests {
         let backoff = Backoff::new(Duration::from_secs(20), Duration::from_secs(20));
         let mut r = Reconnector::new(
             "COM7".into(),
-            Fake([gone()].into()),
+            Fake::new([gone()]),
             failing(&["port busy"]),
             backoff,
         );
@@ -422,13 +475,13 @@ mod tests {
         let open = || {
             opens += 1;
             match opens {
-                6 => Ok(("COM7".to_owned(), Fake([gone()].into()))),
+                6 => Ok(("COM7".to_owned(), Fake::new([gone()]))),
                 _ => Err("port busy"),
             }
         };
         let mut r = Reconnector::new(
             "COM7".into(),
-            Fake([gone()].into()),
+            Fake::new([gone()]),
             open,
             Backoff::new(Duration::ZERO, Duration::ZERO),
         );
@@ -442,6 +495,7 @@ mod tests {
                 Tick::Reconnected { .. } => 'R',
                 Tick::Waiting => 'w',
                 Tick::Reading(_) => '.',
+                Tick::Paused => 'p',
             })
             .collect();
         // Five failed opens (the fifth stuck), a reconnect, then a new loss.
@@ -456,7 +510,7 @@ mod tests {
             if opens < 3 {
                 Err("no CH340 adapter found")
             } else {
-                Ok(("COM7".to_owned(), Fake([tag()].into())))
+                Ok(("COM7".to_owned(), Fake::new([tag()])))
             }
         };
         let mut r = Reconnector::unopened("reader".into(), open, Backoff::default());
@@ -472,5 +526,46 @@ mod tests {
         assert!(matches!(r.tick(at(500)), Tick::Waiting)); // attempt 2
         assert!(matches!(r.tick(at(1500)), Tick::Reconnected { port } if port == "COM7"));
         assert!(matches!(r.tick(at(1700)), Tick::Reading(Some(_))));
+    }
+
+    #[test]
+    fn pausing_idles_the_reader_once_and_resuming_polls_again() {
+        let first = Fake::new([tag(), tag(), tag()]);
+        let log = first.log.clone();
+        let open = || Err::<(String, Fake), _>("unused");
+        let mut r = Reconnector::new("COM7".into(), first, open, Backoff::default());
+        let t0 = Instant::now();
+        assert!(matches!(r.tick(t0), Tick::Reading(Some(_))));
+        r.set_paused(true);
+        for _ in 0..3 {
+            assert!(matches!(r.tick(t0), Tick::Paused));
+        }
+        r.set_paused(false);
+        assert!(matches!(r.tick(t0), Tick::Reading(Some(_))));
+        assert!(matches!(r.tick(t0), Tick::Reading(Some(_))));
+        assert_eq!(*log.borrow(), ".PR..");
+    }
+
+    #[test]
+    fn a_reader_lost_while_paused_is_noticed_on_resume_and_reopened_idle() {
+        let first = Fake::new([gone()]);
+        let next = Fake::new([tag()]);
+        let log = next.log.clone();
+        let mut next = Some(next);
+        let open = || Ok::<_, &str>(("COM9".to_owned(), next.take().unwrap()));
+        let mut r = Reconnector::new("COM7".into(), first, open, Backoff::default());
+        let t0 = Instant::now();
+        r.set_paused(true);
+        assert!(matches!(r.tick(t0), Tick::Paused));
+        r.set_paused(false);
+        assert!(matches!(r.tick(t0), Tick::Lost { port, .. } if port == "COM7"));
+        r.set_paused(true);
+        let back = t0 + Backoff::FIRST;
+        assert!(matches!(r.tick(back), Tick::Reconnected { .. }));
+        assert!(matches!(r.tick(back), Tick::Paused)); // idled straight away
+        assert!(matches!(r.tick(back), Tick::Paused));
+        r.set_paused(false);
+        assert!(matches!(r.tick(back), Tick::Reading(Some(_))));
+        assert_eq!(*log.borrow(), "PR.");
     }
 }
