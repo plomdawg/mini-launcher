@@ -93,7 +93,7 @@ nothing usable: it's reported once with its UID, so it can be mapped.
 
 If a tag you wrote shows up as unusable (for example because it was slid in slowly or sat at the
 edge of the antenna), lift it off the reader for more than five seconds and put it back. A tag
-that's only briefly lifted counts as re-seated and isn't read again.
+that's only briefly lifted counts as re-seated and isn't launched again.
 
 ## Security model
 
