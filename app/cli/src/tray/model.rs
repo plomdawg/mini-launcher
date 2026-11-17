@@ -2,9 +2,10 @@
 //! loop's notices, so it is tested on every OS.
 
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+use mini_launcher_core::config::location::ConfigLocation;
 use mini_launcher_core::reconnect::ReaderState;
 use mini_launcher_core::runner::Notice;
 
@@ -22,8 +23,9 @@ pub struct View {
     pub pause_label: &'static str,
 }
 
-/// `reader` is `None` until the first open attempt has run.
-pub fn view(reader: Option<&ReaderState>, paused: bool) -> View {
+/// `reader` is `None` until the first open attempt has run; `config_problem`
+/// is why the config folder is unavailable, if it is.
+pub fn view(reader: Option<&ReaderState>, paused: bool, config_problem: Option<&str>) -> View {
     let reader = match reader {
         None => "starting…".to_owned(),
         Some(ReaderState::Connected { port }) => format!("ready ({port})"),
@@ -32,11 +34,15 @@ pub fn view(reader: Option<&ReaderState>, paused: bool) -> View {
             None => "reader not found, retrying…".to_owned(),
         },
     };
-    let (tooltip, status) = if paused {
+    let (mut tooltip, mut status) = if paused {
         ("paused".to_owned(), format!("Paused — {reader}"))
     } else {
         (reader.clone(), capitalize(&reader))
     };
+    if let Some(problem) = config_problem {
+        tooltip = format!("{tooltip}; {problem}");
+        status = format!("{status}; {problem}");
+    }
     View {
         tooltip: truncate_utf16(&format!("{APP} — {tooltip}"), TOOLTIP_MAX),
         status,
@@ -71,6 +77,9 @@ fn truncate_utf16(s: &str, max: usize) -> String {
     out
 }
 
+/// The notification title while the config folder is unavailable.
+pub const CONFIG_UNAVAILABLE: &str = "Config folder unavailable";
+
 /// How a notification is shown: an info or a warning icon.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Level {
@@ -80,9 +89,23 @@ pub enum Level {
 
 /// The balloon (level, title, text) for notices the user should see;
 /// everything else only goes to the log. A failed launch is a warning; an
-/// unknown cart is the user's to map, so it is info.
-pub fn notification(notice: &Notice) -> Option<(Level, &'static str, String)> {
+/// unknown cart is the user's to map, so it is info. While the config folder
+/// is unavailable (`config_problem`), a cart that needs the config says so.
+pub fn notification(
+    notice: &Notice,
+    config_problem: Option<&str>,
+) -> Option<(Level, &'static str, String)> {
     match notice {
+        Notice::UnknownId { uid, .. } | Notice::Unmapped { uid } if config_problem.is_some() => {
+            Some((
+                Level::Warning,
+                CONFIG_UNAVAILABLE,
+                format!(
+                    "Tag {uid} needs config.toml, but {}.",
+                    config_problem.unwrap_or_default()
+                ),
+            ))
+        }
         Notice::LaunchFailed { plan, error, .. } => Some((
             Level::Warning,
             "Could not start the game",
@@ -147,24 +170,51 @@ pub const CONFIG_TEMPLATE: &str = r#"# Mini Launcher library. Changes are picked
 # cwd = 'C:\Games\MyGame'         # optional
 "#;
 
-/// Creates `path` (and its folder) from [`CONFIG_TEMPLATE`] unless it
-/// exists. Returns whether it was created.
-pub fn ensure_config(path: &Path) -> io::Result<bool> {
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
+/// What "Open config" found.
+#[derive(Debug, PartialEq, Eq)]
+pub enum OpenConfig {
+    /// The file to open; `created` if it was just made from the template.
+    Ready { path: PathBuf, created: bool },
+    /// The config folder is unavailable (why); nothing was created.
+    Unavailable(String),
+}
+
+/// Creates the config file from [`CONFIG_TEMPLATE`] unless it exists. Only
+/// the default folder is created if missing: an override folder that went
+/// away is reported, never recreated (that would split the library in two).
+pub fn ensure_config(location: &ConfigLocation) -> io::Result<OpenConfig> {
+    let path = match location.writable_file() {
+        Ok(path) => path,
+        Err(e) => return Ok(OpenConfig::Unavailable(e.to_string())),
+    };
+    if location.may_create_dir() {
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
     }
-    match std::fs::OpenOptions::new()
+    let created = match std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
-        .open(path)
+        .open(&path)
     {
         Ok(mut file) => {
             io::Write::write_all(&mut file, CONFIG_TEMPLATE.as_bytes())?;
-            Ok(true)
+            true
         }
-        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => Ok(false),
-        Err(e) => Err(e),
+        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => false,
+        Err(e) => return Err(e),
+    };
+    Ok(OpenConfig::Ready { path, created })
+}
+
+/// For an available config folder: the location to switch to if the folder
+/// itself went away (whether or not `config.toml` was ever there), resolved
+/// again from `default_dir`.
+pub fn vanished(location: &ConfigLocation, default_dir: &Path) -> Option<ConfigLocation> {
+    if !location.is_available() || location.writable_file().is_ok() {
+        return None;
     }
+    Some(ConfigLocation::resolve(default_dir)).filter(|l| !l.is_available())
 }
 
 #[cfg(test)]
@@ -190,12 +240,12 @@ mod tests {
 
     #[test]
     fn tooltip_and_status_follow_the_reader() {
-        let v = view(Some(&connected()), false);
+        let v = view(Some(&connected()), false, None);
         assert_eq!(v.tooltip, "Mini Launcher — ready (COM7)");
         assert_eq!(v.status, "Ready (COM7)");
         assert_eq!(v.pause_label, "Pause");
 
-        let v = view(Some(&missing(Some("no CH340 adapter found"))), false);
+        let v = view(Some(&missing(Some("no CH340 adapter found"))), false, None);
         assert_eq!(
             v.tooltip,
             "Mini Launcher — reader not found, retrying… (no CH340 adapter found)"
@@ -204,26 +254,26 @@ mod tests {
             v.status,
             "Reader not found, retrying… (no CH340 adapter found)"
         );
-        let v = view(Some(&missing(None)), false);
+        let v = view(Some(&missing(None)), false, None);
         assert_eq!(v.tooltip, "Mini Launcher — reader not found, retrying…");
 
-        assert_eq!(view(None, false).status, "Starting…");
+        assert_eq!(view(None, false, None).status, "Starting…");
     }
 
     #[test]
     fn paused_wins_the_tooltip_and_flips_the_menu_label() {
-        let v = view(Some(&connected()), true);
+        let v = view(Some(&connected()), true, None);
         assert_eq!(v.tooltip, "Mini Launcher — paused");
         assert_eq!(v.status, "Paused — ready (COM7)");
         assert_eq!(v.pause_label, "Resume");
-        let v = view(Some(&missing(None)), true);
+        let v = view(Some(&missing(None)), true, None);
         assert_eq!(v.tooltip, "Mini Launcher — paused");
         assert_eq!(v.status, "Paused — reader not found, retrying…");
     }
 
     #[test]
     fn long_tooltips_are_cut_to_the_windows_limit() {
-        let v = view(Some(&missing(Some(&"é".repeat(300)))), false);
+        let v = view(Some(&missing(Some(&"é".repeat(300)))), false, None);
         assert_eq!(v.tooltip.encode_utf16().count(), TOOLTIP_MAX);
         assert!(v.tooltip.ends_with('…'));
         // Astral characters are two units and are never split.
@@ -240,11 +290,11 @@ mod tests {
             via: Via::TagSteam,
             error: "no handler".into(),
         };
-        let (level, title, text) = notification(&failed).unwrap();
+        let (level, title, text) = notification(&failed, None).unwrap();
         assert_eq!(level, Level::Warning);
         assert_eq!(title, "Could not start the game");
         assert_eq!(text, "open steam://rungameid/440: no handler");
-        let (level, title, text) = notification(&Notice::Unmapped { uid }).unwrap();
+        let (level, title, text) = notification(&Notice::Unmapped { uid }, None).unwrap();
         assert_eq!(level, Level::Info);
         assert_eq!(title, "Unknown cart");
         assert!(text.contains("04A1B2C3"), "{text}");
@@ -255,8 +305,43 @@ mod tests {
                 port: "COM7".into(),
             },
         ] {
-            assert_eq!(notification(&quiet), None);
+            assert_eq!(notification(&quiet, None), None);
         }
+    }
+
+    #[test]
+    fn unavailable_config_folder_shows_in_tooltip_and_cart_notices() {
+        let problem = "config folder \"D:\\Sync\" unavailable: not mounted";
+        let v = view(Some(&connected()), false, Some(problem));
+        assert_eq!(
+            v.tooltip,
+            format!("Mini Launcher — ready (COM7); {problem}")
+        );
+        assert_eq!(v.status, format!("Ready (COM7); {problem}"));
+        let v = view(Some(&connected()), true, Some(problem));
+        assert!(
+            v.tooltip.starts_with("Mini Launcher — paused; config"),
+            "{v:?}"
+        );
+
+        let uid = Uid::from_hex("04a1b2c3").unwrap();
+        let slug = mini_launcher_core::payload::Slug::new("my-game").unwrap();
+        for notice in [Notice::Unmapped { uid }, Notice::UnknownId { uid, slug }] {
+            let (level, title, text) = notification(&notice, Some(problem)).unwrap();
+            assert_eq!((level, title), (Level::Warning, CONFIG_UNAVAILABLE));
+            assert!(text.ends_with(&format!("but {problem}.")), "{text}");
+        }
+        // Launch failures (e.g. steam://) are reported as usual.
+        let failed = Notice::LaunchFailed {
+            uid,
+            plan: LaunchPlan::Steam { appid: 440 },
+            via: Via::TagSteam,
+            error: "no handler".into(),
+        };
+        assert_eq!(
+            notification(&failed, Some(problem)).unwrap().1,
+            "Could not start the game"
+        );
     }
 
     #[test]
@@ -269,21 +354,72 @@ mod tests {
         assert!(!r.allow(t0 + Duration::from_secs(11)));
     }
 
-    #[test]
-    fn config_template_is_a_valid_empty_config_and_never_overwrites() {
-        assert_eq!(Config::parse(CONFIG_TEMPLATE).unwrap(), Config::default());
+    fn temp(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
-            "mini-launcher-test-tray-config-{}",
+            "mini-launcher-test-tray-{name}-{}",
             std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn config_template_is_a_valid_empty_config_and_never_overwrites() {
+        assert_eq!(Config::parse(CONFIG_TEMPLATE).unwrap(), Config::default());
+        let dir = temp("config");
+        let default = ConfigLocation::Default(dir.join("sub"));
         let path = dir.join("sub").join("config.toml");
-        assert!(ensure_config(&path).unwrap());
+        let ready = |created| OpenConfig::Ready {
+            path: path.clone(),
+            created,
+        };
+        assert_eq!(ensure_config(&default).unwrap(), ready(true));
         assert_eq!(std::fs::read_to_string(&path).unwrap(), CONFIG_TEMPLATE);
         std::fs::write(&path, "# mine\n").unwrap();
-        assert!(!ensure_config(&path).unwrap());
+        assert_eq!(ensure_config(&default).unwrap(), ready(false));
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "# mine\n");
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn open_config_never_recreates_a_vanished_override_folder() {
+        let dir = temp("override");
+        let synced = dir.join("synced");
+        std::fs::create_dir(&synced).unwrap();
+        let location = ConfigLocation::Override(synced.clone());
+        assert!(matches!(
+            ensure_config(&location).unwrap(),
+            OpenConfig::Ready { created: true, .. }
+        ));
+        std::fs::remove_dir_all(&synced).unwrap();
+        let got = ensure_config(&location).unwrap();
+        assert!(
+            matches!(&got, OpenConfig::Unavailable(e) if e.contains("unavailable")),
+            "{got:?}"
+        );
+        assert!(!synced.exists());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn vanished_override_folder_is_detected_without_a_config_file() {
+        let (default, synced) = (temp("vanish-default"), temp("vanish-synced"));
+        let text = format!("dir = '{}'\n", synced.display());
+        std::fs::write(default.join("location.toml"), text).unwrap();
+        let location = ConfigLocation::resolve(&default);
+        assert_eq!(location, ConfigLocation::Override(synced.clone()));
+        // No config.toml was ever created in it.
+        assert_eq!(vanished(&location, &default), None);
+        std::fs::remove_dir_all(&synced).unwrap();
+        let now = vanished(&location, &default).unwrap();
+        assert!(!now.is_available(), "{now:?}");
+        assert_eq!(vanished(&now, &default), None);
+        assert_eq!(
+            vanished(&ConfigLocation::Default(default.clone()), &default),
+            None
+        );
+        std::fs::remove_dir_all(default).unwrap();
     }
 
     /// `app.rs` `balloon()` reaches into tray-icon internals (its window

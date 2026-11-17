@@ -5,12 +5,14 @@
 //! loading, so a [`ConfigDocument`] always holds a loadable config.
 
 use std::hash::{Hash, Hasher};
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
 use toml_edit::{ArrayOfTables, DocumentMut, Item, Table, Value};
 
+use super::location::{ConfigLocation, LocationError};
 use super::{format_uid, read_text_or_empty, Config, ConfigError, Game};
 use crate::launch::LaunchPlan;
 use crate::payload::Slug;
@@ -18,12 +20,16 @@ use crate::payload::Slug;
 /// The `export_version` this build writes and reads.
 pub const EXPORT_VERSION: i64 = 1;
 const EXPORT_TABLE: &str = "mini_launcher";
+/// Larger files are not read as an import.
+pub const MAX_IMPORT_BYTES: u64 = 1024 * 1024;
 
 /// Why an edit, save, export or import failed.
 #[derive(Debug, thiserror::Error)]
 pub enum EditError {
     #[error(transparent)]
     Config(#[from] ConfigError),
+    #[error(transparent)]
+    Location(#[from] LocationError),
     #[error("no game with id \"{0}\"")]
     NoSuchGame(Slug),
     #[error("{0}")]
@@ -104,11 +110,24 @@ impl ConfigDocument {
     /// Validates and atomically writes the document to `path`, keeping the
     /// previous file as `<path>.bak`.
     pub fn save(&self, path: &Path) -> Result<(), EditError> {
+        self.save_at(path, true)
+    }
+
+    /// [`ConfigDocument::save`], creating the folder only if `create_dir`.
+    fn save_at(&self, path: &Path, create_dir: bool) -> Result<(), EditError> {
         let text = self.doc.to_string();
         Config::parse(&text)?;
-        write_atomic(path, &text, true)?;
+        write_atomic(path, &text, true, create_dir)?;
         remember_saved(&text);
         Ok(())
+    }
+
+    /// Saves to the config file of `location`; fails (writing nothing) when
+    /// the config folder is unavailable. Returns the path written.
+    pub fn save_to(&self, location: &ConfigLocation) -> Result<PathBuf, EditError> {
+        let path = location.writable_file()?;
+        self.save_at(&path, location.may_create_dir())?;
+        Ok(path)
     }
 
     /// Writes a portable export: this config with a `[mini_launcher]`
@@ -123,28 +142,35 @@ impl ConfigDocument {
              # config.toml directly, delete this [mini_launcher] table.\n",
         );
         doc.insert(EXPORT_TABLE, Item::Table(header));
-        write_atomic(path, &doc.to_string(), false)
+        write_atomic(path, &doc.to_string(), false, true)
     }
 
     /// Reads and fully validates an export (or a plain `config.toml`).
     pub fn read_export(path: &Path) -> Result<Self, EditError> {
-        let text = std::fs::read_to_string(path).map_err(|source| ConfigError::Io {
-            path: path.to_owned(),
-            source,
-        })?;
         let bad = |m: String| EditError::BadExport(m);
+        let mut text = String::new();
+        std::fs::File::open(path)
+            .and_then(|f| f.take(MAX_IMPORT_BYTES + 1).read_to_string(&mut text))
+            .map_err(|source| ConfigError::Io {
+                path: path.to_owned(),
+                source,
+            })?;
+        if text.len() as u64 > MAX_IMPORT_BYTES {
+            return Err(bad(format!("larger than {} KiB", MAX_IMPORT_BYTES / 1024)));
+        }
         let mut doc: DocumentMut = text.parse().map_err(|e| bad(format!("{e}")))?;
         if let Some(item) = doc.remove(EXPORT_TABLE) {
             let header = item
                 .as_table()
                 .ok_or_else(|| bad(format!("[{EXPORT_TABLE}] must be a table")))?;
-            match header.get("export_version").and_then(Item::as_integer) {
-                Some(EXPORT_VERSION) => {}
-                Some(n) => {
+            match header.get("export_version").map(Item::as_integer) {
+                Some(Some(EXPORT_VERSION)) => {}
+                Some(Some(n)) => {
                     return Err(bad(format!(
                         "export_version {n} is not supported (expected {EXPORT_VERSION})"
                     )))
                 }
+                Some(None) => return Err(bad("export_version must be an integer".into())),
                 None => return Err(bad("missing export_version".into())),
             }
             if header.len() != 1 {
@@ -159,6 +185,15 @@ impl ConfigDocument {
     pub fn import(from: &Path, to: &Path) -> Result<Self, EditError> {
         let doc = ConfigDocument::read_export(from)?;
         doc.save(to)?;
+        Ok(doc)
+    }
+
+    /// [`ConfigDocument::import`] into the config file of `location`; fails
+    /// when the config folder is unavailable.
+    pub fn import_into(from: &Path, location: &ConfigLocation) -> Result<Self, EditError> {
+        let to = location.writable_file()?;
+        let doc = ConfigDocument::read_export(from)?;
+        doc.save_at(&to, location.may_create_dir())?;
         Ok(doc)
     }
 
@@ -242,15 +277,31 @@ fn set(table: &mut Table, key: &str, value: Option<Value>) {
     table.insert(key, Item::Value(value));
 }
 
+/// Makes temp file names unique within this process.
+static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
 /// Writes `text` to a temp file next to `path`, flushes it to disk, then
 /// renames it over `path` (`rename` replaces an existing file on Windows and
 /// Unix alike). With `backup`, an existing `path` is first copied to
-/// `<path>.bak`.
-pub fn write_atomic(path: &Path, text: &str, backup: bool) -> Result<(), EditError> {
+/// `<path>.bak`. The folder is created only with `create_dir`. On Unix a symlinked `path` is written through (the link
+/// stays) and an existing file's permissions are kept.
+pub fn write_atomic(
+    path: &Path,
+    text: &str,
+    backup: bool,
+    create_dir: bool,
+) -> Result<(), EditError> {
     let err = |source| EditError::Write {
         path: path.to_owned(),
         source,
     };
+    #[cfg(unix)]
+    let resolved = match std::fs::symlink_metadata(path) {
+        Ok(m) if m.file_type().is_symlink() => std::fs::canonicalize(path).map_err(err)?,
+        _ => path.to_owned(),
+    };
+    #[cfg(unix)]
+    let path = resolved.as_path();
     let dir = match path.parent() {
         Some(d) if !d.as_os_str().is_empty() => d,
         _ => Path::new("."),
@@ -258,13 +309,23 @@ pub fn write_atomic(path: &Path, text: &str, backup: bool) -> Result<(), EditErr
     let name = path
         .file_name()
         .ok_or_else(|| err(std::io::ErrorKind::InvalidInput.into()))?;
-    std::fs::create_dir_all(dir).map_err(err)?;
+    if create_dir {
+        std::fs::create_dir_all(dir).map_err(err)?;
+    }
     let mut tmp_name = std::ffi::OsString::from(".");
     tmp_name.push(name);
-    tmp_name.push(format!(".{}.tmp", std::process::id()));
+    let n = TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    tmp_name.push(format!(".{}.{n}.tmp", std::process::id()));
     let tmp = dir.join(tmp_name);
     let result = (|| {
-        let mut file = std::fs::File::create(&tmp)?;
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp)?;
+        #[cfg(unix)]
+        if let Ok(m) = std::fs::metadata(path) {
+            file.set_permissions(m.permissions())?;
+        }
         file.write_all(text.as_bytes())?;
         file.sync_all()?;
         drop(file);
@@ -481,6 +542,14 @@ args = ["--fullscreen"]
             ("[[games]\nid =".to_owned(), "not a Mini Launcher export"),
             (format!("[mini_launcher]\nexport_version = 2\n{body}"), "not supported"),
             (format!("[mini_launcher]\n{body}"), "missing export_version"),
+            (
+                format!("[mini_launcher]\nexport_version = \"1\"\n{body}"),
+                "export_version must be an integer",
+            ),
+            (
+                format!("{body}# {}\n", "x".repeat(MAX_IMPORT_BYTES as usize)),
+                "larger than 1024 KiB",
+            ),
             (format!("mini_launcher = 1\n{body}"), "must be a table"),
             (
                 format!("[mini_launcher]\nexport_version = 1\nx = 1\n{body}"),
@@ -501,5 +570,92 @@ args = ["--fullscreen"]
         }
         assert_eq!(std::fs::read_to_string(&config).unwrap(), COMMENTED);
         assert!(!dir.join("config.toml.bak").exists());
+    }
+
+    #[test]
+    fn unavailable_location_refuses_saves_and_imports() {
+        let dir = temp("unavailable");
+        let missing = dir.join("not-mounted");
+        let export = dir.join("backup.toml");
+        let doc = ConfigDocument::parse(COMMENTED).unwrap();
+        doc.export(&export).unwrap();
+        let locations = [
+            ConfigLocation::OverrideUnavailable {
+                dir: Some(missing.clone()),
+                reason: "not mounted".into(),
+            },
+            // Resolved while present, then gone.
+            ConfigLocation::Override(missing.clone()),
+        ];
+        for loc in locations {
+            let err = doc.save_to(&loc).unwrap_err();
+            assert!(matches!(err, EditError::Location(_)), "{err:?}");
+            let err = ConfigDocument::import_into(&export, &loc).unwrap_err();
+            assert!(err.to_string().contains("unavailable"), "{err}");
+        }
+        assert!(!missing.exists());
+        // Past the availability check, the write itself never recreates it.
+        let toctou = doc.save_at(&missing.join("config.toml"), false);
+        assert!(matches!(toctou, Err(EditError::Write { .. })), "{toctou:?}");
+        assert!(!missing.exists());
+        let ok = ConfigLocation::Default(dir.join("fresh"));
+        assert_eq!(doc.save_to(&ok).unwrap(), dir.join("fresh/config.toml"));
+    }
+
+    #[test]
+    fn temp_names_are_unique_within_the_process() {
+        let dir = temp("concurrent");
+        let path = dir.join("config.toml");
+        let threads: Vec<_> = (0..8)
+            .map(|i| {
+                let path = path.clone();
+                std::thread::spawn(move || {
+                    let mut errors = Vec::new();
+                    for j in 0..20 {
+                        if let Err(e) = write_atomic(&path, &format!("# {i} {j}\n"), false, false) {
+                            errors.push(e);
+                        }
+                    }
+                    errors
+                })
+            })
+            .collect();
+        for t in threads {
+            for e in t.join().unwrap() {
+                // Windows may refuse a rename while another one is in
+                // flight; a temp name collision would be AlreadyExists.
+                let EditError::Write { source, .. } = &e else {
+                    panic!("{e:?}")
+                };
+                assert_ne!(source.kind(), std::io::ErrorKind::AlreadyExists, "{e:?}");
+                if !cfg!(windows) {
+                    panic!("{e:?}");
+                }
+            }
+        }
+        let names: Vec<_> = std::fs::read_dir(&dir).unwrap().collect();
+        assert_eq!(names.len(), 1, "temp files left behind: {names:?}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn save_keeps_permissions_and_symlinks() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = temp("unix");
+        let (real, link) = (dir.join("real.toml"), dir.join("config.toml"));
+        std::fs::write(&real, "").unwrap();
+        std::fs::set_permissions(&real, std::fs::Permissions::from_mode(0o600)).unwrap();
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        ConfigDocument::parse(COMMENTED)
+            .unwrap()
+            .save(&link)
+            .unwrap();
+        assert!(std::fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(std::fs::read_to_string(&real).unwrap(), COMMENTED);
+        let mode = std::fs::metadata(&real).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
     }
 }
