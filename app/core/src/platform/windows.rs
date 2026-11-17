@@ -1,7 +1,8 @@
-//! Win32 calls: a named mutex for single instance and the per-user `Run` key
-//! for start at login. No admin rights needed for either.
+//! Win32 calls: a named mutex for single instance, the per-user `Run` key
+//! for start at login and Steam's install path. No admin rights needed.
 
 use std::io;
+use std::path::PathBuf;
 use std::ptr;
 
 use windows_sys::Win32::Foundation::{
@@ -9,8 +10,8 @@ use windows_sys::Win32::Foundation::{
     ERROR_MORE_DATA, ERROR_SUCCESS, HANDLE,
 };
 use windows_sys::Win32::System::Registry::{
-    RegDeleteKeyValueW, RegGetValueW, RegSetKeyValueW, HKEY_CURRENT_USER, REG_EXPAND_SZ, REG_SZ,
-    RRF_NOEXPAND, RRF_RT_ANY,
+    RegDeleteKeyValueW, RegGetValueW, RegSetKeyValueW, HKEY, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE,
+    REG_EXPAND_SZ, REG_SZ, RRF_NOEXPAND, RRF_RT_ANY,
 };
 use windows_sys::Win32::System::Threading::{
     CreateMutexW, OpenMutexW, SYNCHRONIZATION_SYNCHRONIZE,
@@ -90,7 +91,34 @@ impl Drop for NamedMutex {
 /// A `REG_EXPAND_SZ` value is returned raw (unexpanded); any other non-string
 /// type is an `InvalidData` error naming the type.
 pub(crate) fn run_value(name: &str) -> Option<io::Result<Option<String>>> {
-    let (key, name) = (wide(RUN_KEY), wide(name));
+    Some(
+        reg_string(HKEY_CURRENT_USER, RUN_KEY, name).map_err(|e| match e.kind() {
+            io::ErrorKind::InvalidData => io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("{e}; `autostart enable` replaces it"),
+            ),
+            _ => e,
+        }),
+    )
+}
+
+/// Steam install folders from the registry, most specific first.
+pub(crate) fn steam_paths() -> Vec<PathBuf> {
+    let hklm_key = r"SOFTWARE\WOW6432Node\Valve\Steam";
+    [
+        (HKEY_CURRENT_USER, r"Software\Valve\Steam", "SteamPath"),
+        (HKEY_LOCAL_MACHINE, hklm_key, "InstallPath"),
+    ]
+    .into_iter()
+    .filter_map(|(root, key, name)| reg_string(root, key, name).ok().flatten())
+    .filter(|v| !v.is_empty())
+    .map(PathBuf::from)
+    .collect()
+}
+
+/// A string value, or `Ok(None)` if the key or value does not exist.
+fn reg_string(root: HKEY, key: &str, name: &str) -> io::Result<Option<String>> {
+    let (key, name) = (wide(key), wide(name));
     let mut buf = vec![0u16; 1024];
     loop {
         let mut len = (buf.len() * 2) as u32;
@@ -99,7 +127,7 @@ pub(crate) fn run_value(name: &str) -> Option<io::Result<Option<String>>> {
         // is a valid out pointer.
         let code = unsafe {
             RegGetValueW(
-                HKEY_CURRENT_USER,
+                root,
                 key.as_ptr(),
                 name.as_ptr(),
                 RRF_RT_ANY | RRF_NOEXPAND,
@@ -110,23 +138,20 @@ pub(crate) fn run_value(name: &str) -> Option<io::Result<Option<String>>> {
         };
         match code {
             ERROR_MORE_DATA => buf.resize(len as usize / 2 + 1, 0),
-            ERROR_FILE_NOT_FOUND => return Some(Ok(None)),
+            ERROR_FILE_NOT_FOUND => return Ok(None),
             ERROR_SUCCESS if kind != REG_SZ && kind != REG_EXPAND_SZ => {
-                return Some(Err(io::Error::new(
+                return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
-                    format!(
-                        "the value is not a string (registry type {kind}); \
-                         `autostart enable` replaces it"
-                    ),
-                )));
+                    format!("the value is not a string (registry type {kind})"),
+                ));
             }
             ERROR_SUCCESS => {
                 // String types are NUL-terminated by RegGetValueW; `len`
                 // includes the NUL.
                 let chars = &buf[..(len as usize / 2).saturating_sub(1)];
-                return Some(Ok(Some(String::from_utf16_lossy(chars))));
+                return Ok(Some(String::from_utf16_lossy(chars)));
             }
-            code => return Some(Err(io::Error::from_raw_os_error(code as i32))),
+            code => return Err(io::Error::from_raw_os_error(code as i32)),
         }
     }
 }

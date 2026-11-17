@@ -1,0 +1,23 @@
+"AppState"
+{
+	"appid"		"10"
+	"universe"		"1"
+	"name"		"Not A Manifest Name"
+	"StateFlags"		"4"
+	"installdir"		"x"
+	"LastUpdated"		"1700000000"
+	"SizeOnDisk"		"4500000000"
+	"buildid"		"1234567"
+	"InstalledDepots"
+	{
+		"221"
+		{
+			"manifest"		"1234567890"
+			"size"		"4500000000"
+		}
+	}
+	"UserConfig"
+	{
+		"language"		"english"
+	}
+}

@@ -1,0 +1,23 @@
+"AppState"
+{
+	"appid"		"2805730"
+	"universe"		"1"
+	"name"		"Proton 9.0"
+	"StateFlags"		"4"
+	"installdir"		"Proton 9.0"
+	"LastUpdated"		"1700000000"
+	"SizeOnDisk"		"4500000000"
+	"buildid"		"1234567"
+	"InstalledDepots"
+	{
+		"221"
+		{
+			"manifest"		"1234567890"
+			"size"		"4500000000"
+		}
+	}
+	"UserConfig"
+	{
+		"language"		"english"
+	}
+}
