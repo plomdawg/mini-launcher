@@ -35,6 +35,7 @@ const CMD_IN_LIST_PASSIVE_TARGET: u8 = 0x4A;
 const CMD_IN_RELEASE: u8 = 0x52;
 const NTAG_READ: u8 = 0x30;
 const NTAG_WRITE: u8 = 0xA2;
+const NTAG_GET_VERSION: u8 = 0x60;
 /// Pages below this (UID, static lock bytes, capability container) are never
 /// written; see [`Pn532::ntag_write`].
 pub const FIRST_WRITABLE_PAGE: u8 = 4;
@@ -199,6 +200,20 @@ impl<T: Transport> Pn532<T> {
     /// [`Pn532Error::Status`] or [`Pn532Error::Malformed`].
     pub fn ntag_read(&mut self, page: u8) -> Result<[u8; 16], Pn532Error> {
         let d = self.command(&[CMD_IN_DATA_EXCHANGE, TG, NTAG_READ, page])?;
+        let (&status, data) = d
+            .split_first()
+            .ok_or_else(|| malformed(CMD_IN_DATA_EXCHANGE, &d))?;
+        check_status(status)?;
+        data.try_into()
+            .map_err(|_| malformed(CMD_IN_DATA_EXCHANGE, &d))
+    }
+
+    /// NTAG `GET_VERSION` on target 1: header, vendor, product type,
+    /// subtype, major, minor, storage size, protocol. Tags without it
+    /// (original MIFARE Ultralight / Ultralight C) NAK, which surfaces as
+    /// [`Pn532Error::Status`] and drops the tag to IDLE: list it again.
+    pub fn ntag_get_version(&mut self) -> Result<[u8; 8], Pn532Error> {
+        let d = self.command(&[CMD_IN_DATA_EXCHANGE, TG, NTAG_GET_VERSION])?;
         let (&status, data) = d
             .split_first()
             .ok_or_else(|| malformed(CMD_IN_DATA_EXCHANGE, &d))?;
@@ -526,6 +541,27 @@ mod tests {
                 Err(Pn532Error::Status(0x01))
             ));
             assert_eq!(written(p)[..WRITE_REQ.len()], *WRITE_REQ);
+        }
+    }
+
+    #[test]
+    fn ntag_get_version_frame() {
+        const REQ: &[u8] = &[
+            0x00, 0x00, 0xFF, 0x04, 0xFC, 0xD4, 0x40, 0x01, 0x60, 0x8B, 0x00,
+        ];
+        /// NTAG213: 00 04 04 02 01 00 0F 03.
+        const RESP: &[u8] = &[
+            0x00, 0x00, 0xFF, 0x0B, 0xF5, 0xD5, 0x41, 0x00, 0x00, 0x04, 0x04, 0x02, 0x01, 0x00,
+            0x0F, 0x03, 0xCD, 0x00,
+        ];
+        for mut p in drivers(&[&ACK, RESP, &ACK, READ_FAIL]) {
+            let v = p.ntag_get_version().unwrap();
+            assert_eq!(v, [0x00, 0x04, 0x04, 0x02, 0x01, 0x00, 0x0F, 0x03]);
+            assert!(matches!(
+                p.ntag_get_version(),
+                Err(Pn532Error::Status(0x01))
+            ));
+            assert_eq!(written(p), [REQ, REQ].concat());
         }
     }
 

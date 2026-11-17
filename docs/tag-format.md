@@ -117,10 +117,16 @@ already configured.
 `mini-launcher write steam://440` (or `id:my-game`, optionally `--port COM7`) waits for a tag,
 writes the payload and reads it back to verify. Quit the tray app first: it holds the reader.
 `steam://` payloads are written as a URI record (prefix code `0x00`), `id:` payloads as a UTF-8
-Text record (language `en`). Only user pages are written (page 4 up to the end of the data area
-in the capability container, never past page 39); the UID, lock bytes, capability container and
-config pages are never touched, and the tag is never locked. A read-only, too-small or
-non-NDEF tag is refused; map its UID in `config.toml` instead.
+Text record (language `en`). Only user pages are written: page 4 up to the smaller of the data
+area in the capability container and the tag's real user memory (from `GET_VERSION`; page 15 for
+tags that don't answer it). The UID, lock bytes, capability container and config pages are never
+written, and the tag is never locked. A read-only, too-small or non-NDEF tag, or one whose lock
+bits cover the pages needed, is refused before anything is written; map its UID in
+`config.toml` instead.
+
+The NDEF length byte is written as 0 first and set last, so a tag pulled off mid-write normally
+reads as empty (nothing usable) rather than as a partial record. Tags don't guarantee that a
+single page write is tear-proof, so if it is pulled during that very last write, rewrite it.
 
 ## Writing a tag with a phone
 
