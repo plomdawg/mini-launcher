@@ -47,7 +47,7 @@ pub fn run(out: &mut impl Write, explicit: Option<&str>, all: bool) -> Result<()
     let name = port::choose(explicit, &ports)?;
     writeln!(out, "Reader on {name}:")?;
     out.flush()?;
-    let (_reader, fw) = port::open(&name)?;
+    let (_reader, fw) = port::open(&name, true)?;
     writeln!(out, "  {}", describe(&fw))?;
     writeln!(out, "  supports: {}", supported(fw.support))?;
     writeln!(out, "OK: the reader is answering.")?;

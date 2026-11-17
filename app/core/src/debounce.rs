@@ -22,6 +22,9 @@ pub enum Event {
     Removed { uid: Uid },
 }
 
+/// Poll interval the [`DebounceConfig`] defaults are tuned for.
+pub const DEFAULT_POLL_INTERVAL: Duration = Duration::from_millis(200);
+
 /// Debounce tuning.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DebounceConfig {
