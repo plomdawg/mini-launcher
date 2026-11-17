@@ -1,12 +1,13 @@
-# nfc-game-launcher — Agent Context
+# Mini Launcher — Agent Context
 
-> Working name — the product name is still being decided. Avoid "cartridge(s)" (collides with
-> GNOME *Cartridges* and bpbwaite/Cartridge) and any console trademark (PS2, Switch, GameCube,
-> -station, -cube, amiibo).
+> The product name is **Mini Launcher**. In names, copy and listings, avoid "cartridge(s)"
+> (collides with GNOME *Cartridges* and bpbwaite/Cartridge) and any console trademark (PS2,
+> Switch, GameCube, -station, -cube, amiibo).
 
 Open-source product: NTAG213 NFC stickers inside 3D-printed game carts / CDs / cases. Inserting a
-cart into a 3D-printed, console-styled reader shell (PN532 inside) launches the matching game on
-Windows or Linux — usually via Steam, or any exe + args. Kits are sold (shop.plom.one).
+cart into a 3D-printed, console-styled reader shell (PN532 inside) launches the matching game —
+usually via Steam, or any exe + args. It ships as an installable Windows tray app (the CLI is kept
+for diagnostics); Linux support is planned later. Kits are sold (shop.plom.one).
 ## Layout
 
 ```
@@ -65,8 +66,9 @@ Tag contents are untrusted input.
 
 - Every PR: `cargo fmt --check`, `cargo clippy -D warnings`, `cargo test` on windows-latest +
   ubuntu-latest; CI uploads the built binaries as artifacts.
-- Tags `app-v*` → GitHub Release with Windows + Linux binaries. Windows code signing via SignPath
-  (free for OSS) is planned; until then document SmartScreen "More info → Run anyway".
+- Releases are Windows-only for now: tags `app-v*` → GitHub Release with the `.exe` +
+  `SHA256SUMS`. Windows code signing via SignPath (free for OSS) is planned later; until then
+  document SmartScreen "More info → Run anyway". Keep ubuntu-latest in the CI matrix.
 
 ## Web (box-art generator)
 
@@ -88,12 +90,22 @@ Tag contents are untrusted input.
 
 ## Milestones
 
-1. **M1 Windows test build** — `core` + `cli` (`run [--port COMx | --simulate]`, `scan`,
-   `diagnose`), TOML config, Steam/exe launch, CI `.exe` artifact.
-2. **M2 Linux parity + releases** — udev rule, systemd user unit, release workflow, signing.
-3. **M3 product UX** — tray/autostart, config GUI, scan-to-assign, tag writer, Steam library import.
-4. **M4 box-art generator** — rework `web/`, deploy on a `*.plom.one` subdomain.
-5. **M5 shop** — BOM, assembly guide, licensing, name/trademark check, listings.
+1. **M1 Windows test build** — done.
+2. **M2 Foundation + release pipeline** — rename, license, toolchain pin, release workflow
+   (Windows `.exe` + `SHA256SUMS`), M1 hardening/doc leftovers.
+3. **M3 Tray app + installer** — background tray app (status, pause, settings, quit), no console
+   window, single instance, start at login, log file, reader auto-reconnect, per-user installer
+   (no admin, Start menu, uninstaller). CLI stays for `diagnose`/`scan`.
+4. **M4 Add a game** — settings window + add-game wizard: Steam library detection, manual exe
+   entries, tag binding (write payload with read-back verify, fall back to UID binding when the
+   tag can't be written; never lock tags), launch options editable in the GUI, export/import
+   backup and optional synced config folder.
+5. **M5 Emulators** — generic emulator + ROM launch type (tag only names a configured entry),
+   starting with a Switch emulator.
+6. **M6 Box-art generator** — rework `web/`, deploy on a `*.plom.one` subdomain.
+7. **M7 Shop** — BOM, assembly guide, name/trademark check, listings, code signing.
+
+- Later: Linux parity (udev rule, `systemd --user` unit, Linux release asset).
 
 ## Contributing
 

@@ -1,13 +1,13 @@
 [package]
-name = "nfc-launcher-core"
-description = "Core library for the NFC game launcher: reader, tag parsing, config and launching"
+name = "mini-launcher-core"
+description = "Core library for Mini Launcher: reader, tag parsing, config and launching"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
 license.workspace = true
 
 [lib]
-name = "nfc_launcher_core"
+name = "mini_launcher_core"
 
 [dependencies]
 directories = "6.0.0"

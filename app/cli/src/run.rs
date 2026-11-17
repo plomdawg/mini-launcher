@@ -1,4 +1,4 @@
-//! `nfc-launcher run`: reader → debounce → resolve via config → launch.
+//! `mini-launcher run`: reader → debounce → resolve via config → launch.
 
 use std::io::{BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -6,10 +6,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 use anyhow::{Context, Result};
-use nfc_launcher_core::config::Config;
-use nfc_launcher_core::debounce::{DebounceConfig, Debouncer, Event, DEFAULT_POLL_INTERVAL};
-use nfc_launcher_core::launch::{self, Outcome, Resolution, Via};
-use nfc_launcher_core::reader::{Reader, Simulated, Uid};
+use mini_launcher_core::config::Config;
+use mini_launcher_core::debounce::{DebounceConfig, Debouncer, Event, DEFAULT_POLL_INTERVAL};
+use mini_launcher_core::launch::{self, Outcome, Resolution, Via};
+use mini_launcher_core::reader::{Reader, Simulated, Uid};
 
 use crate::port;
 

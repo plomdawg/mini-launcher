@@ -24,11 +24,11 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
-            artifact: nfc-launcher-linux-x86_64
-            binary: nfc-launcher
+            artifact: mini-launcher-linux-x86_64
+            binary: mini-launcher
           - os: windows-latest
-            artifact: nfc-launcher-windows-x86_64
-            binary: nfc-launcher.exe
+            artifact: mini-launcher-windows-x86_64
+            binary: mini-launcher.exe
     defaults:
       run:
         working-directory: app

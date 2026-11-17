@@ -1,4 +1,4 @@
-//! Core library for the NFC game launcher.
+//! Core library for Mini Launcher.
 //!
 //! Reader access, NDEF parsing, tag payload handling, config, launching and
 //! insert/remove debounce will live here. Everything above the reader is meant

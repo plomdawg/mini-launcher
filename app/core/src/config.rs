@@ -79,9 +79,9 @@ struct RawGame {
 }
 
 impl Config {
-    /// `<OS config dir>/nfc-launcher/config.toml`, if the OS has a config dir.
+    /// `<OS config dir>/mini-launcher/config.toml`, if the OS has a config dir.
     pub fn default_path() -> Option<PathBuf> {
-        directories::ProjectDirs::from("", "", "nfc-launcher")
+        directories::ProjectDirs::from("", "", "mini-launcher")
             .map(|dirs| dirs.config_dir().join("config.toml"))
     }
 
@@ -332,7 +332,7 @@ mod tests {
 
     #[test]
     fn missing_file_is_empty_library_only_by_default() {
-        let path = std::env::temp_dir().join("nfc-launcher-test-does-not-exist/config.toml");
+        let path = std::env::temp_dir().join("mini-launcher-test-does-not-exist/config.toml");
         assert_eq!(Config::load_or_empty(&path).unwrap(), Config::default());
         let err = Config::load(&path).unwrap_err();
         assert!(

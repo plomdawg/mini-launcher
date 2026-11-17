@@ -13,7 +13,7 @@ mod scan;
 
 /// Launch games by inserting NFC-tagged carts into a reader.
 #[derive(Debug, Parser)]
-#[command(name = "nfc-launcher", version, about)]
+#[command(name = "mini-launcher", version, about)]
 #[command(subcommand_required = true, arg_required_else_help = true)]
 struct Cli {
     /// More log output (-v info, -vv debug, -vvv trace). `RUST_LOG` overrides.
@@ -107,7 +107,7 @@ fn is_broken_pipe(e: &anyhow::Error) -> bool {
 fn main() -> ExitCode {
     let cli = Cli::parse();
     init_logging(cli.verbose);
-    tracing::debug!("nfc-launcher {}", nfc_launcher_core::version());
+    tracing::debug!("mini-launcher {}", mini_launcher_core::version());
 
     let mut out = std::io::stdout().lock();
     let result = match cli.command {
@@ -156,7 +156,7 @@ mod tests {
     #[test]
     fn diagnose_takes_optional_port_and_global_verbose() {
         let cli =
-            Cli::try_parse_from(["nfc-launcher", "diagnose", "-vv", "--port", "COM7"]).unwrap();
+            Cli::try_parse_from(["mini-launcher", "diagnose", "-vv", "--port", "COM7"]).unwrap();
         assert_eq!(cli.verbose, 2);
         let Command::Diagnose { port, all } = cli.command else {
             panic!("not diagnose")
@@ -164,7 +164,7 @@ mod tests {
         assert_eq!(port.port.as_deref(), Some("COM7"));
         assert!(!all);
 
-        let cli = Cli::try_parse_from(["nfc-launcher", "diagnose", "--all"]).unwrap();
+        let cli = Cli::try_parse_from(["mini-launcher", "diagnose", "--all"]).unwrap();
         let Command::Diagnose { port, all } = cli.command else {
             panic!("not diagnose")
         };
@@ -174,7 +174,7 @@ mod tests {
 
     #[test]
     fn run_simulate_conflicts_with_port() {
-        let parse = |args: &[&str]| Cli::try_parse_from([&["nfc-launcher", "run"], args].concat());
+        let parse = |args: &[&str]| Cli::try_parse_from([&["mini-launcher", "run"], args].concat());
         assert!(parse(&["--simulate", "--port", "COM7"]).is_err());
         let Command::Run {
             simulate, dry_run, ..
@@ -195,7 +195,7 @@ mod tests {
 
     #[test]
     fn no_subcommand_shows_help() {
-        let err = Cli::try_parse_from(["nfc-launcher"]).unwrap_err();
+        let err = Cli::try_parse_from(["mini-launcher"]).unwrap_err();
         assert_eq!(
             err.kind(),
             clap::error::ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand

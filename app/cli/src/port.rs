@@ -2,8 +2,8 @@
 //! Shared by every command that talks to the reader.
 
 use anyhow::{anyhow, Context, Result};
-use nfc_launcher_core::pn532::{serial, FirmwareVersion, Pn532, Pn532Error, Pn532Hsu};
-use nfc_launcher_core::ports::{self, PortInfo};
+use mini_launcher_core::pn532::{serial, FirmwareVersion, Pn532, Pn532Error, Pn532Hsu};
+use mini_launcher_core::ports::{self, PortInfo};
 use serialport::SerialPort;
 
 /// The open reader.
@@ -93,7 +93,7 @@ fn open_hint(kind: serialport::ErrorKind, in_diagnose: bool) -> String {
     let list = if in_diagnose {
         "see the serial ports listed above"
     } else {
-        "run `nfc-launcher diagnose` to list ports"
+        "run `mini-launcher diagnose` to list ports"
     };
     let hint = match kind {
         ErrorKind::NoDevice if cfg!(windows) => {
@@ -104,7 +104,7 @@ fn open_hint(kind: serialport::ErrorKind, in_diagnose: bool) -> String {
         }
         ErrorKind::NoDevice => {
             "the port is busy: close other programs using it (serial monitors, Arduino IDE, \
-             another nfc-launcher)"
+             another mini-launcher)"
         }
         ErrorKind::Io(Io::NotFound) => return format!("no such port; {list}"),
         ErrorKind::Io(Io::PermissionDenied) if cfg!(target_os = "linux") => {

@@ -84,7 +84,7 @@ impl fmt::Display for SelectError {
                     write!(
                         f,
                         "\n{}",
-                        hidden_note(hidden, "`nfc-launcher diagnose --all`")
+                        hidden_note(hidden, "`mini-launcher diagnose --all`")
                     )?;
                 }
                 write!(

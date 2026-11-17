@@ -1,16 +1,16 @@
-//! `nfc-launcher scan`: dump what the reader sees on each newly placed tag.
+//! `mini-launcher scan`: dump what the reader sees on each newly placed tag.
 
 use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::Result;
-use nfc_launcher_core::debounce::{DebounceConfig, DEFAULT_POLL_INTERVAL};
-use nfc_launcher_core::payload::{steam_launch_uri, Payload};
-use nfc_launcher_core::pn532::reader::{
+use mini_launcher_core::debounce::{DebounceConfig, DEFAULT_POLL_INTERVAL};
+use mini_launcher_core::payload::{steam_launch_uri, Payload};
+use mini_launcher_core::pn532::reader::{
     self, decode, is_fatal, FIRST_USER_PAGE, LAST_USER_PAGE, TYPE2_SAK,
 };
-use nfc_launcher_core::pn532::Target;
-use nfc_launcher_core::reader::Uid;
+use mini_launcher_core::pn532::Target;
+use mini_launcher_core::reader::Uid;
 
 use crate::port;
 
