@@ -10,5 +10,9 @@ name = "nfc-launcher"
 path = "src/main.rs"
 
 [dependencies]
+anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 nfc-launcher-core = { path = "../core" }
+serialport = { version = "4", default-features = false }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "env-filter", "ansi", "std"] }

@@ -10,6 +10,7 @@ pub mod launch;
 pub mod ndef;
 pub mod payload;
 pub mod pn532;
+pub mod ports;
 pub mod reader;
 
 /// Version of the core library, taken from `Cargo.toml`.
