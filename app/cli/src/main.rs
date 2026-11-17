@@ -1,12 +1,11 @@
-use std::io::IsTerminal;
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use clap::{Args, Parser, Subcommand};
-use tracing_subscriber::EnvFilter;
 
 mod diagnose;
+mod logging;
 mod port;
 mod run;
 mod scan;
@@ -65,22 +64,6 @@ struct PortArgs {
     port: Option<String>,
 }
 
-fn init_logging(verbose: u8) {
-    let default = match verbose {
-        0 => "warn",
-        1 => "info",
-        2 => "debug",
-        _ => "trace",
-    };
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default));
-    tracing_subscriber::fmt()
-        .with_env_filter(filter)
-        .with_writer(std::io::stderr)
-        // Old Windows consoles and redirected output show raw escape codes.
-        .with_ansi(std::io::stderr().is_terminal())
-        .init();
-}
-
 /// Set by Ctrl-C; long-running commands poll it and return cleanly.
 static STOP: AtomicBool = AtomicBool::new(false);
 
@@ -106,7 +89,14 @@ fn is_broken_pipe(e: &anyhow::Error) -> bool {
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
-    init_logging(cli.verbose);
+    // Only `run` is long-lived (and, as a tray app, has no console to read).
+    let is_run = matches!(cli.command, Command::Run { .. });
+    let log_dir = is_run.then(mini_launcher_core::logs::default_dir).flatten();
+    // Held until exit so buffered file lines get flushed.
+    let _log_guard = logging::init(cli.verbose, log_dir.as_deref());
+    if is_run && log_dir.is_none() {
+        tracing::warn!("no data directory available on this system; logging to stderr only");
+    }
     tracing::debug!("mini-launcher {}", mini_launcher_core::version());
 
     let mut out = std::io::stdout().lock();

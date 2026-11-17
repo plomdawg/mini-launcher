@@ -7,6 +7,7 @@
 pub mod config;
 pub mod debounce;
 pub mod launch;
+pub mod logs;
 pub mod ndef;
 pub mod payload;
 pub mod pn532;

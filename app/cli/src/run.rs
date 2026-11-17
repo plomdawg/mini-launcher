@@ -78,6 +78,7 @@ pub fn run(out: &mut impl Write, opts: Options, stop: &AtomicBool) -> Result<()>
     } else {
         let explicit = opts.port.as_deref();
         let (name, reader) = port::open_poller(explicit)?;
+        tracing::info!(port = %name, "watching for tags");
         writeln!(out, "watching {name} for tags (Ctrl-C to stop)")?;
         // Without --port, auto-detection runs again on every attempt: the
         // adapter may come back under another name.
@@ -132,9 +133,13 @@ fn handle(out: &mut impl Write, ctx: &Ctx, event: Event) -> Result<()> {
     let (uid, payload) = match event {
         Event::Inserted { uid, payload } => (uid, payload),
         Event::Reseated { uid, .. } => {
+            tracing::info!(%uid, "reseated; not relaunching");
             return Ok(writeln!(out, "reseated {uid}: not relaunching")?);
         }
-        Event::Removed { uid } => return Ok(writeln!(out, "removed {uid}")?),
+        Event::Removed { uid } => {
+            tracing::info!(%uid, "removed");
+            return Ok(writeln!(out, "removed {uid}")?);
+        }
     };
     match launch::resolve(&ctx.config, uid.as_bytes(), &payload) {
         Resolution::Launch { plan, via } => {
@@ -145,12 +150,22 @@ fn handle(out: &mut impl Write, ctx: &Ctx, event: Event) -> Result<()> {
             };
             let line = format!("launch {uid}: {plan} ({via})");
             match launch::execute(&plan, ctx.dry_run) {
-                Ok(Outcome::DryRun) => writeln!(out, "{line} [dry run]")?,
-                Ok(Outcome::Started) => writeln!(out, "{line}")?,
-                Err(e) => writeln!(out, "{line}: failed to start: {e}")?,
+                Ok(Outcome::DryRun) => {
+                    tracing::info!("{line} [dry run]");
+                    writeln!(out, "{line} [dry run]")?;
+                }
+                Ok(Outcome::Started) => {
+                    tracing::info!("{line}");
+                    writeln!(out, "{line}")?;
+                }
+                Err(e) => {
+                    tracing::warn!("{line}: failed to start: {e}");
+                    writeln!(out, "{line}: failed to start: {e}")?;
+                }
             }
         }
         Resolution::UnknownId(slug) => {
+            tracing::warn!(%uid, "tag says id:{slug}, which is not in the config");
             writeln!(
                 out,
                 "unknown tag {uid}: it says id:{slug}, but the config has no game with that id; \
@@ -160,6 +175,7 @@ fn handle(out: &mut impl Write, ctx: &Ctx, event: Event) -> Result<()> {
             snippet(out, &slug.to_string(), None)?;
         }
         Resolution::Unmapped => {
+            tracing::warn!(%uid, "unknown tag: nothing usable on it and its UID is not mapped");
             writeln!(
                 out,
                 "unknown tag {uid}: nothing usable on it and its UID is not mapped; \
