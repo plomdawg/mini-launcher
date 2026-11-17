@@ -7,7 +7,8 @@ use std::time::SystemTime;
 
 use mini_launcher_core::config::edit::ConfigDocument;
 use mini_launcher_core::config::location::ConfigLocation;
-use mini_launcher_core::config::{Config, Game};
+use mini_launcher_core::config::{check_rom_arg, Config, Emulator, Game};
+use mini_launcher_core::emulators::EmulatorPreset;
 use mini_launcher_core::launch::LaunchPlan;
 use mini_launcher_core::payload::Slug;
 
@@ -59,6 +60,26 @@ impl Library {
         self.config().map_or(&[], |c| &c.games)
     }
 
+    pub fn emulators(&self) -> &[Emulator] {
+        self.config().map_or(&[], |c| &c.emulators)
+    }
+
+    /// Adds or updates `emulator` and saves.
+    pub fn save_emulator(&mut self, emulator: &Emulator) -> Result<(), String> {
+        self.change_emulator(&emulator.id, |doc| doc.upsert_emulator(emulator))
+    }
+
+    /// Why emulator `id` can't be removed now (games still use it), if so.
+    pub fn removal_problem(&self, id: &Slug) -> Option<String> {
+        let mut doc = self.doc.as_ref().ok()?.clone();
+        doc.remove_emulator(id).err().map(|e| chain(&e))
+    }
+
+    /// Removes the emulator with this id and saves.
+    pub fn remove_emulator(&mut self, id: &Slug) -> Result<(), String> {
+        self.change_emulator(id, |doc| doc.remove_emulator(id))
+    }
+
     /// Adds or updates `game` and saves.
     pub fn save_game(&mut self, game: &Game) -> Result<(), String> {
         self.change(&game.id, |doc| doc.upsert_game(game))
@@ -100,6 +121,35 @@ impl Library {
             &mut ConfigDocument,
         ) -> Result<(), mini_launcher_core::config::edit::EditError>,
     ) -> Result<(), String> {
+        self.change_where(id, |c| c.by_id(id), |g| &g.name, edit)
+    }
+
+    /// [`Library::change`] for emulator `id`.
+    fn change_emulator(
+        &mut self,
+        id: &Slug,
+        edit: impl FnOnce(
+            &mut ConfigDocument,
+        ) -> Result<(), mini_launcher_core::config::edit::EditError>,
+    ) -> Result<(), String> {
+        self.change_where(
+            id,
+            |c| c.emulators.iter().find(|e| &e.id == id),
+            |e| &e.name,
+            edit,
+        )
+    }
+
+    /// `find` looks up entry `id` in a config; `name` names it.
+    fn change_where<T: PartialEq>(
+        &mut self,
+        id: &Slug,
+        find: impl Fn(&Config) -> Option<&T>,
+        name: fn(&T) -> &String,
+        edit: impl FnOnce(
+            &mut ConfigDocument,
+        ) -> Result<(), mini_launcher_core::config::edit::EditError>,
+    ) -> Result<(), String> {
         let location = self
             .location
             .clone()
@@ -107,8 +157,8 @@ impl Library {
         let path = location.writable_file().map_err(|e| e.to_string())?;
         let stamp = modified(&path);
         let mut doc = ConfigDocument::load_or_empty(&path).map_err(|e| chain(&e))?;
-        let shown = self.config().and_then(|c| c.by_id(id));
-        if let Some(e) = conflict(id, shown, doc.config().by_id(id)) {
+        let shown = self.config().and_then(&find);
+        if let Some(e) = conflict(id, shown, find(doc.config()), name) {
             (self.doc, self.stamp) = (Ok(doc), stamp);
             return Err(format!(
                 "{e} outside the app. The library was reloaded: check it and try again."
@@ -122,13 +172,18 @@ impl Library {
     }
 }
 
-/// How game `id` on disk differs from the one `shown` (`None`: a new game
+/// How entry `id` on disk differs from the one `shown` (`None`: a new entry
 /// or already gone), if it does.
-fn conflict(id: &Slug, shown: Option<&Game>, on_disk: Option<&Game>) -> Option<String> {
+fn conflict<T: PartialEq>(
+    id: &Slug,
+    shown: Option<&T>,
+    on_disk: Option<&T>,
+    name: fn(&T) -> &String,
+) -> Option<String> {
     match (shown, on_disk) {
-        (None, Some(g)) => Some(format!("\"{}\" (id {id}) was added", g.name)),
-        (Some(g), None) => Some(format!("\"{}\" was removed", g.name)),
-        (Some(g), Some(d)) if g != d => Some(format!("\"{}\" was changed", g.name)),
+        (None, Some(g)) => Some(format!("\"{}\" (id {id}) was added", name(g))),
+        (Some(g), None) => Some(format!("\"{}\" was removed", name(g))),
+        (Some(g), Some(d)) if g != d => Some(format!("\"{}\" was changed", name(g))),
         _ => None,
     }
 }
@@ -273,6 +328,76 @@ impl Form {
     }
 }
 
+/// The emulator form: text as typed, turned into an [`Emulator`] on save.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct EmuForm {
+    /// The entry being edited; `None` for a new one (an id is made from the
+    /// name on save, and never changes after).
+    pub id: Option<Slug>,
+    pub name: String,
+    pub exe: String,
+    pub args: String,
+    /// Kept as it is: not edited in the window.
+    pub cwd: Option<PathBuf>,
+    pub errors: Vec<(Field, String)>,
+    pub problem: Option<String>,
+}
+
+impl EmuForm {
+    /// A new entry from `preset`, with its `exe` if it was detected.
+    pub fn from_preset(preset: &EmulatorPreset, exe: Option<PathBuf>) -> EmuForm {
+        let args: Vec<String> = preset.default_args.iter().map(|&a| a.into()).collect();
+        EmuForm {
+            name: preset.name.into(),
+            exe: exe.map(|p| p.display().to_string()).unwrap_or_default(),
+            args: join_args(&args),
+            ..EmuForm::default()
+        }
+    }
+
+    pub fn from_emulator(e: &Emulator) -> EmuForm {
+        EmuForm {
+            id: Some(e.id.clone()),
+            name: e.name.clone(),
+            exe: e.exe.display().to_string(),
+            args: join_args(&e.args),
+            cwd: e.cwd.clone(),
+            ..EmuForm::default()
+        }
+    }
+
+    /// The entry this form describes, or the errors per field.
+    pub fn to_emulator(&self, config: &Config) -> Result<Emulator, Vec<(Field, String)>> {
+        let mut errors = Vec::new();
+        let name = self.name.trim();
+        if name.is_empty() {
+            errors.push((Field::Name, "Enter a name.".to_owned()));
+        }
+        let exe = unquote(&self.exe);
+        if exe.is_empty() {
+            errors.push((Field::Exe, "Choose the emulator's program.".to_owned()));
+        }
+        let args = split_args(&self.args)
+            .map_err(str::to_owned)
+            .and_then(|a| check_rom_arg(&a).map(|()| a))
+            .map_err(|e| errors.push((Field::Args, e)));
+        match args {
+            Ok(args) if errors.is_empty() => Ok(Emulator {
+                id: self.id.clone().unwrap_or_else(|| {
+                    free_id(name, "emulator", |id| {
+                        config.emulators.iter().any(|e| &e.id == id)
+                    })
+                }),
+                name: name.to_owned(),
+                exe: PathBuf::from(exe),
+                args,
+                cwd: self.cwd.clone(),
+            }),
+            _ => Err(errors),
+        }
+    }
+}
+
 /// Trims spaces and the quotes Explorer's "Copy as path" adds.
 fn unquote(s: &str) -> &str {
     let s = s.trim();
@@ -283,6 +408,12 @@ fn unquote(s: &str) -> &str {
 
 /// An id for a new entry: the name as a slug, made unique in `config`.
 pub fn new_id(name: &str, config: &Config) -> Slug {
+    free_id(name, "game", |id| config.by_id(id).is_some())
+}
+
+/// `name` as a slug (`fallback` if nothing is left), made unique: not
+/// `taken`.
+fn free_id(name: &str, fallback: &str, taken: impl Fn(&Slug) -> bool) -> Slug {
     let mut base = String::new();
     for c in name.chars().flat_map(char::to_lowercase) {
         if c.is_ascii_alphanumeric() {
@@ -293,7 +424,7 @@ pub fn new_id(name: &str, config: &Config) -> Slug {
     }
     base.truncate(Slug::MAX_LEN - 4);
     let base = match base.trim_end_matches('-') {
-        "" => "game",
+        "" => fallback,
         b => b,
     };
     (1..)
@@ -302,7 +433,7 @@ pub fn new_id(name: &str, config: &Config) -> Slug {
             n => format!("{base}-{n}"),
         })
         .filter_map(|s| Slug::new(&s).ok())
-        .find(|id| config.by_id(id).is_none())
+        .find(|id| !taken(id))
         .expect("a free id")
 }
 
@@ -554,6 +685,55 @@ mod tests {
         assert!(e.contains("\"DOOM II\" was removed"), "{e}");
         assert_eq!(read(&location), "");
         assert!(library.remove(&slug("hades")).is_err());
+    }
+
+    #[test]
+    fn emulator_form_checks_the_rom_rule_and_saves() {
+        let location = temp_location("emulators", Some(LIBRARY));
+        let mut library = Library::load(Some(location.clone()));
+        let mut form = EmuForm::from_preset(&mini_launcher_core::emulators::EDEN, None);
+        assert_eq!(
+            (form.name.as_str(), form.args.as_str()),
+            ("Eden", "-f -g {rom}")
+        );
+        form.args = "-g x{rom}".into();
+        let errors = form.to_emulator(library.config().unwrap()).unwrap_err();
+        let fields: Vec<_> = errors.iter().map(|e| e.0).collect();
+        assert_eq!(fields, [Field::Exe, Field::Args]);
+        assert!(
+            errors[1].1.contains("must be a whole argument"),
+            "{errors:?}"
+        );
+
+        form.exe = r"C:\Eden\eden.exe".into();
+        form.args = "-g {rom}".into();
+        let eden = form.to_emulator(library.config().unwrap()).unwrap();
+        assert_eq!(eden.id.as_str(), "eden");
+        library.save_emulator(&eden).unwrap();
+        // A second one from the preset gets a free id.
+        let again = form.to_emulator(library.config().unwrap()).unwrap();
+        assert_eq!(again.id.as_str(), "eden-2");
+        assert_eq!(
+            EmuForm::from_emulator(&library.emulators()[0]).args,
+            "-g {rom}"
+        );
+
+        let mut game = library.games()[0].clone();
+        game.plan = LaunchPlan::Emulator {
+            emulator: eden.id.clone(),
+            rom: "mk8.nsp".into(),
+            path: eden.exe.clone(),
+            args: Vec::new(),
+            cwd: None,
+        };
+        library.save_game(&game).unwrap();
+        let e = library.removal_problem(&eden.id).unwrap();
+        assert!(e.contains("still used by \"hades\""), "{e}");
+        assert!(library.remove_emulator(&eden.id).is_err());
+        library.remove(&game.id).unwrap();
+        assert_eq!(library.removal_problem(&eden.id), None);
+        library.remove_emulator(&eden.id).unwrap();
+        assert!(!read(&location).contains("[[emulators]]"));
     }
 
     fn slug(s: &str) -> Slug {

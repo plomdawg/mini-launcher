@@ -236,21 +236,7 @@ fn validate_emulator(raw: RawEmulator) -> Result<Emulator, String> {
     if raw.cwd.as_ref().is_some_and(|c| c.as_os_str().is_empty()) {
         return Err(ctx("cwd must not be empty"));
     }
-    // `{rom}` is only ever a whole argument: no interpolation inside others.
-    if let Some(arg) = raw
-        .args
-        .iter()
-        .find(|a| *a != ROM_PLACEHOLDER && a.contains(ROM_PLACEHOLDER))
-    {
-        return Err(ctx(&format!(
-            "args: {ROM_PLACEHOLDER} must be a whole argument, not part of {arg:?}"
-        )));
-    }
-    if raw.args.iter().filter(|a| *a == ROM_PLACEHOLDER).count() != 1 {
-        return Err(ctx(&format!(
-            "args must contain {ROM_PLACEHOLDER:?} exactly once"
-        )));
-    }
+    check_rom_arg(&raw.args).map_err(|e| ctx(&e))?;
     Ok(Emulator {
         id,
         name: raw.name,
@@ -258,6 +244,25 @@ fn validate_emulator(raw: RawEmulator) -> Result<Emulator, String> {
         args: raw.args,
         cwd: raw.cwd,
     })
+}
+
+/// The `{rom}` rule for an emulator's args: [`ROM_PLACEHOLDER`] exactly
+/// once, as a whole argument (no interpolation inside others).
+pub fn check_rom_arg(args: &[String]) -> Result<(), String> {
+    if let Some(arg) = args
+        .iter()
+        .find(|a| *a != ROM_PLACEHOLDER && a.contains(ROM_PLACEHOLDER))
+    {
+        return Err(format!(
+            "args: {ROM_PLACEHOLDER} must be a whole argument, not part of {arg:?}"
+        ));
+    }
+    if args.iter().filter(|a| *a == ROM_PLACEHOLDER).count() != 1 {
+        return Err(format!(
+            "args must contain {ROM_PLACEHOLDER:?} exactly once"
+        ));
+    }
+    Ok(())
 }
 
 fn validate(raw: RawGame, emulators: &[Emulator]) -> Result<Game, String> {
