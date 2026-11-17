@@ -9,6 +9,8 @@ You need:
 - NTAG213 NFC stickers (tags)
 - an Android or iPhone with the free **NFC Tools** app (to write tags)
 - Steam, if you want to launch Steam games
+- for emulator games: the emulator, plus your own legally dumped games and any keys or firmware
+  the emulator needs (see [Emulator games](#emulator-games))
 
 ## 1. Install the launcher
 
@@ -299,30 +301,88 @@ Rules:
 
 ### Emulator games
 
-Describe each emulator once in an `[[emulators]]` block, then point games at it with `emulator`
-(its `id`) and `rom` (the full path to the game file):
+Mini Launcher can start games in an emulator: the tag picks the game, and the emulator and the
+game file come from your config. You need your own legally dumped games and, where the emulator
+needs them, your own keys and firmware. Mini Launcher doesn't include, download or help you find
+any of these.
+
+The settings window lists emulator games but can't add or edit emulators yet, so for now you set
+them up in `config.toml` by hand. The walkthrough below uses **Eden**, a Switch emulator; any
+emulator that takes the game file on its command line works the same way.
+
+**1. Set up the emulator on its own.** Install Eden, give it your keys and firmware, and check
+that your game starts from inside Eden. If it doesn't start there, it won't start from a tag
+either.
+
+**2. Find `eden.exe`.** The usual places are:
+
+- `%LOCALAPPDATA%\Programs\eden\eden.exe`
+- `%LOCALAPPDATA%\eden\eden.exe`
+
+`%LOCALAPPDATA%` is usually `C:\Users\<you>\AppData\Local`; paste the path into File Explorer's
+address bar to check it. If you unzipped Eden somewhere else, use that path. In the config, write
+the full path (`%LOCALAPPDATA%` isn't expanded there). Point `exe` at the emulator's real `.exe`,
+not a `.bat` or `.cmd` that starts it: those run through `cmd.exe`, which reads the arguments
+again and can break or refuse game paths with characters like `&`, `%` or `^`.
+
+**3. Add the emulator and a game to the config.** Describe each emulator once in an
+`[[emulators]]` block, then point games at it with `emulator` (its `id`) and `rom` (the full path
+to the game file):
 
 ```toml
 [[emulators]]
 id = "eden"
 name = "Eden"
-exe = 'C:\Emulators\Eden\eden.exe'
+exe = 'C:\Users\you\AppData\Local\Programs\eden\eden.exe'
 args = ["-f", "-g", "{rom}"]
-# cwd = 'C:\Emulators\Eden'   (optional)
+# cwd = 'C:\Users\you\AppData\Local\Programs\eden'   (optional)
 
 [[games]]
-id = "mario-kart-8"
-name = "Mario Kart 8 Deluxe"
+id = "kart-racer"
+name = "Kart Racer"
 emulator = "eden"
-rom = 'D:\Games\mk8.nsp'
+rom = 'D:\Games\Switch\kart-racer.nsp'
+
+[[games]]
+id = "puzzle-quest"
+name = "Puzzle Quest"
+emulator = "eden"
+rom = 'D:\Games\Switch\Puzzle Quest [v0].xci'
 ```
 
+For Eden, `-f` starts in fullscreen and `-g` is followed by the game to run. Eden's game files
+usually end in `.nsp`, `.xci`, `.nca`, `.nro` or `.nso`. The config doesn't check that the
+`rom` file exists: if the path is wrong, Eden opens and reports that it can't load the game.
+
+**4. Write the tag.** Write `id:` followed by the game's `id`, for example `id:kart-racer`, with
+NFC Tools ([step 4](#4-write-a-tag)) or with `.\mini-launcher.exe write id:kart-racer` (quit the
+tray app first). Or leave the tag as it is and map its UID with `uid` on the game, as for any
+other game.
+
+**5. Try it.** The tray app reloads `config.toml` when you save it (restart `run` if you use
+that). `run --dry-run` shows the exact command without starting Eden:
+
+```
+launch 04A1B2C3D4E5F6: emulator eden: run "C:\\Users\\you\\AppData\\Local\\Programs\\eden\\eden.exe" with args ["-f", "-g", "D:\\Games\\Switch\\kart-racer.nsp"] (tag id:kart-racer) [dry run]
+```
+
+(The backslashes are doubled only in this printout.)
+
+Rules for emulators and emulator games:
+
+- An emulator has an `id` (same rules as a game's), a `name`, the full path to its `exe`, its
+  `args`, and optionally a `cwd`. Every emulator `id` must be different; games and emulators
+  have separate ids, so `eden` can be both.
 - `args` must contain `"{rom}"` exactly once, as an item of its own. It is replaced by the
   game's `rom` path as one argument, spaces included. `{rom}` inside a longer item (e.g.
   `"--rom={rom}"`) is an error; nothing else is substituted.
-- `args` and `cwd` belong to the emulator; a game with `emulator` can't set them.
+- `{rom}` must be written exactly like that: lowercase, no spaces. `{ROM}` or `{ rom }` aren't
+  recognised; they count as plain text, so `args = ["-g", "{ROM}"]` is rejected with
+  `args must contain "{rom}" exactly once`.
+- `args` and `cwd` belong to the emulator; a game with `emulator` can't set them, and `rom` is
+  only allowed together with `emulator`.
 - The tag still only says `id:<slug>` (or is mapped by `uid`); nothing on the tag reaches the
-  command line. The settings window lists emulator games but can't edit them yet.
+  command line.
 
 Backups, export/import and keeping the config in a synced folder are covered in
 [config.md](config.md).
@@ -364,6 +424,8 @@ gets a similar message with that `id` filled in.
 | Tag isn't detected | Center it on the reader's antenna. Keep metal (foil, real CDs/DVDs) away from it. Check with `scan`. |
 | Tag is detected but nothing launches | Run `.\mini-launcher.exe run -v` (or `-vv` for more detail) and read the line printed for the tag. `unknown tag` means map it in the config or rewrite it. For an `exe` game, check the path. |
 | `launch ...: failed to start: ...` | The `exe` path or `cwd` is wrong, or the file has moved. |
+| An emulator game opens the emulator but not the game | The `rom` path is wrong or the file has moved, or the emulator is missing keys or firmware. Check that the game starts from inside the emulator, and compare the path in `run --dry-run` with the real file. |
+| `emulator "..." is not defined in [[emulators]]` | The game's `emulator` doesn't match any emulator's `id` (ids are lowercase). |
 | A Steam game doesn't start | Make sure Steam is installed and signed in. Try opening `steam://rungameid/440` (with your app ID) from the Run dialog (Win+R) to check. |
 | `error: cannot load ...config.toml` | The config has a mistake; the error names the block and the problem. |
 | Need to see what happened earlier | `run` also writes a log file per day to `%LOCALAPPDATA%\mini-launcher\logs\` (the last 7 are kept); `diagnose` prints the folder. |

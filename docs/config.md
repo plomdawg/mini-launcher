@@ -1,6 +1,7 @@
 # Config file, backups and synced folders
 
-The library lives in `config.toml` (format: see the quickstart, section 7). `mini-launcher
+The library lives in `config.toml` (format: see the quickstart, section 7, and its
+[Emulator games](windows-quickstart.md#emulator-games) part for `[[emulators]]`). `mini-launcher
 diagnose` prints the file it uses on its `Config:` line.
 
 ## How the app saves it
@@ -45,8 +46,8 @@ alone. Only then is it saved as `config.toml` (the old one becomes `config.toml.
 `config.toml` without the header can be imported too. To use an export by hand instead, copy it
 to `config.toml` and delete the `[mini_launcher]` table.
 
-Exports contain your exe paths and arguments; importing one makes those programs launchable by
-tags, so only import files you made or trust.
+Exports contain your exe, emulator and ROM paths and arguments; importing one makes those
+programs launchable by tags, so only import files you made or trust.
 
 ## Keeping the config in another folder
 

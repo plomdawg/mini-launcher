@@ -45,7 +45,7 @@ payload that fails validation counts as **nothing usable**.
 |---|---|
 | `steam://<appid>` | Launch Steam game `<appid>`. Works with zero configuration. |
 | `steam:<appid>` | Same as above (short form). |
-| `id:<slug>` | Launch the entry `<slug>` from the local library in the user's `config.toml` (executable, args, working directory). |
+| `id:<slug>` | Launch the entry `<slug>` from the local library in the user's `config.toml`: a program (executable, args, working directory) or an emulator game (emulator + ROM path). |
 | anything else | Nothing usable — the tag is identified by its UID only. |
 
 ### `<appid>`
@@ -107,6 +107,10 @@ Tag contents are untrusted input: anyone can write anything to a tag and put it 
 - Executables, arguments and working directories come **only from the user's local config**, and
   are started directly, without a shell. A tag can choose which configured entry to launch; it
   cannot add a new program or change arguments.
+- Emulator games work the same way: the tag only says `id:<slug>` (or the game is mapped by UID).
+  The emulator's executable and arguments and the game's ROM path all come from the local config.
+  The ROM path is passed as one argument in place of the emulator's `{rom}` argument and is never
+  split or expanded. A tag can't name a ROM file, an emulator, or emulator options.
 - Anything that fails validation is treated as nothing usable — it is never "partly" used.
 
 The worst a malicious tag can do is launch a Steam app by ID or launch an entry the user has
@@ -121,7 +125,8 @@ While the wizard waits for a tag, inserted carts don't launch. If the tag alread
 game, or its UID is bound to another game, the wizard asks before using it (and removes the other
 game's UID binding, which would otherwise override what was written). A read-only, too-small or
 non-NDEF tag is not written; the wizard binds its UID instead and says why. Closing the wizard at
-any point gives the reader back.
+any point gives the reader back. Emulator games can't be opened in the edit form yet; write their
+`id:<slug>` with the command below or a phone.
 
 From the command line:
 `mini-launcher write steam://440` (or `id:my-game`, optionally `--port COM7`) waits for a tag,
@@ -197,3 +202,4 @@ permanent. A locked tag can still be remapped through a local UID mapping.
 | `id:../games/x` | `.` and `/` not allowed |
 | `id:` + 65 characters | Longer than 64 characters |
 | `C:\Games\game.exe` | Executables can't be put on a tag; configure them locally |
+| `D:\Games\game.nsp` | ROM paths can't be put on a tag; add an emulator game to the config and write `id:<slug>` |
