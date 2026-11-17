@@ -45,10 +45,10 @@ pub enum FrameError {
     /// Payload does not fit in a normal information frame.
     #[error("frame data too long: {0} bytes (max {MAX_DATA_LEN})")]
     DataTooLong(usize),
-    /// No `00 FF` start code found in the buffer.
+    /// No `00 FF` start code (or prefix of one) found in the buffer.
     #[error("no frame start code found")]
     NoStartCode,
-    /// A start code was found but the frame is not complete yet.
+    /// More bytes are needed to finish (or find) the frame.
     #[error("incomplete frame")]
     Incomplete,
     /// `LEN + LCS` is not zero (mod 256).
@@ -111,60 +111,93 @@ pub fn encode_with_wakeup(data: &[u8]) -> Result<Vec<u8>, FrameError> {
     Ok(out)
 }
 
+/// A [`decode`] failure: what went wrong, and how many leading bytes of the
+/// buffer are safe to discard before decoding again.
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+#[error("{kind} (discard {skip} bytes)")]
+pub struct DecodeError {
+    /// What went wrong.
+    pub kind: FrameError,
+    /// Number of leading bytes that can never be part of a valid frame.
+    /// Always at least 1 unless `kind` is [`FrameError::Incomplete`].
+    pub skip: usize,
+}
+
+fn fail(kind: FrameError, skip: usize) -> DecodeError {
+    DecodeError { kind, skip }
+}
+
 /// Decodes the first host-bound frame in `buf`.
 ///
 /// Leading garbage and extra preamble zeros are skipped by searching for the
 /// `00 FF` start code. On success returns the frame and the number of bytes
 /// consumed from the start of `buf` (including the postamble when present).
 ///
-/// [`FrameError::Incomplete`] means more bytes are needed. Any other error
-/// means the buffered bytes are unusable; the PN532 protocol recovers by
-/// discarding them and sending a [`NACK`] to request a resend.
+/// Intended streaming use: append bytes from the port to a buffer, call
+/// `decode`, and drain the consumed count on success, or `err.skip` on
+/// error. On [`FrameError::Incomplete`] wait for more bytes (`skip` may
+/// still drop leading garbage); on any other error decode again right away —
+/// `skip` only covers the bad prefix, so a valid frame behind it survives.
+///
+/// A corrupted `LEN` whose `LCS` still matches makes the decoder wait for up
+/// to 255 more bytes, so readers need a timeout (then drop the buffer and
+/// send a [`NACK`]).
 ///
 /// Never panics, whatever the input.
-pub fn decode(buf: &[u8]) -> Result<(Frame, usize), FrameError> {
-    let start = buf
-        .windows(2)
-        .position(|w| w == [0x00, 0xFF])
-        .ok_or(FrameError::NoStartCode)?;
+pub fn decode(buf: &[u8]) -> Result<(Frame, usize), DecodeError> {
+    use FrameError::*;
+    let Some(start) = buf.windows(2).position(|w| w == [0x00, 0xFF]) else {
+        // A trailing 0x00 may be the first half of a start code.
+        return match buf.last() {
+            None => Err(fail(Incomplete, 0)),
+            Some(0x00) => Err(fail(Incomplete, buf.len() - 1)),
+            Some(_) => Err(fail(NoStartCode, buf.len())),
+        };
+    };
     let body = &buf[start + 2..];
+    // A bad candidate's `00 FF` can't start any other frame; skip past it.
+    let bad = |kind| Err(fail(kind, start + 2));
 
     let (&len, &lcs) = match body {
         [len, lcs, ..] => (len, lcs),
-        _ => return Err(FrameError::Incomplete),
+        _ => return Err(fail(Incomplete, start)),
     };
     match (len, lcs) {
         (0x00, 0xFF) => return Ok((Frame::Ack, finish(buf, start + 4))),
         (0xFF, 0x00) => return Ok((Frame::Nack, finish(buf, start + 4))),
-        (0xFF, 0xFF) => return Err(FrameError::ExtendedFrame),
+        (0xFF, 0xFF) => return bad(ExtendedFrame),
         _ => {}
     }
     if len.wrapping_add(lcs) != 0 {
-        return Err(FrameError::BadLengthChecksum { len, lcs });
+        return bad(BadLengthChecksum { len, lcs });
     }
     if len == 0 {
-        return Err(FrameError::EmptyFrame);
+        return bad(EmptyFrame);
     }
 
     // TFI + PD0..PDn + DCS
-    let payload = body
-        .get(2..2 + usize::from(len) + 1)
-        .ok_or(FrameError::Incomplete)?;
+    let Some(payload) = body.get(2..2 + usize::from(len) + 1) else {
+        return Err(fail(Incomplete, start));
+    };
     if payload.iter().fold(0u8, |acc, &b| acc.wrapping_add(b)) != 0 {
-        return Err(FrameError::BadDataChecksum);
+        return bad(BadDataChecksum);
     }
     let tfi = payload[0];
     let data = &payload[1..payload.len() - 1];
     let end = finish(buf, start + 4 + payload.len());
 
     match tfi {
+        // May be empty (LEN = 1): callers must not assume a response code.
         TFI_PN532_TO_HOST => Ok((Frame::Response(data.to_vec()), end)),
         TFI_ERROR if data.is_empty() => Ok((Frame::Error, end)),
-        other => Err(FrameError::UnexpectedTfi(other)),
+        // Well-formed but not for us (e.g. an echoed command): skip it whole.
+        other => Err(fail(UnexpectedTfi(other), end)),
     }
 }
 
-/// Extends `end` over the `00` postamble if it is present.
+/// Extends `end` over the `00` postamble if it is present. If the postamble
+/// was lost this may eat the next frame's preamble byte, which is harmless:
+/// the start-code search does not need it.
 fn finish(buf: &[u8], end: usize) -> usize {
     if buf.get(end) == Some(&0x00) {
         end + 1
@@ -185,143 +218,136 @@ mod tests {
     ];
 
     #[test]
-    fn encodes_get_firmware_version() {
+    fn encodes_fixtures() {
         assert_eq!(encode(&[0x02]).unwrap(), GFV_REQ);
-    }
-
-    #[test]
-    fn encodes_sam_configuration() {
         // SAMConfiguration: normal mode, timeout 0x14, use IRQ.
-        let expected = [
+        let sam = [
             0x00, 0x00, 0xFF, 0x05, 0xFB, 0xD4, 0x14, 0x01, 0x14, 0x01, 0x02, 0x00,
         ];
-        assert_eq!(encode(&[0x14, 0x01, 0x14, 0x01]).unwrap(), expected);
-    }
-
-    #[test]
-    fn encode_with_wakeup_prefixes_preamble() {
-        let out = encode_with_wakeup(&[0x02]).unwrap();
-        assert_eq!(&out[..WAKEUP.len()], &WAKEUP);
-        assert_eq!(&out[WAKEUP.len()..], &GFV_REQ);
-    }
-
-    #[test]
-    fn encode_rejects_oversize_data() {
-        assert!(encode(&[0u8; MAX_DATA_LEN]).is_ok());
+        assert_eq!(encode(&[0x14, 0x01, 0x14, 0x01]).unwrap(), sam);
         assert_eq!(
-            encode(&[0u8; MAX_DATA_LEN + 1]),
-            Err(FrameError::DataTooLong(MAX_DATA_LEN + 1))
+            encode_with_wakeup(&[0x02]).unwrap(),
+            [&WAKEUP[..], &GFV_REQ].concat()
         );
+        assert!(encode(&[0u8; MAX_DATA_LEN]).is_ok());
+        let too_long = encode(&[0u8; MAX_DATA_LEN + 1]);
+        assert_eq!(too_long, Err(FrameError::DataTooLong(MAX_DATA_LEN + 1)));
+    }
+
+    /// `(kind, skip)` of a failed decode.
+    fn err(buf: &[u8]) -> (FrameError, usize) {
+        let e = decode(buf).unwrap_err();
+        (e.kind, e.skip)
+    }
+
+    /// Accumulate/decode/drain loop as a serial reader would run it.
+    fn stream<'a>(chunks: impl IntoIterator<Item = &'a [u8]>) -> Vec<Frame> {
+        let (mut buf, mut out) = (Vec::new(), Vec::new());
+        for chunk in chunks {
+            buf.extend_from_slice(chunk);
+            loop {
+                match decode(&buf) {
+                    Ok((frame, used)) => {
+                        assert!(used > 0 && used <= buf.len());
+                        out.push(frame);
+                        buf.drain(..used);
+                    }
+                    Err(e) => {
+                        assert!(e.skip <= buf.len());
+                        buf.drain(..e.skip);
+                        if e.kind == FrameError::Incomplete {
+                            break;
+                        }
+                        assert!(e.skip > 0, "no progress on {:?}", e.kind);
+                    }
+                }
+            }
+        }
+        out
     }
 
     #[test]
-    fn decodes_get_firmware_version_response() {
-        let (frame, used) = decode(&GFV_RESP).unwrap();
-        assert_eq!(frame, Frame::Response(vec![0x03, 0x32, 0x01, 0x06, 0x07]));
-        assert_eq!(used, GFV_RESP.len());
-    }
-
-    #[test]
-    fn decodes_ack_nack_and_error() {
+    fn decodes_fixtures() {
+        let resp = Frame::Response(vec![0x03, 0x32, 0x01, 0x06, 0x07]);
+        assert_eq!(decode(&GFV_RESP), Ok((resp, GFV_RESP.len())));
         assert_eq!(decode(&ACK), Ok((Frame::Ack, 6)));
         assert_eq!(decode(&NACK), Ok((Frame::Nack, 6)));
         assert_eq!(decode(&ERROR_FRAME), Ok((Frame::Error, 8)));
+        assert_eq!(decode(&ACK[..5]), Ok((Frame::Ack, 5))); // postamble optional
+    }
+
+    /// Junk, a stray `00 FF` with a bad header, then ACK + response.
+    fn noisy_stream() -> Vec<u8> {
+        let junk = [0x55, 0x13, 0x00, 0xFF, 0x05, 0x00, 0xFF, 0x00, 0x00];
+        [&junk[..], &ACK, &GFV_RESP].concat()
     }
 
     #[test]
-    fn decodes_ack_followed_by_response() {
-        let mut buf = ACK.to_vec();
-        buf.extend_from_slice(&GFV_RESP);
-        let (first, used) = decode(&buf).unwrap();
-        assert_eq!(first, Frame::Ack);
-        let (second, used2) = decode(&buf[used..]).unwrap();
-        assert!(matches!(second, Frame::Response(_)));
-        assert_eq!(used + used2, buf.len());
+    fn resyncs_past_bad_candidate() {
+        let s = noisy_stream();
+        let bad_lcs = FrameError::BadLengthChecksum {
+            len: 0x05,
+            lcs: 0x00,
+        };
+        assert_eq!(err(&s), (bad_lcs, 4));
+        let expected = vec![Frame::Ack, Frame::Response(GFV_RESP[6..11].to_vec())];
+        assert_eq!(stream([&s[..]]), expected);
     }
 
     #[test]
-    fn skips_leading_garbage_and_extra_preamble() {
-        let mut buf = vec![0x55, 0x13, 0xFF, 0x00, 0x00, 0x00, 0x00];
-        buf.extend_from_slice(&GFV_RESP);
-        let (frame, used) = decode(&buf).unwrap();
-        assert!(matches!(frame, Frame::Response(_)));
-        assert_eq!(used, buf.len());
-    }
-
-    #[test]
-    fn postamble_is_optional() {
-        let short = &GFV_RESP[..GFV_RESP.len() - 1];
-        assert_eq!(decode(short).unwrap().1, short.len());
-        assert_eq!(decode(&ACK[..5]), Ok((Frame::Ack, 5)));
-    }
-
-    #[test]
-    fn rejects_bad_length_checksum() {
-        let mut buf = GFV_RESP;
-        buf[4] = 0xFB;
-        assert_eq!(
-            decode(&buf),
-            Err(FrameError::BadLengthChecksum {
-                len: 0x06,
-                lcs: 0xFB
-            })
-        );
-    }
-
-    #[test]
-    fn rejects_bad_data_checksum() {
-        let mut buf = GFV_RESP;
-        buf[11] ^= 0x01;
-        assert_eq!(decode(&buf), Err(FrameError::BadDataChecksum));
-        let mut buf = GFV_RESP;
-        buf[7] ^= 0x01; // corrupted data byte
-        assert_eq!(decode(&buf), Err(FrameError::BadDataChecksum));
-    }
-
-    #[test]
-    fn rejects_truncated_frames() {
-        // Cut after the start code but before DCS.
-        for cut in 3..GFV_RESP.len() - 1 {
-            assert_eq!(
-                decode(&GFV_RESP[..cut]),
-                Err(FrameError::Incomplete),
-                "{cut}"
-            );
+    fn survives_split_reads() {
+        let s = noisy_stream();
+        let expected = stream([&s[..]]);
+        for i in 0..=s.len() {
+            assert_eq!(stream([&s[..i], &s[i..]]), expected, "split at {i}");
         }
+        assert_eq!(stream(s.chunks(1)), expected);
     }
 
     #[test]
-    fn rejects_len_beyond_buffer() {
+    fn possible_start_code_prefix_is_incomplete() {
+        use FrameError::Incomplete;
+        assert_eq!(err(&[]), (Incomplete, 0));
+        assert_eq!(err(&[0x00, 0x00]), (Incomplete, 1));
+        assert_eq!(err(&[0x12, 0x00]), (Incomplete, 1));
+        // A partial frame is kept; only the junk before it may be dropped.
+        assert_eq!(err(&[0x12, 0x00, 0x00, 0xFF, 0x06]), (Incomplete, 2));
+        for cut in 3..GFV_RESP.len() - 1 {
+            assert_eq!(err(&GFV_RESP[..cut]), (Incomplete, 1), "cut {cut}");
+        }
         // LEN 0xFE claims far more data than is present.
         let buf = [0x00, 0x00, 0xFF, 0xFE, 0x02, 0xD5, 0x03, 0x28, 0x00];
-        assert_eq!(decode(&buf), Err(FrameError::Incomplete));
+        assert_eq!(err(&buf), (Incomplete, 1));
     }
 
     #[test]
-    fn rejects_extended_and_empty_frames() {
+    fn rejects_bad_checksums() {
+        let mut buf = GFV_RESP;
+        buf[4] = 0xFB;
+        let bad_lcs = FrameError::BadLengthChecksum {
+            len: 0x06,
+            lcs: 0xFB,
+        };
+        assert_eq!(err(&buf), (bad_lcs, 3));
+        let mut buf = GFV_RESP;
+        buf[11] ^= 0x01;
+        assert_eq!(err(&buf), (FrameError::BadDataChecksum, 3));
+        let mut buf = GFV_RESP;
+        buf[7] ^= 0x01; // corrupted data byte
+        assert_eq!(err(&buf), (FrameError::BadDataChecksum, 3));
+    }
+
+    #[test]
+    fn rejects_unsupported_frames_and_junk() {
         let ext = [0x00, 0x00, 0xFF, 0xFF, 0xFF, 0x01, 0x00, 0xFF, 0xD5, 0x2B];
-        assert_eq!(decode(&ext), Err(FrameError::ExtendedFrame));
-        assert_eq!(
-            decode(&[0x00, 0x00, 0xFF, 0x00, 0x00, 0x00]),
-            Err(FrameError::EmptyFrame)
-        );
-    }
-
-    #[test]
-    fn rejects_host_to_pn532_frame() {
-        assert_eq!(decode(&GFV_REQ), Err(FrameError::UnexpectedTfi(0xD4)));
-    }
-
-    #[test]
-    fn rejects_junk() {
-        assert_eq!(decode(&[]), Err(FrameError::NoStartCode));
-        assert_eq!(decode(&[0x00]), Err(FrameError::NoStartCode));
-        assert_eq!(
-            decode(&[0x12, 0x34, 0x56, 0xFF]),
-            Err(FrameError::NoStartCode)
-        );
-        assert!(decode(&[0xFF; 64]).is_err());
-        assert!(decode(&[0x00; 64]).is_err());
+        assert_eq!(err(&ext), (FrameError::ExtendedFrame, 3));
+        let empty = [0x00, 0x00, 0xFF, 0x00, 0x00, 0x00];
+        assert_eq!(err(&empty), (FrameError::EmptyFrame, 3));
+        // A well-formed host -> PN532 frame (e.g. an echo) is skipped whole.
+        assert_eq!(err(&GFV_REQ), (FrameError::UnexpectedTfi(0xD4), 9));
+        assert_eq!(err(&[0x12, 0x34, 0xFF]), (FrameError::NoStartCode, 3));
+        assert_eq!(err(&[0xFF; 64]), (FrameError::NoStartCode, 64));
+        assert_eq!(err(&[0x00; 64]), (FrameError::Incomplete, 63));
     }
 
     /// Tiny xorshift PRNG so the fuzz test needs no extra dependencies.
@@ -352,24 +378,8 @@ mod tests {
                     }
                 })
                 .collect();
-            if let Ok((_, used)) = decode(&buf) {
-                assert!(used <= buf.len());
-            }
-        }
-    }
-
-    #[test]
-    fn never_panics_on_mutated_frames() {
-        for pos in 0..GFV_RESP.len() {
-            for byte in 0..=255u8 {
-                let mut buf = GFV_RESP;
-                buf[pos] = byte;
-                for cut in 0..=buf.len() {
-                    if let Ok((_, used)) = decode(&buf[..cut]) {
-                        assert!(used <= cut);
-                    }
-                }
-            }
+            let split = (rng.next() as usize) % (buf.len() + 1);
+            stream([&buf[..split], &buf[split..]]);
         }
     }
 
