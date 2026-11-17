@@ -223,8 +223,14 @@ jobs:
                   if (-not $done) { throw "the settings window did not close (cycle $cycle)" }
                   if ($p.HasExited) { throw "the tray exited (code $($p.ExitCode)) when the window closed" }
               }
-              Start-Sleep 2
-              Write-Host "after both closed:      $(Mem $p)"
+              # The window's wgpu device and surface are released after the
+              # close is logged: wait for the memory to come back down.
+              $watch = [Diagnostics.Stopwatch]::StartNew()
+              do {
+                  Start-Sleep -Milliseconds 250; $p.Refresh()
+              } while ($p.PrivateMemorySize64 -ge 40MB -and $watch.Elapsed.TotalSeconds -lt 15)
+              Write-Host ("after both closed:      $(Mem $p) (after {0:N1} s)" -f $watch.Elapsed.TotalSeconds)
+              if ($p.PrivateMemorySize64 -ge 40MB) { throw "private memory still at or above 40 MiB 15 s after the window closed" }
               $closed = Closed
               if ($closed -ne 2) { throw "expected 2 'settings window closed' log lines, found $closed" }
               Stop-Process $p
