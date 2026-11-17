@@ -14,6 +14,7 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
+use crate::settings::backup::Request;
 use crate::settings::{self, Host, Settings};
 use crate::theme;
 
@@ -185,7 +186,38 @@ impl eframe::App for App {
                 self.0.picked(pick, path);
             }
         }
+        if let Some(request) = self.0.take_request() {
+            if let Some(path) = file_dialog(frame, &request) {
+                match request {
+                    Request::Export(_) => self.0.export_to(path),
+                    Request::Import => self.0.import_from(path),
+                    Request::Folder => self.0.move_to(path),
+                }
+            }
+        }
     }
+}
+
+/// The native dialog for an export / import / folder [`Request`].
+#[cfg(windows)]
+fn file_dialog(frame: &eframe::Frame, request: &Request) -> Option<std::path::PathBuf> {
+    let dialog = rfd::FileDialog::new().set_parent(frame);
+    let toml = |d: rfd::FileDialog| {
+        d.add_filter("Mini Launcher config", &["toml"])
+            .add_filter("All files", &["*"])
+    };
+    match request {
+        Request::Export(name) => {
+            toml(dialog.set_title("Export the library").set_file_name(name)).save_file()
+        }
+        Request::Import => toml(dialog.set_title("Import a library")).pick_file(),
+        Request::Folder => dialog.set_title("Choose the config folder").pick_folder(),
+    }
+}
+
+#[cfg(not(windows))]
+fn file_dialog(_: &eframe::Frame, _: &Request) -> Option<std::path::PathBuf> {
+    None
 }
 
 /// The native file dialog, modal to the settings window.

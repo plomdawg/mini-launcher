@@ -98,6 +98,7 @@ fn run(log_dir: Option<PathBuf>) -> Result<()> {
     let host = Arc::new(TrayHost {
         state: Mutex::default(),
         reload: AtomicBool::new(false),
+        relocate: AtomicBool::new(false),
         sessions,
     });
     let worker = thread::Builder::new()
@@ -105,7 +106,7 @@ fn run(log_dir: Option<PathBuf>) -> Result<()> {
         .spawn({
             let (stop, paused, recheck) = (stop.clone(), paused.clone(), recheck.clone());
             let host = host.clone();
-            move || work(&stop, &paused, &recheck, &host.reload, server, &tx)
+            move || work(&stop, &paused, &recheck, &host, server, &tx)
         })
         .context("cannot start the run loop")?;
 
@@ -302,6 +303,8 @@ struct TrayHost {
     reload: AtomicBool,
     /// Tag sessions with the worker, which owns the reader.
     sessions: Sessions,
+    /// Set when the window changed `location.toml`; the worker switches.
+    relocate: AtomicBool,
 }
 
 impl Host for TrayHost {
@@ -332,6 +335,13 @@ impl Host for TrayHost {
             e.to_string()
         })
     }
+
+    fn moved(&self) {
+        // The window shows the new folder at once; the worker follows on
+        // its next poll (the same switch as when the folder comes back).
+        lock(&self.state).0 = Config::location();
+        self.relocate.store(true, Ordering::Relaxed);
+    }
 }
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -344,7 +354,7 @@ fn work(
     stop: &AtomicBool,
     paused: &AtomicBool,
     recheck: &AtomicBool,
-    reload: &AtomicBool,
+    host: &TrayHost,
     mut sessions: SessionServer,
     tx: &mpsc::Sender<Update>,
 ) {
@@ -366,9 +376,13 @@ fn work(
         // polls and nothing launches until the session ends).
         let is_paused = paused.load(Ordering::Relaxed);
         polls = polls.wrapping_add(1);
+        // The settings window moved the config folder: follow it now.
+        if host.relocate.swap(false, Ordering::Relaxed) {
+            watch.switch(Config::location(), runner, tx)?;
+        }
         // A save from the settings window is loaded at once (`force` makes
         // the check reread the file even if its mtime looks the same).
-        let saved = reload.swap(false, Ordering::Relaxed);
+        let saved = host.reload.swap(false, Ordering::Relaxed);
         if saved {
             watch.force = true;
         }

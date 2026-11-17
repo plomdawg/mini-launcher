@@ -33,6 +33,12 @@ name = "Half-Life 2"
 steam_appid = 220
 ```
 
+In the settings window, **Export...** saves one (suggested name
+`mini-launcher-backup-<date>.toml`) and **Import...** reads one, shows how many games and tag
+bindings it has and asks before replacing your library. The current config is first copied to
+`config.toml.import-<date>-<time>.bak` (UTC), which, unlike `config.toml.bak`, later saves don't
+replace.
+
 Importing reads the whole file and validates it first: a damaged file, an unknown
 `export_version`, or any entry that would not load is rejected and the current config is left
 alone. Only then is it saved as `config.toml` (the old one becomes `config.toml.bak`). A plain
@@ -44,7 +50,14 @@ tags, so only import files you made or trust.
 
 ## Keeping the config in another folder
 
-To keep the config in a synced folder (e.g. OneDrive), create `location.toml` next to where
+The easiest way is the settings window: **Folder...** shows where the config lives now (default
+folder, a custom folder, or why the custom folder is unavailable). **Move to folder...** picks a
+folder and writes `location.toml` for you; if that folder already has a `config.toml` you choose
+between using the one there and copying yours over it (the one there is then kept as
+`config.toml.bak`), otherwise your library is copied there. **Reset to default** removes
+`location.toml` the same way. The tray switches to the new folder at once.
+
+To set it up by hand instead, create `location.toml` next to where
 `config.toml` would normally be (`%APPDATA%\mini-launcher\config\location.toml` on Windows):
 
 ```toml
@@ -52,8 +65,8 @@ dir = 'D:\OneDrive\Mini Launcher'
 ```
 
 Mini Launcher then loads, saves and watches `config.toml` (and `config.toml.bak`) in that folder.
-`dir` must be a full path to a folder that already exists. Restart the tray app after changing
-`location.toml`.
+`dir` must be a full path to a folder that already exists. Restart the tray app after editing
+`location.toml` by hand.
 
 If `location.toml` can't be used (it is invalid, or the folder is missing, e.g. a drive or
 synced folder that isn't mounted yet at login), Mini Launcher does **not** switch to the default

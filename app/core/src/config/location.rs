@@ -114,6 +114,35 @@ impl ConfigLocation {
     }
 }
 
+/// Points the config at `dir` by writing `location.toml` in `default_dir`,
+/// or back at `default_dir` itself (`None`: removes the pointer). `dir`
+/// must be an absolute path to an existing folder. The tray follows the
+/// change when told to (see the settings window's Config folder dialog).
+pub fn set_pointer(default_dir: &Path, dir: Option<&Path>) -> Result<(), super::edit::EditError> {
+    let path = default_dir.join(POINTER_FILE);
+    let Some(dir) = dir else {
+        return match std::fs::remove_file(&path) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+                Err(super::edit::EditError::Write { path, source: e })
+            }
+            _ => Ok(()),
+        };
+    };
+    let invalid = |message: String| LocationError::Invalid {
+        path: path.clone(),
+        message,
+    };
+    if !dir.is_absolute() || !dir.is_dir() {
+        return Err(invalid(format!("\"{}\" is not an existing folder", dir.display())).into());
+    }
+    let text = dir
+        .to_str()
+        .ok_or_else(|| invalid(format!("\"{}\" is not valid Unicode", dir.display())))?;
+    let mut doc = toml_edit::DocumentMut::new();
+    doc.insert("dir", toml_edit::value(text));
+    super::edit::write_atomic(&path, &doc.to_string(), false, true)
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Pointer {
@@ -213,6 +242,25 @@ mod tests {
         assert_eq!(
             ConfigLocation::resolve(&default),
             ConfigLocation::Override(missing)
+        );
+    }
+
+    #[test]
+    fn set_pointer_round_trips() {
+        let (default, synced) = (temp("set"), temp("set-synced"));
+        let odd = synced.join("it's \"odd\"");
+        std::fs::create_dir(&odd).unwrap();
+        set_pointer(&default, Some(&odd)).unwrap();
+        assert_eq!(
+            ConfigLocation::resolve(&default),
+            ConfigLocation::Override(odd)
+        );
+        assert!(set_pointer(&default, Some(&default.join("missing"))).is_err());
+        set_pointer(&default, None).unwrap();
+        set_pointer(&default, None).unwrap();
+        assert_eq!(
+            ConfigLocation::resolve(&default),
+            ConfigLocation::Default(default)
         );
     }
 
