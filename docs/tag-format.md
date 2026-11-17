@@ -88,8 +88,12 @@ don't want to rewrite.
 The launcher reads user memory four pages at a time and stops as soon as the NDEF data is complete
 (a whole NDEF Message TLV or a terminator), so smaller Type 2 tags (MIFARE Ultralight, NTAG210)
 work as long as the message fits. A tag that isn't Type 2 at all (e.g. MIFARE Classic), or whose
-pages keep failing to read for about 2 seconds (e.g. a read-protected NTAG), counts as having
+pages keep failing to read for a few seconds (e.g. a read-protected NTAG), counts as having
 nothing usable: it's reported once with its UID, so it can be mapped.
+
+If a tag you wrote shows up as unusable (for example because it was slid in slowly or sat at the
+edge of the antenna), lift it off the reader for more than five seconds and put it back. A tag
+that's only briefly lifted counts as re-seated and isn't read again.
 
 ## Security model
 

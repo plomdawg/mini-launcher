@@ -12,22 +12,36 @@ You need:
 
 ## 1. Download the launcher
 
-There are no official releases yet. Until there are, download the test build from GitHub
-Actions. You need to be signed in to GitHub to download it.
+Download the launcher from the repository's
+[**Releases** page](https://github.com/plomdawg/mini-launcher/releases) on GitHub (the first
+release is `app-v0.1.0`):
 
-1. Open the repository on GitHub and click the **Actions** tab.
-2. Click **CI** in the list on the left.
-3. Open the most recent run on the `main` branch that has a green check mark.
-4. Scroll down to **Artifacts** and click **`mini-launcher-windows-x86_64`**. This downloads a
-   zip file.
-5. Unzip it. Inside is `mini-launcher.exe`. Move it somewhere permanent, for example
-   `C:\Tools\mini-launcher\`.
+1. Open the newest release and, under **Assets**, download
+   `mini-launcher-<version>-windows-x86_64.exe` (for example
+   `mini-launcher-0.1.0-windows-x86_64.exe`) and `SHA256SUMS`.
+2. Move the `.exe` somewhere permanent, for example `C:\Tools\mini-launcher\`, and rename it to
+   `mini-launcher.exe` so the commands in this guide work as written.
+3. Optional but recommended: check that the download isn't damaged or tampered with. In
+   PowerShell, in the folder where you downloaded both files (before renaming the `.exe`), run:
+
+   ```powershell
+   Get-FileHash .\mini-launcher-0.1.0-windows-x86_64.exe -Algorithm SHA256
+   Get-Content .\SHA256SUMS
+   ```
+
+   The `Hash` from the first command must match the long hex string next to the same file name
+   in `SHA256SUMS` (upper/lower case doesn't matter). If they differ, delete the file and
+   download it again.
+
+Testers who want an unreleased build can also download the `mini-launcher-windows-x86_64`
+artifact from any green **CI** run in the repository's **Actions** tab (signed-in GitHub users
+only). It's a zip with `mini-launcher.exe` inside.
 
 The `.exe` isn't code-signed yet. If you start it from File Explorer, Windows SmartScreen may
 say "Windows protected your PC": click **More info**, then **Run anyway**. Starting it from
-PowerShell (below) usually skips that prompt. If Windows still blocks it, right-click the zip →
-**Properties** → tick **Unblock** → **OK** before unzipping, or run
-`Unblock-File .\mini-launcher.exe` in PowerShell.
+PowerShell (below) usually skips that prompt. If Windows still blocks it, right-click the
+`.exe` → **Properties** → tick **Unblock** → **OK**, or run `Unblock-File .\mini-launcher.exe`
+in PowerShell.
 
 `mini-launcher.exe` is a **console program**: double-clicking it just flashes a window. Run it
 from PowerShell or Windows Terminal instead:
@@ -96,7 +110,7 @@ Reader on COM3:
 OK: the reader is answering.
 ```
 
-Note the **`Config:`** line: that's where your config file goes (step 6).
+Note the **`Config:`** line: that's where your config file goes (step 7).
 
 If it fails, it prints a message starting with `error:`, often followed by a hint:
 
@@ -142,7 +156,11 @@ ending with a line like:
 ```
 
 If it says `payload: unusable`, the tag has nothing the launcher understands. Rewrite it (step 4)
-or map its UID in the config (step 6). Press **Ctrl-C** to stop.
+or map its UID in the config (step 7). Press **Ctrl-C** to stop.
+
+If the reader stopped before the last page, `scan` prints a line like
+`(pages after 7 not read: nothing past here can change the result)`. That's normal: the launcher
+stops reading as soon as the rest of the tag can't change what it does.
 
 ## 6. Launch games: `run`
 
