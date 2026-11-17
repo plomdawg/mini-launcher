@@ -25,10 +25,13 @@ jobs:
         include:
           - os: ubuntu-latest
             artifact: mini-launcher-linux-x86_64
-            binary: mini-launcher
+            # The tray app is Windows-only for now (a stub elsewhere).
+            binaries: app/target/release/mini-launcher
           - os: windows-latest
             artifact: mini-launcher-windows-x86_64
-            binary: mini-launcher.exe
+            binaries: |
+              app/target/release/mini-launcher.exe
+              app/target/release/mini-launcher-tray.exe
     defaults:
       run:
         working-directory: app
@@ -62,8 +65,8 @@ jobs:
       - name: Release build
         run: cargo build --workspace --release --locked
 
-      # Fails unless the exe carries an icon group resource (RT_GROUP_ICON)
-      # embedded by app/cli/build.rs.
+      # Fails unless both exes carry an icon group resource (RT_GROUP_ICON)
+      # embedded by app/cli/build.rs; the tray also loads it at runtime.
       - name: Check exe icon resource (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
@@ -90,14 +93,27 @@ jobs:
               }
           }
           '@
-          $exe = Resolve-Path target/release/mini-launcher.exe
-          $groups = [PeIcons]::CountIconGroups($exe)
-          Write-Host "icon groups in ${exe}: $groups"
-          if ($groups -lt 1) { throw "mini-launcher.exe has no embedded icon" }
+          foreach ($name in 'mini-launcher.exe', 'mini-launcher-tray.exe') {
+              $exe = Resolve-Path "target/release/$name"
+              $groups = [PeIcons]::CountIconGroups($exe)
+              Write-Host "icon groups in ${exe}: $groups"
+              if ($groups -lt 1) { throw "$name has no embedded icon" }
+          }
+
+      # The tray must not open a console: PE subsystem 2 = Windows GUI.
+      - name: Check tray exe is windowless (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $bytes = [IO.File]::ReadAllBytes((Resolve-Path target/release/mini-launcher-tray.exe))
+          $pe = [BitConverter]::ToInt32($bytes, 0x3c)
+          $subsystem = [BitConverter]::ToUInt16($bytes, $pe + 0x5c)
+          Write-Host "mini-launcher-tray.exe subsystem: $subsystem"
+          if ($subsystem -ne 2) { throw "mini-launcher-tray.exe is not a GUI-subsystem exe" }
 
       - name: Upload binary
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ${{ matrix.artifact }}
-          path: app/target/release/${{ matrix.binary }}
+          path: ${{ matrix.binaries }}
           if-no-files-found: error

@@ -32,6 +32,10 @@ pub enum Notice {
         via: Via,
         error: String,
     },
+    /// A tag was inserted while paused: not launched.
+    Paused {
+        uid: Uid,
+    },
     /// The tag came back within the re-seat window: not relaunched.
     Reseated {
         uid: Uid,
@@ -68,6 +72,7 @@ pub enum Notice {
 pub struct Runner {
     config: Config,
     dry_run: bool,
+    paused: bool,
     debouncer: Debouncer,
 }
 
@@ -76,8 +81,20 @@ impl Runner {
         Runner {
             config,
             dry_run,
+            paused: false,
             debouncer: Debouncer::new(DebounceConfig::default()),
         }
+    }
+
+    /// While paused, inserted tags are tracked (so resuming does not launch
+    /// the tag already on the reader) but nothing is launched.
+    pub fn set_paused(&mut self, paused: bool) {
+        self.paused = paused;
+    }
+
+    /// Replaces the library, e.g. after the config file changed.
+    pub fn set_config(&mut self, config: Config) {
+        self.config = config;
     }
 
     /// Handles one tick taken at `now`, launching as needed.
@@ -130,6 +147,10 @@ impl Runner {
                 return Notice::Removed { uid };
             }
         };
+        if self.paused {
+            tracing::info!(%uid, "inserted while paused; not launching");
+            return Notice::Paused { uid };
+        }
         match launch::resolve(&self.config, uid.as_bytes(), &payload) {
             Resolution::Launch { plan, via } => match launch::execute(&plan, self.dry_run) {
                 Ok(outcome) => {
@@ -178,18 +199,19 @@ pub fn describe(via: &Via) -> String {
 }
 
 /// Feeds `next` ticks to `runner` once per poll interval and passes every
-/// notice to `notify`, until `stop` is set, `next` returns `None` (the source
-/// is closed) or `notify` fails.
+/// notice to `notify` until `stop` is set, `next` returns `None` (the source
+/// is closed) or `notify` fails. `next` may also adjust the runner (pause,
+/// config) before ticking.
 pub fn poll_loop<E: Display, X>(
     runner: &mut Runner,
     stop: &AtomicBool,
     clock: &mut impl Clock,
-    mut next: impl FnMut(Instant) -> Option<Tick<E>>,
+    mut next: impl FnMut(&mut Runner, Instant) -> Option<Tick<E>>,
     mut notify: impl FnMut(Notice) -> Result<(), X>,
 ) -> Result<(), X> {
     while !stop.load(Ordering::Relaxed) {
         let now = clock.now();
-        let Some(tick) = next(now) else { break };
+        let Some(tick) = next(runner, now) else { break };
         for notice in runner.step(tick, now) {
             notify(notice)?;
         }
@@ -246,5 +268,16 @@ mod tests {
             runner.step(tick, Instant::now()),
             [Notice::Unmapped { uid: uid() }]
         );
+    }
+
+    #[test]
+    fn paused_inserts_do_not_launch_and_resuming_keeps_the_seated_tag() {
+        let mut runner = Runner::new(Config::default(), true);
+        let now = Instant::now();
+        let tag = || Tick::<Infallible>::Reading(Some((uid(), Payload::Steam(440))));
+        runner.set_paused(true);
+        assert_eq!(runner.step(tag(), now), [Notice::Paused { uid: uid() }]);
+        runner.set_paused(false);
+        assert_eq!(runner.step(tag(), now), []);
     }
 }

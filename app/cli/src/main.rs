@@ -3,11 +3,10 @@ use std::process::ExitCode;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use clap::{Args, Parser, Subcommand};
+use mini_launcher_cli::{logging, port};
 
 mod autostart;
 mod diagnose;
-mod logging;
-mod port;
 mod run;
 mod scan;
 

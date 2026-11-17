@@ -106,13 +106,19 @@ fn poll_loop<E: Display>(
     ctx: &Ctx,
     stop: &AtomicBool,
     clock: &mut impl Clock,
-    next: impl FnMut(Instant) -> Option<Tick<E>>,
+    mut next: impl FnMut(Instant) -> Option<Tick<E>>,
 ) -> Result<()> {
     let mut runner = Runner::new(ctx.config.clone(), ctx.dry_run);
-    runner::poll_loop(&mut runner, stop, clock, next, |notice| {
-        print(out, ctx.path.as_deref(), notice)?;
-        Ok(out.flush()?)
-    })
+    runner::poll_loop(
+        &mut runner,
+        stop,
+        clock,
+        |_, now| next(now),
+        |notice| {
+            print(out, ctx.path.as_deref(), notice)?;
+            Ok(out.flush()?)
+        },
+    )
 }
 
 fn print(out: &mut impl Write, path: Option<&Path>, notice: Notice) -> Result<()> {
@@ -138,6 +144,7 @@ fn print(out: &mut impl Write, path: Option<&Path>, notice: Notice) -> Result<()
                 "launch {uid}: {plan} ({via}): failed to start: {error}"
             )?;
         }
+        Notice::Paused { uid } => writeln!(out, "paused: not launching {uid}")?,
         Notice::Reseated { uid } => writeln!(out, "reseated {uid}: not relaunching")?,
         Notice::Removed { uid } => writeln!(out, "removed {uid}")?,
         Notice::UnknownId { uid, slug } => {

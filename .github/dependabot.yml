@@ -12,6 +12,12 @@ updates:
     directory: /app
     schedule:
       interval: weekly
+    # Bumped by hand only: balloon() in app/cli/src/tray/app.rs depends on
+    # tray-icon internals (window class, icon uID). After a bump, re-verify
+    # it against the new source; a Cargo.lock version test enforces this.
+    ignore:
+      - dependency-name: tray-icon
+      - dependency-name: muda
     groups:
       cargo-minor-patch:
         update-types: [minor, patch]
