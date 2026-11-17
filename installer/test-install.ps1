@@ -25,10 +25,34 @@ function Check([bool]$ok, [string]$what) {
     Write-Host "ok: $what"
 }
 function RunValue { (Get-ItemProperty $runKey -ErrorAction SilentlyContinue).'Mini Launcher' }
+function SetRunValue([string]$value) {
+    if ([string]::IsNullOrEmpty($value)) { Remove-ItemProperty $runKey 'Mini Launcher' -ErrorAction SilentlyContinue }
+    else { New-ItemProperty $runKey 'Mini Launcher' -Value $value -Force | Out-Null }
+}
 function Invoke([string]$exe, [string[]]$arguments) {
     $p = Start-Process $exe -ArgumentList $arguments -Wait -PassThru
     Check ($p.ExitCode -eq 0) "$(Split-Path $exe -Leaf) $arguments exited with $($p.ExitCode)"
 }
+
+# Uninstall, then wait for the files, the uninstall entry and (unless it should
+# survive) the Run value to go: the uninstaller re-launches itself from %TEMP%.
+function Uninstall([string]$log, [bool]$keepRunValue) {
+    Invoke (Join-Path $dir 'unins000.exe') '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/LOG=$log"
+    for ($i = 0; $i -lt 30; $i++) {
+        if (-not (Test-Path $dir) -and -not (Test-Path $uninstallKey) -and
+            ($keepRunValue -or $null -eq (RunValue))) { break }
+        Start-Sleep -Seconds 1
+    }
+    Check (-not (Test-Path $dir)) 'install dir removed'
+    Check (-not (Test-Path $shortcut)) 'Start menu shortcut removed'
+    Check (-not (Test-Path $uninstallKey)) 'uninstall entry removed'
+}
+
+$quiet = '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART'
+$trayValue = "`"$tray`""
+# Restored at the end, for runs by hand.
+$savedRunValue = RunValue
+SetRunValue $null
 
 $created = @()
 foreach ($f in $userFiles) {
@@ -41,7 +65,7 @@ $userHashes = $userFiles | ForEach-Object { (Get-FileHash $_).Hash }
 Check (-not (Test-Path $dir)) "not installed yet at $dir"
 
 # 1. Install without the start-at-login task.
-Invoke $Setup '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/MERGETASKS=!autostart', '/LOG=install-notask.log'
+Invoke $Setup ($quiet + '/MERGETASKS=!autostart', '/LOG=install-notask.log')
 foreach ($f in $files) { Check (Test-Path (Join-Path $dir $f)) "installed $f" }
 Check ($null -eq (RunValue)) 'no Run value without the autostart task'
 $lnk = (New-Object -ComObject WScript.Shell).CreateShortcut($shortcut)
@@ -50,16 +74,32 @@ $entry = Get-ItemProperty $uninstallKey
 Check ($entry.DisplayVersion -eq $Version) "HKCU uninstall entry, version $($entry.DisplayVersion)"
 
 # 2. Reinstall over it with the task: same Run value core::autostart writes for the tray.
-Invoke $Setup '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/TASKS=autostart', '/LOG=install-task.log'
-Check ((RunValue) -eq "`"$tray`"") "Run value = $(RunValue)"
+Invoke $Setup ($quiet + '/TASKS=autostart', '/LOG=install-task.log')
+Check ((RunValue) -eq $trayValue) "Run value = $(RunValue)"
 
-# 3. Silent uninstall. The uninstaller re-launches itself from %TEMP%, so poll.
-Invoke (Join-Path $dir 'unins000.exe') '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/LOG=uninstall.log'
-for ($i = 0; $i -lt 30 -and (Test-Path $dir); $i++) { Start-Sleep -Seconds 1 }
-Check (-not (Test-Path $dir)) 'install dir removed'
-Check (-not (Test-Path $shortcut)) 'Start menu shortcut removed'
-Check ($null -eq (RunValue)) 'Run value removed'
-Check (-not (Test-Path $uninstallKey)) 'uninstall entry removed'
+# 3. Upgrades follow the current start-at-login state: kept while on ...
+Invoke $Setup ($quiet + '/LOG=upgrade-on.log')
+Check ((RunValue) -eq $trayValue) "upgrade keeps start at login on: $(RunValue)"
+# ... turned off when the task is unticked ...
+Invoke $Setup ($quiet + '/MERGETASKS=!autostart', '/LOG=upgrade-untick.log')
+Check ($null -eq (RunValue)) 'unticking the task on upgrade removes the Run value'
+# ... and not turned back on once off (as after unticking it in the tray).
+Invoke $Setup ($quiet + '/LOG=upgrade-off.log')
+Check ($null -eq (RunValue)) 'upgrade keeps start at login off'
+
+# 4. Uninstall removes a CLI-style Run value (`autostart enable`) for this install.
+SetRunValue "`"$(Join-Path $dir 'mini-launcher.exe')`" run"
+Uninstall 'uninstall.log' $false
+Check ($null -eq (RunValue)) 'CLI-style Run value removed'
+
+# 5. ... but leaves one that starts another copy (a sibling dir must not match).
+Invoke $Setup ($quiet + '/MERGETASKS=!autostart', '/LOG=install-again.log')
+$foreign = "`"${dir}2\mini-launcher-tray.exe`""
+SetRunValue $foreign
+Uninstall 'uninstall-foreign.log' $true
+Check ((RunValue) -eq $foreign) "Run value for another copy kept: $(RunValue)"
+
+SetRunValue $savedRunValue
 for ($i = 0; $i -lt $userFiles.Count; $i++) {
     Check ((Test-Path $userFiles[$i]) -and (Get-FileHash $userFiles[$i]).Hash -eq $userHashes[$i]) "kept $($userFiles[$i])"
 }
