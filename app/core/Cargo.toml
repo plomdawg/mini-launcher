@@ -9,3 +9,4 @@ publish.workspace = true
 name = "nfc_launcher_core"
 
 [dependencies]
+thiserror = "2"

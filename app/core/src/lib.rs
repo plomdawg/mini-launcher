@@ -6,6 +6,7 @@
 
 pub mod ndef;
 pub mod payload;
+pub mod pn532;
 
 /// Version of the core library, taken from `Cargo.toml`.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
