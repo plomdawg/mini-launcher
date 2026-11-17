@@ -1,11 +1,11 @@
-//! `nfc-launcher diagnose`: ports, config location and a reader self-test.
+//! `mini-launcher diagnose`: ports, config location and a reader self-test.
 
 use std::io::Write;
 
 use anyhow::Result;
-use nfc_launcher_core::config::Config;
-use nfc_launcher_core::pn532::FirmwareVersion;
-use nfc_launcher_core::ports;
+use mini_launcher_core::config::Config;
+use mini_launcher_core::pn532::FirmwareVersion;
+use mini_launcher_core::ports;
 
 use crate::port;
 

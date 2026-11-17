@@ -18,31 +18,31 @@ Actions. You need to be signed in to GitHub to download it.
 1. Open the repository on GitHub and click the **Actions** tab.
 2. Click **CI** in the list on the left.
 3. Open the most recent run on the `main` branch that has a green check mark.
-4. Scroll down to **Artifacts** and click **`nfc-launcher-windows-x86_64`**. This downloads a
+4. Scroll down to **Artifacts** and click **`mini-launcher-windows-x86_64`**. This downloads a
    zip file.
-5. Unzip it. Inside is `nfc-launcher.exe`. Move it somewhere permanent, for example
-   `C:\Tools\nfc-launcher\`.
+5. Unzip it. Inside is `mini-launcher.exe`. Move it somewhere permanent, for example
+   `C:\Tools\mini-launcher\`.
 
 The `.exe` isn't code-signed yet. If you start it from File Explorer, Windows SmartScreen may
 say "Windows protected your PC": click **More info**, then **Run anyway**. Starting it from
 PowerShell (below) usually skips that prompt. If Windows still blocks it, right-click the zip →
 **Properties** → tick **Unblock** → **OK** before unzipping, or run
-`Unblock-File .\nfc-launcher.exe` in PowerShell.
+`Unblock-File .\mini-launcher.exe` in PowerShell.
 
-`nfc-launcher.exe` is a **console program**: double-clicking it just flashes a window. Run it
+`mini-launcher.exe` is a **console program**: double-clicking it just flashes a window. Run it
 from PowerShell or Windows Terminal instead:
 
-1. Open the folder with `nfc-launcher.exe` in File Explorer.
+1. Open the folder with `mini-launcher.exe` in File Explorer.
 2. Right-click an empty spot in the folder and choose **Open in Terminal** (on older Windows:
    hold Shift, right-click, **Open PowerShell window here**).
 3. Check that it works:
 
    ```powershell
-   .\nfc-launcher.exe --help
+   .\mini-launcher.exe --help
    ```
 
 In PowerShell you have to type `.\` in front of the program name. The rest of this guide
-writes the commands as `.\nfc-launcher.exe ...`.
+writes the commands as `.\mini-launcher.exe ...`.
 
 ## 2. Set up the reader
 
@@ -78,7 +78,7 @@ to every command, e.g. `--port COM3`.
 ## 3. Check the reader: `diagnose`
 
 ```powershell
-.\nfc-launcher.exe diagnose
+.\mini-launcher.exe diagnose
 ```
 
 When everything is right, the output looks like this (port names, numbers and descriptions will
@@ -88,7 +88,7 @@ differ):
 Serial ports:
   COM3  USB 1A86:7523  wch.cn / USB-SERIAL CH340  <- likely reader (CH340)
 
-Config: C:\Users\you\AppData\Roaming\nfc-launcher\config\config.toml (not created yet; steam:// tags work without it)
+Config: C:\Users\you\AppData\Roaming\mini-launcher\config\config.toml (not created yet; steam:// tags work without it)
 
 Reader on COM3:
   PN532 (IC 0x32), firmware 1.6
@@ -105,7 +105,7 @@ If it fails, it prints a message starting with `error:`, often followed by a hin
 | `no USB serial ports found` | The adapter isn't detected. Plug it in again, try another USB port, check Device Manager, install the CH340 driver. |
 | `no CH340 reader adapter found among these ports` | Your adapter isn't a CH340. Pick its port from the list and run `diagnose --port COM3` (with your number). |
 | `more than one CH340 adapter found` | Unplug the other one, or pick one with `--port`. |
-| `COM port not found or in use by another program` | Wrong port number, or another program has the port open. Close serial monitors, the Arduino IDE, and any other `nfc-launcher` window. |
+| `COM port not found or in use by another program` | Wrong port number, or another program has the port open. Close serial monitors, the Arduino IDE, and any other `mini-launcher` window. |
 | `no reply from the PN532` or `cannot configure the PN532 on COM3` | The adapter works but the board doesn't answer properly. Check that both DIP switches are OFF, that TX/RX are crossed, that the board's VCC is on the adapter's **5V** pin (not 3V3), and that GND is connected. |
 
 `diagnose --all` also lists non-USB ports (like a motherboard `COM1`), which are hidden by
@@ -130,7 +130,7 @@ the launcher goes by the tag's serial number, its UID). The full rules are in
 ## 5. Read the tag: `scan`
 
 ```powershell
-.\nfc-launcher.exe scan
+.\mini-launcher.exe scan
 ```
 
 It prints `Scanning on COM3. Place a tag on the reader (Ctrl-C to stop).` Put the tag on the
@@ -149,13 +149,13 @@ or map its UID in the config (step 6). Press **Ctrl-C** to stop.
 Try it first with `--dry-run`, which shows what would launch without starting anything:
 
 ```powershell
-.\nfc-launcher.exe run --dry-run
+.\mini-launcher.exe run --dry-run
 ```
 
 Insert the tag:
 
 ```
-config: C:\Users\you\AppData\Roaming\nfc-launcher\config\config.toml (0 games)
+config: C:\Users\you\AppData\Roaming\mini-launcher\config\config.toml (0 games)
 watching COM3 for tags (Ctrl-C to stop)
 launch 04A1B2C3D4E5F6: open steam://rungameid/440 (tag steam:) [dry run]
 ```
@@ -163,7 +163,7 @@ launch 04A1B2C3D4E5F6: open steam://rungameid/440 (tag steam:) [dry run]
 If that looks right, run it for real:
 
 ```powershell
-.\nfc-launcher.exe run
+.\mini-launcher.exe run
 ```
 
 Keep the window open while you play; the launcher only works while `run` is running. Press
@@ -181,10 +181,10 @@ The config file lets you launch games that aren't on Steam, and use tags you can
 to rewrite. On Windows it lives at:
 
 ```
-%APPDATA%\nfc-launcher\config\config.toml
+%APPDATA%\mini-launcher\config\config.toml
 ```
 
-which is usually `C:\Users\<you>\AppData\Roaming\nfc-launcher\config\config.toml`. Note the extra
+which is usually `C:\Users\<you>\AppData\Roaming\mini-launcher\config\config.toml`. Note the extra
 `config` folder. `diagnose` prints the exact path on its `Config:` line. The file isn't created
 for you: make the folders and create the file with Notepad (in the Save dialog, choose **All
 files** so Notepad doesn't add `.txt`). `run --config <PATH>` loads that file instead of the
@@ -244,7 +244,7 @@ When `run` sees a tag it can't use, it doesn't launch anything. Instead it print
 paste into the config:
 
 ```
-unknown tag 04112233445566: nothing usable on it and its UID is not mapped; not launching. To map it, add to C:\Users\you\AppData\Roaming\nfc-launcher\config\config.toml:
+unknown tag 04112233445566: nothing usable on it and its UID is not mapped; not launching. To map it, add to C:\Users\you\AppData\Roaming\mini-launcher\config\config.toml:
     [[games]]
     id = "my-game"
     name = "My Game"
@@ -263,11 +263,11 @@ gets a similar message with that `id` filled in.
 | Double-clicking the `.exe` just flashes a window | It's a console program. Run it from PowerShell (step 1). |
 | "Windows protected your PC" | **More info** → **Run anyway**. |
 | `no reply from the PN532` or `cannot configure the PN532` | DIP switches both OFF, TX/RX crossed, board VCC on the adapter's **5V** pin (not 3V3), GND connected. |
-| `COM port not found or in use by another program` | Check the COM number in Device Manager. Close any other program using the port, including a second `nfc-launcher` window. |
+| `COM port not found or in use by another program` | Check the COM number in Device Manager. Close any other program using the port, including a second `mini-launcher` window. |
 | `no CH340 reader adapter found` | Your adapter is a different chip. Pass `--port COM3` (your number). |
 | `lost the reader on COM3` | The adapter was unplugged or dropped off USB. Plug it back in and start again. |
 | Tag isn't detected | Center it on the reader's antenna. Keep metal (foil, real CDs/DVDs) away from it. Check with `scan`. |
-| Tag is detected but nothing launches | Run `.\nfc-launcher.exe run -v` (or `-vv` for more detail) and read the line printed for the tag. `unknown tag` means map it in the config or rewrite it. For an `exe` game, check the path. |
+| Tag is detected but nothing launches | Run `.\mini-launcher.exe run -v` (or `-vv` for more detail) and read the line printed for the tag. `unknown tag` means map it in the config or rewrite it. For an `exe` game, check the path. |
 | `launch ...: failed to start: ...` | The `exe` path or `cwd` is wrong, or the file has moved. |
 | A Steam game doesn't start | Make sure Steam is installed and signed in. Try opening `steam://rungameid/440` (with your app ID) from the Run dialog (Win+R) to check. |
 | `error: cannot load ...config.toml` | The config has a mistake; the error names the block and the problem. |

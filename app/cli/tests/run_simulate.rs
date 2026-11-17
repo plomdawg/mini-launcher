@@ -1,4 +1,4 @@
-//! `nfc-launcher run --simulate --dry-run`: stdin script → launch log lines.
+//! `mini-launcher run --simulate --dry-run`: stdin script → launch log lines.
 
 use std::io::Write;
 use std::process::{Command, Stdio};
@@ -40,12 +40,12 @@ remove
 
 #[test]
 fn simulate_dry_run_logs_launches() {
-    let dir = std::env::temp_dir().join(format!("nfc-launcher-test-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("mini-launcher-test-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let config = dir.join("config.toml");
     std::fs::write(&config, CONFIG).unwrap();
 
-    let mut child = Command::new(env!("CARGO_BIN_EXE_nfc-launcher"))
+    let mut child = Command::new(env!("CARGO_BIN_EXE_mini-launcher"))
         .args(["run", "--simulate", "--dry-run", "--config"])
         .arg(&config)
         .env_remove("RUST_LOG")
@@ -101,10 +101,10 @@ fn simulate_dry_run_logs_launches() {
 #[test]
 fn explicit_missing_config_is_an_error() {
     let missing = std::env::temp_dir().join(format!(
-        "nfc-launcher-test-missing-{}/config.toml",
+        "mini-launcher-test-missing-{}/config.toml",
         std::process::id()
     ));
-    let output = Command::new(env!("CARGO_BIN_EXE_nfc-launcher"))
+    let output = Command::new(env!("CARGO_BIN_EXE_mini-launcher"))
         .args(["run", "--simulate", "--dry-run", "--config"])
         .arg(&missing)
         .env_remove("RUST_LOG")
