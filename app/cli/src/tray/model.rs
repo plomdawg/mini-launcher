@@ -43,21 +43,32 @@ pub fn view(reader: Option<&ReaderState>, paused: bool, config_problem: Option<&
         },
     };
     let short = short.unwrap_or_else(|| reader.clone());
-    let (mut tooltip, mut status) = if paused {
+    let (mut tooltip, status) = if paused {
         ("paused".to_owned(), format!("Paused — {short}"))
     } else {
         (reader, capitalize(&short))
     };
+    // The config problem always fits: only the reader part is cut.
+    let suffix = if config_problem.is_some() {
+        CONFIG_SUFFIX
+    } else {
+        ""
+    };
+    let status = shorten(&status, STATUS_MAX - suffix.chars().count()) + suffix;
     if let Some(problem) = config_problem {
-        tooltip = format!("{tooltip}; {problem}");
-        status = format!("{status}; config folder unavailable");
+        // First, so a long reader error cannot cut it off.
+        tooltip = format!("{problem}; {tooltip}");
     }
     View {
         tooltip: truncate_utf16(&format!("{APP} — {tooltip}"), TOOLTIP_MAX),
-        status: shorten(&status, STATUS_MAX).replace('&', "&&"),
+        status: status.replace('&', "&&"),
         pause_label: if paused { "Resume" } else { "Pause" },
     }
 }
+
+/// Ends the status line while the config folder is unavailable (the
+/// tooltip and the balloon say why).
+const CONFIG_SUFFIX: &str = "; config unavailable";
 
 /// The last error opening the reader, if it is not connected.
 pub fn reader_error(reader: Option<&ReaderState>) -> Option<&String> {
@@ -473,13 +484,27 @@ mod tests {
         assert_eq!(reader_error(Some(&connected())), None);
         assert_eq!(reader_error(None), None);
 
-        let v = view(Some(&missing(Some(&"x".repeat(500)))), true, Some("gone"));
+        let v = view(Some(&missing(Some(&"x".repeat(500)))), true, None);
         assert_eq!(v.status.chars().count(), STATUS_MAX);
         assert!(
             v.status.starts_with("Paused — reader not found: xxx"),
             "{v:?}"
         );
         assert!(v.status.ends_with('…'), "{v:?}");
+
+        // A config problem is never cut off, in the menu or the tooltip,
+        // however long the reader error is.
+        let problem = "config folder \"D:\\Sync\" unavailable: not mounted";
+        for paused in [false, true] {
+            for error in [error.to_owned(), "x".repeat(500)] {
+                let v = view(Some(&missing(Some(&error))), paused, Some(problem));
+                assert!(v.status.chars().count() <= STATUS_MAX, "{v:?}");
+                assert!(v.status.ends_with("…; config unavailable"), "{v:?}");
+                assert!(v.tooltip.contains(problem), "{v:?}");
+            }
+        }
+        let v = view(Some(&missing(Some(error))), false, Some(problem));
+        assert_eq!(v.status, "Reader not found: no USB se…; config unavailable");
 
         // `&` would be a mnemonic in a menu label.
         let v = view(Some(&missing(Some("Tom & Jerry"))), false, None);
@@ -554,12 +579,13 @@ mod tests {
         let v = view(Some(&connected()), false, Some(problem));
         assert_eq!(
             v.tooltip,
-            format!("Mini Launcher — ready (COM7); {problem}")
+            format!("Mini Launcher — {problem}; ready (COM7)")
         );
-        assert_eq!(v.status, "Ready (COM7); config folder unavailable");
+        assert_eq!(v.status, "Ready (COM7); config unavailable");
         let v = view(Some(&connected()), true, Some(problem));
         assert!(
-            v.tooltip.starts_with("Mini Launcher — paused; config"),
+            v.tooltip
+                .starts_with(&format!("Mini Launcher — {problem}; paused")),
             "{v:?}"
         );
 

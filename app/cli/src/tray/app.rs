@@ -1,7 +1,6 @@
 //! The Windows tray: a notification-area icon with a menu on the UI thread,
 //! and the shared run loop on a worker thread.
 
-use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -127,7 +126,8 @@ fn run(log_dir: Option<PathBuf>) -> Result<()> {
         &separator,
         &quit,
     ];
-    let menu = tray_menu("", &items).context("cannot build the tray menu")?;
+    let mut shown_status = model::view(None, false, None).status;
+    let menu = tray_menu(&shown_status, &items).context("cannot build the tray menu")?;
     // The id is fixed so the icon's Win32 identity is known (see `balloon`).
     let tray = TrayIcon::with_id(
         "mini-launcher",
@@ -152,8 +152,7 @@ fn run(log_dir: Option<PathBuf>) -> Result<()> {
         .context("cannot start the settings window")?;
     let mut reader: Option<ReaderState> = None;
     let mut limiter = RateLimiter::new(NOTIFY_GAP);
-    let shown_status = RefCell::new(String::new());
-    let refresh = |reader: Option<&ReaderState>, config_problem: Option<&str>| {
+    let mut refresh = |reader: Option<&ReaderState>, config_problem: Option<&str>| {
         let is_paused = paused.load(Ordering::Relaxed);
         let (text, ready) = model::reader_cell(reader, is_paused);
         lock(&host.state).1 = ReaderStatus { text, ready };
@@ -164,11 +163,11 @@ fn run(log_dir: Option<PathBuf>) -> Result<()> {
         pause.set_text(view.pause_label);
         // A menu can stay as wide as the widest text its status line ever
         // had, so a changed status gets a fresh menu (see `tray_menu`).
-        if *shown_status.borrow() != view.status {
+        if shown_status != view.status {
             match tray_menu(&view.status, &items) {
                 Ok(menu) => {
                     tray.set_menu(Some(Box::new(menu)));
-                    *shown_status.borrow_mut() = view.status;
+                    shown_status = view.status;
                 }
                 Err(e) => tracing::warn!("cannot rebuild the tray menu: {e}"),
             }
