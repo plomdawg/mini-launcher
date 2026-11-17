@@ -9,4 +9,8 @@ publish.workspace = true
 name = "nfc_launcher_core"
 
 [dependencies]
+directories = "6.0.0"
+open = { version = "5.4.5", features = ["shellexecute-on-windows"] }
+serde = { version = "1.0.229", features = ["derive"] }
 thiserror = "2"
+toml = { version = "1.2.1", default-features = false, features = ["parse", "serde", "std"] }

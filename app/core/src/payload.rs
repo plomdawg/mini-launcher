@@ -3,7 +3,7 @@
 //! Tag contents are untrusted. This module turns the decoded record text into a
 //! [`Payload`] and never hands raw tag text onward: a Steam appid comes out as a
 //! parsed `u32`, an `id:` slug as a validated [`Slug`]. Anything that fails
-//! validation is [`Payload::None`], so the caller falls back to the tag UID.
+//! validation is [`Payload::Unusable`], so the caller falls back to the tag UID.
 
 use std::fmt;
 
@@ -15,12 +15,12 @@ pub enum Payload {
     /// `id:<slug>`: a key into the local library in `config.toml`.
     Id(Slug),
     /// Nothing usable; identify the tag by its UID only.
-    None,
+    Unusable,
 }
 
 impl Payload {
     /// Parses a decoded Text/URI record string. Never panics; invalid input
-    /// yields [`Payload::None`].
+    /// yields [`Payload::Unusable`].
     pub fn parse(text: &str) -> Payload {
         let text = trim_spec_whitespace(text);
         // Check the long form first: `steam://440` also starts with `steam:`.
@@ -28,12 +28,12 @@ impl Payload {
             .strip_prefix("steam://")
             .or_else(|| text.strip_prefix("steam:"));
         if let Some(digits) = digits {
-            return parse_appid(digits).map_or(Payload::None, Payload::Steam);
+            return parse_appid(digits).map_or(Payload::Unusable, Payload::Steam);
         }
         if let Some(slug) = text.strip_prefix("id:") {
-            return Slug::new(slug).map_or(Payload::None, Payload::Id);
+            return Slug::new(slug).map_or(Payload::Unusable, Payload::Id);
         }
-        Payload::None
+        Payload::Unusable
     }
 }
 
@@ -218,7 +218,7 @@ mod tests {
             "steam",
         ];
         for input in cases {
-            assert_eq!(Payload::parse(input), Payload::None, "input {input:?}");
+            assert_eq!(Payload::parse(input), Payload::Unusable, "input {input:?}");
         }
     }
 
@@ -268,7 +268,7 @@ mod tests {
                     "{input:?}"
                 );
             }
-            Payload::None => {}
+            Payload::Unusable => {}
         }
     }
 
