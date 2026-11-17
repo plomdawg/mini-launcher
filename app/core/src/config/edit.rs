@@ -110,9 +110,14 @@ impl ConfigDocument {
     /// Validates and atomically writes the document to `path`, keeping the
     /// previous file as `<path>.bak`.
     pub fn save(&self, path: &Path) -> Result<(), EditError> {
+        self.save_at(path, true)
+    }
+
+    /// [`ConfigDocument::save`], creating the folder only if `create_dir`.
+    fn save_at(&self, path: &Path, create_dir: bool) -> Result<(), EditError> {
         let text = self.doc.to_string();
         Config::parse(&text)?;
-        write_atomic(path, &text, true)?;
+        write_atomic(path, &text, true, create_dir)?;
         remember_saved(&text);
         Ok(())
     }
@@ -121,7 +126,7 @@ impl ConfigDocument {
     /// the config folder is unavailable. Returns the path written.
     pub fn save_to(&self, location: &ConfigLocation) -> Result<PathBuf, EditError> {
         let path = location.writable_file()?;
-        self.save(&path)?;
+        self.save_at(&path, location.may_create_dir())?;
         Ok(path)
     }
 
@@ -137,7 +142,7 @@ impl ConfigDocument {
              # config.toml directly, delete this [mini_launcher] table.\n",
         );
         doc.insert(EXPORT_TABLE, Item::Table(header));
-        write_atomic(path, &doc.to_string(), false)
+        write_atomic(path, &doc.to_string(), false, true)
     }
 
     /// Reads and fully validates an export (or a plain `config.toml`).
@@ -187,7 +192,9 @@ impl ConfigDocument {
     /// when the config folder is unavailable.
     pub fn import_into(from: &Path, location: &ConfigLocation) -> Result<Self, EditError> {
         let to = location.writable_file()?;
-        ConfigDocument::import(from, &to)
+        let doc = ConfigDocument::read_export(from)?;
+        doc.save_at(&to, location.may_create_dir())?;
+        Ok(doc)
     }
 
     /// Applies `change` to a copy and keeps it only if it still validates.
@@ -276,9 +283,14 @@ static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 /// Writes `text` to a temp file next to `path`, flushes it to disk, then
 /// renames it over `path` (`rename` replaces an existing file on Windows and
 /// Unix alike). With `backup`, an existing `path` is first copied to
-/// `<path>.bak`. On Unix a symlinked `path` is written through (the link
+/// `<path>.bak`. The folder is created only with `create_dir`. On Unix a symlinked `path` is written through (the link
 /// stays) and an existing file's permissions are kept.
-pub fn write_atomic(path: &Path, text: &str, backup: bool) -> Result<(), EditError> {
+pub fn write_atomic(
+    path: &Path,
+    text: &str,
+    backup: bool,
+    create_dir: bool,
+) -> Result<(), EditError> {
     let err = |source| EditError::Write {
         path: path.to_owned(),
         source,
@@ -297,7 +309,9 @@ pub fn write_atomic(path: &Path, text: &str, backup: bool) -> Result<(), EditErr
     let name = path
         .file_name()
         .ok_or_else(|| err(std::io::ErrorKind::InvalidInput.into()))?;
-    std::fs::create_dir_all(dir).map_err(err)?;
+    if create_dir {
+        std::fs::create_dir_all(dir).map_err(err)?;
+    }
     let mut tmp_name = std::ffi::OsString::from(".");
     tmp_name.push(name);
     let n = TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
@@ -580,8 +594,12 @@ args = ["--fullscreen"]
             assert!(err.to_string().contains("unavailable"), "{err}");
         }
         assert!(!missing.exists());
-        let ok = ConfigLocation::Default(dir.clone());
-        assert_eq!(doc.save_to(&ok).unwrap(), dir.join("config.toml"));
+        // Past the availability check, the write itself never recreates it.
+        let toctou = doc.save_at(&missing.join("config.toml"), false);
+        assert!(matches!(toctou, Err(EditError::Write { .. })), "{toctou:?}");
+        assert!(!missing.exists());
+        let ok = ConfigLocation::Default(dir.join("fresh"));
+        assert_eq!(doc.save_to(&ok).unwrap(), dir.join("fresh/config.toml"));
     }
 
     #[test]
@@ -594,7 +612,7 @@ args = ["--fullscreen"]
                 std::thread::spawn(move || {
                     let mut errors = Vec::new();
                     for j in 0..20 {
-                        if let Err(e) = write_atomic(&path, &format!("# {i} {j}\n"), false) {
+                        if let Err(e) = write_atomic(&path, &format!("# {i} {j}\n"), false, false) {
                             errors.push(e);
                         }
                     }

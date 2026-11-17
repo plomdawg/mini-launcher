@@ -70,8 +70,14 @@ comes back. Instead:
 folder, delete `location.toml`.
 
 A network share (`\\server\share\...`) works, but while it is unreachable each check can hang
-until Windows gives up on it (often 20 seconds or more), which delays startup and tag reads. A
-local synced folder such as OneDrive doesn't have this problem.
+until Windows gives up on it (often 20 seconds or more). That delays startup and, while the tray
+is following an available share, tag reads; the 30-second rechecks of an unavailable folder run
+in the background. A local synced folder such as OneDrive doesn't have this problem.
 
 On Linux and macOS, saving keeps the file's permissions, and a symlinked `config.toml` stays a
-symlink (the file it points to is replaced). Imports larger than 1 MiB are rejected.
+symlink (the file it points to is replaced, and its backup is `<target>.bak` next to that file).
+Imports larger than 1 MiB are rejected.
+
+On Linux, an unmounted mount point is still an (empty) folder, so it counts as available; point
+`location.toml` at a subfolder of the mounted drive instead, which only exists while it is
+mounted.

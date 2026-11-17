@@ -2,9 +2,10 @@
 //! loop's notices, so it is tested on every OS.
 
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+use mini_launcher_core::config::location::ConfigLocation;
 use mini_launcher_core::reconnect::ReaderState;
 use mini_launcher_core::runner::Notice;
 
@@ -169,24 +170,51 @@ pub const CONFIG_TEMPLATE: &str = r#"# Mini Launcher library. Changes are picked
 # cwd = 'C:\Games\MyGame'         # optional
 "#;
 
-/// Creates `path` (and its folder) from [`CONFIG_TEMPLATE`] unless it
-/// exists. Returns whether it was created.
-pub fn ensure_config(path: &Path) -> io::Result<bool> {
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
+/// What "Open config" found.
+#[derive(Debug, PartialEq, Eq)]
+pub enum OpenConfig {
+    /// The file to open; `created` if it was just made from the template.
+    Ready { path: PathBuf, created: bool },
+    /// The config folder is unavailable (why); nothing was created.
+    Unavailable(String),
+}
+
+/// Creates the config file from [`CONFIG_TEMPLATE`] unless it exists. Only
+/// the default folder is created if missing: an override folder that went
+/// away is reported, never recreated (that would split the library in two).
+pub fn ensure_config(location: &ConfigLocation) -> io::Result<OpenConfig> {
+    let path = match location.writable_file() {
+        Ok(path) => path,
+        Err(e) => return Ok(OpenConfig::Unavailable(e.to_string())),
+    };
+    if location.may_create_dir() {
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
     }
-    match std::fs::OpenOptions::new()
+    let created = match std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
-        .open(path)
+        .open(&path)
     {
         Ok(mut file) => {
             io::Write::write_all(&mut file, CONFIG_TEMPLATE.as_bytes())?;
-            Ok(true)
+            true
         }
-        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => Ok(false),
-        Err(e) => Err(e),
+        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => false,
+        Err(e) => return Err(e),
+    };
+    Ok(OpenConfig::Ready { path, created })
+}
+
+/// For an available config folder: the location to switch to if the folder
+/// itself went away (whether or not `config.toml` was ever there), resolved
+/// again from `default_dir`.
+pub fn vanished(location: &ConfigLocation, default_dir: &Path) -> Option<ConfigLocation> {
+    if !location.is_available() || location.writable_file().is_ok() {
+        return None;
     }
+    Some(ConfigLocation::resolve(default_dir)).filter(|l| !l.is_available())
 }
 
 #[cfg(test)]
@@ -326,21 +354,72 @@ mod tests {
         assert!(!r.allow(t0 + Duration::from_secs(11)));
     }
 
-    #[test]
-    fn config_template_is_a_valid_empty_config_and_never_overwrites() {
-        assert_eq!(Config::parse(CONFIG_TEMPLATE).unwrap(), Config::default());
+    fn temp(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
-            "mini-launcher-test-tray-config-{}",
+            "mini-launcher-test-tray-{name}-{}",
             std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn config_template_is_a_valid_empty_config_and_never_overwrites() {
+        assert_eq!(Config::parse(CONFIG_TEMPLATE).unwrap(), Config::default());
+        let dir = temp("config");
+        let default = ConfigLocation::Default(dir.join("sub"));
         let path = dir.join("sub").join("config.toml");
-        assert!(ensure_config(&path).unwrap());
+        let ready = |created| OpenConfig::Ready {
+            path: path.clone(),
+            created,
+        };
+        assert_eq!(ensure_config(&default).unwrap(), ready(true));
         assert_eq!(std::fs::read_to_string(&path).unwrap(), CONFIG_TEMPLATE);
         std::fs::write(&path, "# mine\n").unwrap();
-        assert!(!ensure_config(&path).unwrap());
+        assert_eq!(ensure_config(&default).unwrap(), ready(false));
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "# mine\n");
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn open_config_never_recreates_a_vanished_override_folder() {
+        let dir = temp("override");
+        let synced = dir.join("synced");
+        std::fs::create_dir(&synced).unwrap();
+        let location = ConfigLocation::Override(synced.clone());
+        assert!(matches!(
+            ensure_config(&location).unwrap(),
+            OpenConfig::Ready { created: true, .. }
+        ));
+        std::fs::remove_dir_all(&synced).unwrap();
+        let got = ensure_config(&location).unwrap();
+        assert!(
+            matches!(&got, OpenConfig::Unavailable(e) if e.contains("unavailable")),
+            "{got:?}"
+        );
+        assert!(!synced.exists());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn vanished_override_folder_is_detected_without_a_config_file() {
+        let (default, synced) = (temp("vanish-default"), temp("vanish-synced"));
+        let text = format!("dir = '{}'\n", synced.display());
+        std::fs::write(default.join("location.toml"), text).unwrap();
+        let location = ConfigLocation::resolve(&default);
+        assert_eq!(location, ConfigLocation::Override(synced.clone()));
+        // No config.toml was ever created in it.
+        assert_eq!(vanished(&location, &default), None);
+        std::fs::remove_dir_all(&synced).unwrap();
+        let now = vanished(&location, &default).unwrap();
+        assert!(!now.is_available(), "{now:?}");
+        assert_eq!(vanished(&now, &default), None);
+        assert_eq!(
+            vanished(&ConfigLocation::Default(default.clone()), &default),
+            None
+        );
+        std::fs::remove_dir_all(default).unwrap();
     }
 
     /// `app.rs` `balloon()` reaches into tray-icon internals (its window

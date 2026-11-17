@@ -37,6 +37,9 @@ pub enum LocationError {
     },
 }
 
+/// Why an override folder is unavailable when it is missing.
+const FOLDER_MISSING: &str = "the folder does not exist or is not reachable (not mounted yet?)";
+
 /// Where the config lives: the effective config folder.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConfigLocation {
@@ -63,7 +66,7 @@ impl ConfigLocation {
             Ok(Some(dir)) if dir.is_dir() => ConfigLocation::Override(dir),
             Ok(Some(dir)) => ConfigLocation::OverrideUnavailable {
                 dir: Some(dir),
-                reason: "the folder does not exist or is not reachable (not mounted yet?)".into(),
+                reason: FOLDER_MISSING.into(),
             },
             Err(e) => ConfigLocation::OverrideUnavailable {
                 dir: None,
@@ -94,10 +97,16 @@ impl ConfigLocation {
         match self {
             ConfigLocation::Override(dir) if !dir.is_dir() => Err(LocationError::Unavailable {
                 dir: Some(dir.clone()),
-                reason: "the folder is gone (drive removed or share offline?)".into(),
+                reason: FOLDER_MISSING.into(),
             }),
             _ => self.config_file(),
         }
+    }
+
+    /// Whether the app may create the config folder: only the default one.
+    /// An override folder that is gone is never recreated.
+    pub fn may_create_dir(&self) -> bool {
+        matches!(self, ConfigLocation::Default(_))
     }
 
     pub fn is_available(&self) -> bool {
@@ -175,7 +184,12 @@ mod tests {
         // The folder goes away after resolving: saves refuse to recreate it.
         std::fs::remove_dir_all(&synced).unwrap();
         let err = loc.writable_file().unwrap_err().to_string();
-        assert!(err.contains("unavailable: the folder is gone"), "{err}");
+        assert!(
+            err.contains("unavailable: the folder does not exist"),
+            "{err}"
+        );
+        // Same message as resolving it now, so the tray shows it once.
+        assert_eq!(err, reason(&ConfigLocation::resolve(&default)));
     }
 
     #[test]
