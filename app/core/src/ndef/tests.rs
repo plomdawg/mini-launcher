@@ -167,10 +167,49 @@ fn hostile_inputs_are_errors() {
 }
 
 #[test]
+fn tlv_area_completeness() {
+    let complete: &[&[u8]] = &[
+        NFC_TOOLS_TEXT,
+        // Whole message TLV, no terminator yet.
+        &NFC_TOOLS_TEXT[..NFC_TOOLS_TEXT.len() - 1],
+        &[0x00, 0xFE],
+        &[0x01, 0x03, 0xA0, 0x0C, 0x34, 0xFE],
+        &[0xFF, 0x00],
+        // Whole but unusable message: more pages will not fix it.
+        &[0x03, 0x01, 0xD1],
+    ];
+    for mem in complete {
+        assert!(tlv_area_complete(mem), "{mem:02X?}");
+    }
+    let incomplete: &[&[u8]] = &[
+        &[],
+        &[0x00; 48],
+        &[0x01, 0x03, 0xA0, 0x0C, 0x34],
+        &[0x03],
+        &[0x03, 0xFF, 0x00],
+        &NFC_TOOLS_TEXT[..NFC_TOOLS_TEXT.len() - 2],
+    ];
+    for mem in incomplete {
+        assert!(!tlv_area_complete(mem), "{mem:02X?}");
+    }
+    // A prefix of a complete area is complete exactly when it parses the same.
+    for len in 0..=NFC_TOOLS_URI.len() {
+        let mem = &NFC_TOOLS_URI[..len];
+        if tlv_area_complete(mem) {
+            assert_eq!(
+                parse_user_memory(mem),
+                parse_user_memory(&tag(NFC_TOOLS_URI))
+            );
+        }
+    }
+}
+
+#[test]
 fn every_truncation_and_byte_mutation_is_handled() {
     for fixture in [NFC_TOOLS_TEXT, NFC_TOOLS_URI, NFC_TOOLS_URL] {
         for len in 0..fixture.len() {
             let _ = parse_user_memory(&fixture[..len]);
+            let _ = tlv_area_complete(&fixture[..len]);
         }
         let mut mem = fixture.to_vec();
         for i in 0..mem.len() {
@@ -178,6 +217,7 @@ fn every_truncation_and_byte_mutation_is_handled() {
             for b in 0..=u8::MAX {
                 mem[i] = b;
                 let _ = parse_user_memory(&mem);
+                let _ = tlv_area_complete(&mem);
             }
             mem[i] = original;
         }
@@ -203,5 +243,6 @@ fn random_buffers_never_panic() {
             mem[1] = (len - 2) as u8;
         }
         let _ = parse_user_memory(&mem);
+        let _ = tlv_area_complete(&mem);
     }
 }

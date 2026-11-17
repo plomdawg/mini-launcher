@@ -6,7 +6,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use anyhow::Result;
 use nfc_launcher_core::debounce::{DebounceConfig, DEFAULT_POLL_INTERVAL};
 use nfc_launcher_core::payload::{steam_launch_uri, Payload};
-use nfc_launcher_core::pn532::reader::{self, decode, is_fatal, FIRST_USER_PAGE};
+use nfc_launcher_core::pn532::reader::{
+    self, decode, is_fatal, FIRST_USER_PAGE, LAST_USER_PAGE, TYPE2_SAK,
+};
 use nfc_launcher_core::pn532::Target;
 use nfc_launcher_core::reader::Uid;
 
@@ -36,11 +38,17 @@ pub fn run(out: &mut impl Write, explicit: Option<&str>, stop: &AtomicBool) -> R
         misses = 0;
         let known = seen.as_ref().filter(|(uid, _)| *uid == t.uid);
         if !known.is_some_and(|&(_, read)| read) {
-            let mem = match reader.read_user_memory() {
-                Err(e) if is_fatal(&e) => return Err(port::lost(&name, e)),
-                mem => mem.map_err(|e| e.to_string()),
+            let mem = if t.sak != TYPE2_SAK {
+                // Not a Type 2 tag (e.g. MIFARE Classic): an NTAG READ can
+                // never work, so report it once and do not retry.
+                Err(Unread::NotType2)
+            } else {
+                match reader.read_user_memory() {
+                    Err(e) if is_fatal(&e) => return Err(port::lost(&name, e)),
+                    mem => mem.map_err(|e| Unread::Failed(e.to_string())),
+                }
             };
-            let read = mem.is_ok();
+            let read = !matches!(mem, Err(Unread::Failed(_)));
             if read || known.is_none() {
                 report(out, &t, mem)?;
                 out.flush()?;
@@ -53,7 +61,7 @@ pub fn run(out: &mut impl Write, explicit: Option<&str>, stop: &AtomicBool) -> R
 }
 
 /// Prints one tag: UID, user pages, the NDEF record and the parsed payload.
-fn report(out: &mut impl Write, t: &Target, mem: Result<Vec<u8>, String>) -> Result<()> {
+fn report(out: &mut impl Write, t: &Target, mem: Result<Vec<u8>, Unread>) -> Result<()> {
     let uid = match Uid::new(&t.uid) {
         Ok(uid) => uid.to_string(),
         Err(e) => format!("{} ({e})", hex(&t.uid)),
@@ -65,10 +73,19 @@ fn report(out: &mut impl Write, t: &Target, mem: Result<Vec<u8>, String>) -> Res
     )?;
     let mem = match mem {
         Ok(mem) => mem,
-        Err(e) => {
+        Err(Unread::NotType2) => {
             writeln!(
                 out,
-                "  cannot read pages: {e} (not an NTAG21x tag?); \
+                "  payload: unusable (not a Type 2 tag, SAK {:02X}); \
+                 the tag UID is used to look it up in config.toml",
+                t.sak
+            )?;
+            return Ok(());
+        }
+        Err(Unread::Failed(e)) => {
+            writeln!(
+                out,
+                "  cannot read pages: {e} (not an NTAG21x tag, or read-protected?); \
                  retrying while it stays on the reader"
             )?;
             return Ok(());
@@ -82,6 +99,13 @@ fn report(out: &mut impl Write, t: &Target, mem: Result<Vec<u8>, String>) -> Res
         let n = usize::from(FIRST_USER_PAGE) + i;
         writeln!(out, "  page {n:2} (0x{n:02X}): {}  {ascii}", hex(page))?;
     }
+    let last = (usize::from(FIRST_USER_PAGE) + mem.len() / 4).saturating_sub(1);
+    if last < usize::from(LAST_USER_PAGE) {
+        writeln!(
+            out,
+            "  (pages after {last} not read: the NDEF data ends here)"
+        )?;
+    }
     match decode(&mem) {
         Ok(record) => writeln!(out, "  NDEF: {record:?}")?,
         Err(e) => writeln!(out, "  NDEF: none ({e})")?,
@@ -93,6 +117,14 @@ fn report(out: &mut impl Write, t: &Target, mem: Result<Vec<u8>, String>) -> Res
     };
     writeln!(out, "  payload: {payload}")?;
     Ok(())
+}
+
+/// Why a tag's pages were not dumped.
+enum Unread {
+    /// SAK says it is not an NFC Forum Type 2 tag.
+    NotType2,
+    /// A READ failed; retried while the tag stays on the reader.
+    Failed(String),
 }
 
 fn hex(bytes: &[u8]) -> String {

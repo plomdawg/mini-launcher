@@ -122,34 +122,71 @@ pub fn parse_user_memory(mem: &[u8]) -> Result<NdefRecord, NdefError> {
 
 /// Walks the TLV area and returns the value of the first NDEF Message TLV.
 pub fn find_ndef_message(mem: &[u8]) -> Result<&[u8], NdefError> {
+    match walk_tlvs(mem) {
+        Walk::Message(msg) => Ok(msg),
+        Walk::Terminator | Walk::OutOfBytes => Err(NdefError::NoNdefMessage),
+        Walk::Error(e) => Err(e),
+    }
+}
+
+/// True when reading more memory after `mem` cannot change what
+/// [`parse_user_memory`] returns: the TLV area holds a whole NDEF Message
+/// TLV, hits a terminator, or is already malformed. False while it is all
+/// padding so far or a TLV runs past the end. Lets a reader stop early, so a
+/// tag with fewer user pages than an NTAG213 is never read past its end.
+pub fn tlv_area_complete(mem: &[u8]) -> bool {
+    match walk_tlvs(mem) {
+        Walk::Message(_) | Walk::Terminator => true,
+        Walk::OutOfBytes | Walk::Error(NdefError::TruncatedTlv) => false,
+        Walk::Error(_) => true,
+    }
+}
+
+/// Where a walk over the TLV area stopped.
+enum Walk<'a> {
+    /// The value of the first NDEF Message TLV.
+    Message(&'a [u8]),
+    /// A Terminator TLV before any NDEF Message TLV.
+    Terminator,
+    /// The buffer ended between TLVs (e.g. in padding).
+    OutOfBytes,
+    /// Malformed or truncated structure.
+    Error(NdefError),
+}
+
+fn walk_tlvs(mem: &[u8]) -> Walk<'_> {
     let mut pos = 0;
     while let Some(&tag) = mem.get(pos) {
         pos += 1;
         match tag {
             TLV_NULL => continue,
-            TLV_TERMINATOR => break,
+            TLV_TERMINATOR => return Walk::Terminator,
             TLV_LOCK_CONTROL | TLV_MEMORY_CONTROL | TLV_NDEF_MESSAGE | TLV_PROPRIETARY => {}
-            other => return Err(NdefError::UnknownTlv(other)),
+            other => return Walk::Error(NdefError::UnknownTlv(other)),
         }
-        let len = match *mem.get(pos).ok_or(NdefError::TruncatedTlv)? {
-            0xFF => {
-                let bytes = mem.get(pos + 1..pos + 3).ok_or(NdefError::TruncatedTlv)?;
+        let len = match mem.get(pos) {
+            None => return Walk::Error(NdefError::TruncatedTlv),
+            Some(0xFF) => {
+                let Some(bytes) = mem.get(pos + 1..pos + 3) else {
+                    return Walk::Error(NdefError::TruncatedTlv);
+                };
                 pos += 3;
                 usize::from(u16::from_be_bytes([bytes[0], bytes[1]]))
             }
-            n => {
+            Some(&n) => {
                 pos += 1;
                 usize::from(n)
             }
         };
-        let end = pos.checked_add(len).ok_or(NdefError::TruncatedTlv)?;
-        let value = mem.get(pos..end).ok_or(NdefError::TruncatedTlv)?;
+        let Some(value) = pos.checked_add(len).and_then(|end| mem.get(pos..end)) else {
+            return Walk::Error(NdefError::TruncatedTlv);
+        };
         if tag == TLV_NDEF_MESSAGE {
-            return Ok(value);
+            return Walk::Message(value);
         }
-        pos = end;
+        pos += len;
     }
-    Err(NdefError::NoNdefMessage)
+    Walk::OutOfBytes
 }
 
 /// Parses the records of an NDEF message and decodes the first usable one.
