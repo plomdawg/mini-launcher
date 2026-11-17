@@ -9,6 +9,7 @@ use std::time::Instant;
 use anyhow::{Context, Result};
 use mini_launcher_core::config::Config;
 use mini_launcher_core::debounce::{DebounceConfig, Debouncer, Event, DEFAULT_POLL_INTERVAL};
+use mini_launcher_core::instance;
 use mini_launcher_core::launch::{self, Outcome, Resolution, Via};
 use mini_launcher_core::reader::{Reader, Simulated, Uid};
 use mini_launcher_core::reconnect::{Backoff, Clock, Reconnector, SystemClock, Tick};
@@ -32,6 +33,16 @@ struct Ctx {
 
 /// Runs until `stop` is set or simulated input ends.
 pub fn run(out: &mut impl Write, opts: Options, stop: &AtomicBool) -> Result<()> {
+    // Simulated runs touch no reader, so they may run alongside a real one.
+    let _instance = if opts.simulate {
+        None
+    } else {
+        let guard = instance::acquire().context("cannot check for another running instance")?;
+        Some(guard.context(
+            "mini-launcher is already running (only one copy can use the reader); \
+             quit the other one first",
+        )?)
+    };
     // An explicit --config must exist; a missing default config is empty.
     let (path, load): (_, fn(&Path) -> _) = match opts.config {
         Some(p) => (Some(p), Config::load),

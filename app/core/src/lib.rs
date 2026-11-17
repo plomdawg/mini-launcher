@@ -4,12 +4,15 @@
 //! insert/remove debounce will live here. Everything above the reader is meant
 //! to be testable without hardware.
 
+pub mod autostart;
 pub mod config;
 pub mod debounce;
+pub mod instance;
 pub mod launch;
 pub mod logs;
 pub mod ndef;
 pub mod payload;
+mod platform;
 pub mod pn532;
 pub mod ports;
 pub mod reader;

@@ -193,6 +193,20 @@ Keep the window open while you play; the launcher only works while `run` is runn
 
 `steam://` tags work with no config file at all. For anything else, read on.
 
+### Start at login
+
+To start `run` automatically when you sign in (per user, no admin rights needed):
+
+```powershell
+.\mini-launcher.exe autostart enable            # or: autostart enable --port COM3
+.\mini-launcher.exe autostart status
+.\mini-launcher.exe autostart disable
+```
+
+This registers the `.exe` at its current location, so move it to where it will stay first (and
+run `enable` again if you move it). Only one `run` can use the reader at a time; a second one
+exits with `mini-launcher is already running`.
+
 ## 7. The config file
 
 The config file lets you launch games that aren't on Steam, and use tags you can't or don't want
@@ -283,6 +297,7 @@ gets a similar message with that `id` filled in.
 | `no reply from the PN532` or `cannot configure the PN532` | DIP switches both OFF, TX/RX crossed, board VCC on the adapter's **5V** pin (not 3V3), GND connected. |
 | `COM port not found or in use by another program` | Check the COM number in Device Manager. Close any other program using the port, including a second `mini-launcher` window. |
 | `no CH340 reader adapter found` | Your adapter is a different chip. Pass `--port COM3` (your number). |
+| `mini-launcher is already running` | Another `run` (maybe the one started at login) has the reader. Close it, or use `autostart disable`. |
 | `lost the reader on COM3` | The adapter was unplugged or dropped off USB. Plug it back in: `run` keeps going and prints `reader reconnected on COM3` (`scan` exits; start it again). |
 | Tag isn't detected | Center it on the reader's antenna. Keep metal (foil, real CDs/DVDs) away from it. Check with `scan`. |
 | Tag is detected but nothing launches | Run `.\mini-launcher.exe run -v` (or `-vv` for more detail) and read the line printed for the tag. `unknown tag` means map it in the config or rewrite it. For an `exe` game, check the path. |
