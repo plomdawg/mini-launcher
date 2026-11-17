@@ -83,8 +83,8 @@ Tag contents are untrusted input.
 - Never sell items printed with commercial game art or publisher logos; never ship art presets.
 - No console names or logos in product names, SKUs, or listings. Sold shells are "inspired-by"
   designs.
-- Licensing TBD before first release (leaning Apache-2.0/MIT for software, CERN-OHL-W or
-  CC BY-SA 4.0 for hardware — no NC licenses).
+- Software is dual-licensed MIT OR Apache-2.0 (`LICENSE-MIT`, `LICENSE-APACHE`). Hardware
+  license still TBD (leaning CERN-OHL-W or CC BY-SA 4.0 — no NC licenses).
 
 ## Milestones
 

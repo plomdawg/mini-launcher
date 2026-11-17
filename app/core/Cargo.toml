@@ -4,6 +4,7 @@ description = "Core library for the NFC game launcher: reader, tag parsing, conf
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
+license.workspace = true
 
 [lib]
 name = "nfc_launcher_core"
