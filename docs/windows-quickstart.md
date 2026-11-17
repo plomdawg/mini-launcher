@@ -49,6 +49,10 @@ to pause, open the config or logs, turn **Start at login** on or off, or quit. I
 
 **Updating:** run the newer setup; it replaces the installed version and keeps your settings.
 If Mini Launcher is running, setup asks you to quit it first (tray icon → **Quit**).
+The **Start Mini Launcher when I sign in** box follows your current setting: it's ticked if
+start at login is on and unticked if you turned it off (for example in the tray), so updating
+never turns it back on by itself. Unticking it turns start at login off. For silent installs,
+`/MERGETASKS=autostart` or `/MERGETASKS=!autostart` overrides this.
 
 **Uninstalling:** Windows **Settings → Apps → Installed apps → Mini Launcher → Uninstall**
 (quit the tray app first). This removes the program, the Start menu entry and the start-at-login

@@ -45,6 +45,9 @@ OutputBaseFilename=mini-launcher-{#AppVersion}-windows-x86_64-setup
 Compression=lzma2/max
 SolidCompression=yes
 WizardStyle=modern
+; Don't restore the task choice from the last install: on an upgrade the code below
+; ticks "autostart" only if start at login is currently on (the tray toggle wins).
+UsePreviousTasks=no
 
 [Tasks]
 Name: "autostart"; Description: "Start {#AppName} when I sign in"
@@ -67,15 +70,61 @@ Root: HKCU; Subkey: "{#RunKey}"; ValueType: string; ValueName: "{#RunValue}"; Va
 Filename: "{app}\{#TrayExe}"; Description: "Launch {#AppName}"; Flags: nowait postinstall skipifsilent
 
 [Code]
-// Remove the start-at-login value if it starts a program from this install
-// (written by the task above, the tray's checkbox or `autostart enable`), but
-// leave one that points at another copy. User config and logs are not touched.
-procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+// True if the start-at-login value starts a program from Dir (written by the task
+// above, the tray's checkbox or `autostart enable`, with or without arguments).
+// A value pointing at another copy doesn't count.
+function RunValueInDir(Dir: String): Boolean;
 var
   Command: String;
 begin
-  if (CurUninstallStep = usUninstall) and
-     RegQueryStringValue(HKCU, '{#RunKey}', '{#RunValue}', Command) and
-     (Pos(Lowercase('"' + AddBackslash(ExpandConstant('{app}'))), Lowercase(Command)) = 1) then
+  Result := (Dir <> '') and
+    RegQueryStringValue(HKCU, '{#RunKey}', '{#RunValue}', Command) and
+    (Pos(Lowercase('"' + AddBackslash(Dir)), Lowercase(Command)) = 1);
+end;
+
+// True if /TASKS= or /MERGETASKS= on the command line decides the autostart task.
+function AutostartFromCommandLine(): Boolean;
+var
+  I: Integer;
+  Param: String;
+begin
+  Result := False;
+  for I := 1 to ParamCount do begin
+    Param := Lowercase(ParamStr(I));
+    if (Pos('/tasks=', Param) = 1) or
+       ((Pos('/mergetasks=', Param) = 1) and (Pos('autostart', Param) > 0)) then
+      Result := True;
+  end;
+end;
+
+var
+  TasksDefaulted: Boolean;
+
+// Upgrade: default the task to the current state, so re-running setup doesn't turn
+// start at login back on after the user turned it off in the tray. Runs for
+// silent installs too (they still step through the pages).
+procedure CurPageChanged(CurPageID: Integer);
+begin
+  if (CurPageID = wpSelectTasks) and not TasksDefaulted then begin
+    TasksDefaulted := True;
+    if (WizardForm.PrevAppDir <> '') and not AutostartFromCommandLine() and
+       not RunValueInDir(WizardForm.PrevAppDir) then
+      WizardSelectTasks('!autostart');
+  end;
+end;
+
+// Task unticked: turn start at login off if it starts this install.
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+  if (CurStep = ssPostInstall) and not WizardIsTaskSelected('autostart') and
+     RunValueInDir(ExpandConstant('{app}')) then
+    RegDeleteValue(HKCU, '{#RunKey}', '{#RunValue}');
+end;
+
+// Uninstall: remove the start-at-login value if it starts this install, leave one
+// that points at another copy. User config and logs are not touched.
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+begin
+  if (CurUninstallStep = usUninstall) and RunValueInDir(ExpandConstant('{app}')) then
     RegDeleteValue(HKCU, '{#RunKey}', '{#RunValue}');
 end;
