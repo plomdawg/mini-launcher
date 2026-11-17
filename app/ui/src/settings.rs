@@ -9,6 +9,7 @@ use egui::{pos2, vec2, Align, Layout, Rect, Sense, Ui};
 use mini_launcher_core::config::format_uid;
 use mini_launcher_core::config::location::ConfigLocation;
 use mini_launcher_core::launch::LaunchPlan;
+use mini_launcher_core::payload::Slug;
 
 use crate::library::{Field, Form, Library};
 use crate::theme::{self, BIG, BLUE, FACE, INK, PAPER, ROW, SHADE, SIGNAL, TEXT, U};
@@ -49,8 +50,9 @@ pub struct Settings {
     pub selected: Option<usize>,
     pub library: Library,
     pub form: Form,
-    /// The game a Remove is waiting for confirmation on.
-    pub confirm_remove: Option<usize>,
+    /// The game a Remove is waiting for confirmation on (by id, so an
+    /// outside edit that reorders the file can't swap it for another).
+    pub confirm_remove: Option<Slug>,
     /// Why the last change on the library screen failed.
     pub problem: Option<String>,
     browse: Option<Pick>,
@@ -111,12 +113,20 @@ impl Settings {
         }
     }
 
-    /// Removes game `i` (after the user confirmed).
-    pub fn remove(&mut self, i: usize) {
-        let Some(id) = self.library.games().get(i).map(|g| g.id.clone()) else {
+    /// Asks to remove game `i`.
+    pub fn ask_remove(&mut self, i: usize) {
+        self.confirm_remove = self.library.games().get(i).map(|g| g.id.clone());
+    }
+
+    /// Removes the game with this id (after the user confirmed).
+    pub fn remove(&mut self, id: &Slug) {
+        let Some(i) = self.library.games().iter().position(|g| &g.id == id) else {
+            self.problem = Some(format!(
+                "Not removed: \"{id}\" is no longer in the library (changed outside the app)."
+            ));
             return;
         };
-        match self.library.remove(&id) {
+        match self.library.remove(id) {
             Ok(()) => {
                 self.host.saved();
                 self.problem = None;
@@ -304,7 +314,7 @@ fn library(ui: &mut Ui, s: &mut Settings) {
             s.edit(s.selected.unwrap_or_default());
         }
         if theme::button(ui, "Remove", has, false).clicked() {
-            s.confirm_remove = s.selected;
+            s.ask_remove(s.selected.unwrap_or_default());
         }
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             // Export and import come with #78.
@@ -356,9 +366,9 @@ fn library(ui: &mut Ui, s: &mut Settings) {
         let row = Rect::from_center_size(at, vec2(0.0, ROW));
         theme::label_at(ui, row, at.x, "No games yet: click Add game.", SHADE);
     }
-    if let Some(i) = s.confirm_remove {
-        let name = s.library.games().get(i).map(|g| g.name.clone());
-        let name = name.unwrap_or_default();
+    if let Some(id) = s.confirm_remove.clone() {
+        let game = s.library.config().and_then(|c| c.by_id(&id));
+        let name = game.map_or_else(|| id.to_string(), |g| g.name.clone());
         let body = format!(
             "Remove \"{name}\" from the library? Its tag stops launching it. \
              The previous config is kept as config.toml.bak."
@@ -366,7 +376,7 @@ fn library(ui: &mut Ui, s: &mut Settings) {
         match theme::confirm(ui.ctx(), "Remove game", &body, "Remove", "Cancel") {
             Some(true) => {
                 s.confirm_remove = None;
-                s.remove(i);
+                s.remove(&id);
             }
             Some(false) => s.confirm_remove = None,
             None => {}

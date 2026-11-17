@@ -3,7 +3,7 @@
 
 use std::io;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use mini_launcher_core::config::location::ConfigLocation;
 use mini_launcher_core::reconnect::ReaderState;
@@ -305,6 +305,57 @@ impl From<Result<Option<ConfigLocation>, std::sync::mpsc::TryRecvError>> for Ret
     }
 }
 
+/// Backoff for restarting a config retry thread that died (it panicked),
+/// so one that dies at once every time can't flood the log: 1 s, doubling
+/// up to [`Respawn::MAX`].
+#[derive(Debug, Default)]
+pub struct Respawn {
+    failures: u32,
+    due: Option<Instant>,
+}
+
+/// What to do about a dead retry thread now.
+#[derive(Debug, PartialEq, Eq)]
+pub enum RespawnStep {
+    /// Just noticed: restart it after this delay (log it once).
+    Scheduled(Duration),
+    /// Not yet.
+    Wait,
+    /// Restart it now.
+    Now,
+}
+
+impl Respawn {
+    pub const MAX: Duration = Duration::from_secs(60);
+
+    /// The thread is dead at `now`.
+    pub fn step(&mut self, now: Instant) -> RespawnStep {
+        match self.due {
+            None => {
+                self.failures = self.failures.saturating_add(1);
+                let delay = Duration::from_secs(1u64 << (self.failures - 1).min(6)).min(Self::MAX);
+                self.due = Some(now + delay);
+                RespawnStep::Scheduled(delay)
+            }
+            Some(due) if now < due => RespawnStep::Wait,
+            Some(_) => {
+                self.due = None;
+                RespawnStep::Now
+            }
+        }
+    }
+}
+
+/// Whether the config file must be read again: its mtime changed since the
+/// last check (`None` before the first), or a reload was asked for.
+pub fn config_changed(
+    last: Option<Option<SystemTime>>,
+    current: Option<SystemTime>,
+    force: bool,
+) -> bool {
+    force || last != Some(current)
+}
+
 /// The settings window's status-bar reader cell: its text, and whether
 /// the reader is ready (lights the mark).
 pub fn reader_cell(reader: Option<&ReaderState>, paused: bool) -> (String, bool) {
@@ -602,6 +653,35 @@ mod tests {
         })
         .join();
         assert_eq!(Retry::from(rx.try_recv()), Retry::Respawn);
+    }
+
+    #[test]
+    fn dead_retry_thread_respawns_with_backoff() {
+        let mut r = Respawn::default();
+        let t0 = Instant::now();
+        let mut now = t0;
+        let mut delays = Vec::new();
+        for _ in 0..9 {
+            let RespawnStep::Scheduled(d) = r.step(now) else {
+                panic!("expected a new delay");
+            };
+            delays.push(d.as_secs());
+            assert_eq!(r.step(now + d / 2), RespawnStep::Wait);
+            now += d;
+            assert_eq!(r.step(now), RespawnStep::Now);
+        }
+        assert_eq!(delays, [1, 2, 4, 8, 16, 32, 60, 60, 60]);
+        // At most one restart (and one log line) per minute from here on.
+        assert!(now - t0 >= Duration::from_secs(1 + 2 + 4 + 8 + 16 + 32 + 180));
+    }
+
+    #[test]
+    fn config_reload_forced_after_a_save() {
+        let t = Some(SystemTime::UNIX_EPOCH);
+        assert!(config_changed(None, t, false));
+        assert!(config_changed(Some(None), t, false));
+        assert!(!config_changed(Some(t), t, false));
+        assert!(config_changed(Some(t), t, true));
     }
 
     /// `app.rs` `balloon()` reaches into tray-icon internals (its window

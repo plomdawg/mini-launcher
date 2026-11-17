@@ -338,11 +338,11 @@ fn work(
         runner.set_paused(is_paused);
         reader.set_paused(is_paused);
         polls = polls.wrapping_add(1);
-        // A save from the settings window is loaded at once (`stamp = None`
-        // makes the check reread the file even if its mtime looks the same).
+        // A save from the settings window is loaded at once (`force` makes
+        // the check reread the file even if its mtime looks the same).
         let saved = reload.swap(false, Ordering::Relaxed);
         if saved {
-            watch.stamp = None;
+            watch.force = true;
         }
         if saved || polls.is_multiple_of(CONFIG_CHECK_POLLS) {
             watch.check(runner, recheck.swap(false, Ordering::Relaxed), tx)?;
@@ -373,6 +373,10 @@ struct ConfigWatch {
     loaded: Option<String>,
     /// While unavailable: the next location found by the helper thread.
     retry: Option<mpsc::Receiver<Option<ConfigLocation>>>,
+    /// Backoff for restarting that thread if it dies; kept across switches.
+    respawn: model::Respawn,
+    /// Reread the file at the next check even if its mtime is the same.
+    force: bool,
 }
 
 impl ConfigWatch {
@@ -383,7 +387,10 @@ impl ConfigWatch {
         runner: &mut Runner,
         tx: &mpsc::Sender<Update>,
     ) -> Option<()> {
-        *self = ConfigWatch::default();
+        *self = ConfigWatch {
+            respawn: std::mem::take(&mut self.respawn),
+            ..ConfigWatch::default()
+        };
         runner.set_config(Config::default());
         let Some(location) = location else {
             tracing::warn!("no config directory on this system; only steam:// tags will work");
@@ -420,17 +427,24 @@ impl ConfigWatch {
             return match model::Retry::from(retry.try_recv()) {
                 model::Retry::Wait => Some(()),
                 model::Retry::Switch(location) => {
+                    self.respawn = model::Respawn::default();
                     if location.as_ref().is_some_and(ConfigLocation::is_available) {
                         tracing::info!("config folder available again");
                     }
                     self.switch(location, runner, tx)
                 }
-                model::Retry::Respawn => {
-                    tracing::error!(
-                        "the config retry thread ended without a result; restarting it"
-                    );
-                    self.switch(self.location.clone(), runner, tx)
-                }
+                model::Retry::Respawn => match self.respawn.step(Instant::now()) {
+                    model::RespawnStep::Scheduled(delay) => {
+                        tracing::error!(
+                            "the config retry thread ended without a result; \
+                             restarting it in {} s",
+                            delay.as_secs()
+                        );
+                        Some(())
+                    }
+                    model::RespawnStep::Wait => Some(()),
+                    model::RespawnStep::Now => self.switch(self.location.clone(), runner, tx),
+                },
             };
         }
         let (Some(location), Some(dir)) = (&self.location, Config::default_dir()) else {
@@ -458,7 +472,7 @@ impl ConfigWatch {
         tx: &mpsc::Sender<Update>,
     ) -> Option<()> {
         let current = modified(path);
-        if self.stamp == Some(current) {
+        if !model::config_changed(self.stamp, current, std::mem::take(&mut self.force)) {
             return Some(());
         }
         let first = self.stamp.is_none();
