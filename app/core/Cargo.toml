@@ -18,6 +18,7 @@ serialport = { version = "4", default-features = false }
 thiserror = "2"
 tracing = "0.1"
 toml = { version = "1.2.1", default-features = false, features = ["parse", "serde", "std"] }
+toml_edit = { version = "0.25", default-features = false, features = ["parse", "display"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Registry", "Win32_System_Threading"] }

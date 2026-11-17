@@ -11,7 +11,8 @@ use std::time::{Duration, Instant, SystemTime};
 use anyhow::{Context, Result};
 use mini_launcher_cli::{logging, port};
 use mini_launcher_core::autostart::{self, Status};
-use mini_launcher_core::config::Config;
+use mini_launcher_core::config::edit::saved_by_this_process;
+use mini_launcher_core::config::{self, Config};
 use mini_launcher_core::reconnect::{Backoff, ReaderState, Reconnector, SystemClock};
 use mini_launcher_core::runner::{self, Notice, Runner};
 use mini_launcher_core::{instance, logs};
@@ -209,6 +210,10 @@ fn work(
     tx: &mpsc::Sender<Update>,
 ) {
     let mut stamp = config_path.as_deref().and_then(modified);
+    // The text behind the running library, to skip no-op reloads.
+    let mut loaded = config_path
+        .as_deref()
+        .and_then(|p| config::read_text_or_empty(p).ok());
     let config = match config_path.as_deref().map(Config::load_or_empty) {
         Some(Ok(config)) => config,
         Some(Err(e)) => {
@@ -237,15 +242,23 @@ fn work(
             let current = modified(path);
             if current != stamp {
                 stamp = current;
-                match Config::load_or_empty(path) {
-                    Ok(config) => {
-                        tracing::info!("config reloaded ({} games)", config.games.len());
-                        runner.set_config(config);
-                    }
-                    Err(e) => {
-                        let e = config_error(Some(path), &e);
-                        tracing::warn!("{e}; keeping the previous library");
-                        tx.send(Update::ConfigError(e)).ok()?;
+                let text = config::read_text_or_empty(path);
+                // Touched but unchanged (e.g. re-saved as is): nothing to do.
+                if text.as_ref().ok() != loaded.as_ref() {
+                    match text.and_then(|t| Config::parse(&t).map(|c| (c, t))) {
+                        Ok((config, text)) => {
+                            // This app's own saves are expected; log outside edits.
+                            if !saved_by_this_process(&text) {
+                                tracing::info!("config reloaded ({} games)", config.games.len());
+                            }
+                            runner.set_config(config);
+                            loaded = Some(text);
+                        }
+                        Err(e) => {
+                            let e = config_error(Some(path), &e);
+                            tracing::warn!("{e}; keeping the previous library");
+                            tx.send(Update::ConfigError(e)).ok()?;
+                        }
                     }
                 }
             }

@@ -1,0 +1,505 @@
+//! Comment-preserving edits of `config.toml`, atomic saves, and
+//! export/import (see `docs/config.md`).
+//!
+//! Every edit is validated with [`Config::parse`], the same code path as
+//! loading, so a [`ConfigDocument`] always holds a loadable config.
+
+use std::hash::{Hash, Hasher};
+use std::io::Write;
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+
+use toml_edit::{ArrayOfTables, DocumentMut, Item, Table, Value};
+
+use super::{format_uid, read_text_or_empty, Config, ConfigError, Game};
+use crate::launch::LaunchPlan;
+use crate::payload::Slug;
+
+/// The `export_version` this build writes and reads.
+pub const EXPORT_VERSION: i64 = 1;
+const EXPORT_TABLE: &str = "mini_launcher";
+
+/// Why an edit, save, export or import failed.
+#[derive(Debug, thiserror::Error)]
+pub enum EditError {
+    #[error(transparent)]
+    Config(#[from] ConfigError),
+    #[error("no game with id \"{0}\"")]
+    NoSuchGame(Slug),
+    #[error("{0}")]
+    Unsupported(String),
+    #[error("not a Mini Launcher export: {0}")]
+    BadExport(String),
+    #[error("cannot write {}", path.display())]
+    Write {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+}
+
+/// `config.toml` as an editable document that keeps comments and formatting.
+#[derive(Debug, Clone)]
+pub struct ConfigDocument {
+    doc: DocumentMut,
+    config: Config,
+}
+
+impl ConfigDocument {
+    /// Parses and validates TOML text.
+    pub fn parse(text: &str) -> Result<Self, EditError> {
+        let config = Config::parse(text)?;
+        let doc = text
+            .parse()
+            .map_err(|e| EditError::Unsupported(format!("invalid config.toml: {e}")))?;
+        Ok(ConfigDocument { doc, config })
+    }
+
+    /// Loads `path`; a missing file is an empty document.
+    pub fn load_or_empty(path: &Path) -> Result<Self, EditError> {
+        ConfigDocument::parse(&read_text_or_empty(path)?)
+    }
+
+    /// The validated library this document describes.
+    pub fn config(&self) -> &Config {
+        &self.config
+    }
+
+    /// Adds `game`, or updates the entry with the same id in place (keeping
+    /// its comments and key order).
+    pub fn upsert_game(&mut self, game: &Game) -> Result<(), EditError> {
+        self.edit(|doc| {
+            let games = games_mut(doc)?;
+            let table = match find(games, &game.id) {
+                Some(i) => games.get_mut(i).expect("index from find"),
+                None => {
+                    games.push(Table::new());
+                    games.get_mut(games.len() - 1).expect("just pushed")
+                }
+            };
+            write_game(table, game)
+        })
+    }
+
+    /// Removes the entry with this id (and the comments above it).
+    pub fn remove_game(&mut self, id: &Slug) -> Result<(), EditError> {
+        self.edit(|doc| {
+            let games = games_mut(doc)?;
+            let i = find(games, id).ok_or_else(|| EditError::NoSuchGame(id.clone()))?;
+            games.remove(i);
+            Ok(())
+        })
+    }
+
+    /// Binds a tag UID to the entry with this id, or unbinds it (`None`).
+    pub fn set_uid(&mut self, id: &Slug, uid: Option<&[u8]>) -> Result<(), EditError> {
+        self.edit(|doc| {
+            let games = games_mut(doc)?;
+            let i = find(games, id).ok_or_else(|| EditError::NoSuchGame(id.clone()))?;
+            let table = games.get_mut(i).expect("index from find");
+            set(table, "uid", uid.map(|u| format_uid(u).into()));
+            Ok(())
+        })
+    }
+
+    /// Validates and atomically writes the document to `path`, keeping the
+    /// previous file as `<path>.bak`.
+    pub fn save(&self, path: &Path) -> Result<(), EditError> {
+        let text = self.doc.to_string();
+        Config::parse(&text)?;
+        write_atomic(path, &text, true)?;
+        remember_saved(&text);
+        Ok(())
+    }
+
+    /// Writes a portable export: this config with a `[mini_launcher]`
+    /// header carrying `export_version`.
+    pub fn export(&self, path: &Path) -> Result<(), EditError> {
+        let mut doc = self.doc.clone();
+        let mut header = Table::new();
+        header.insert("export_version", toml_edit::value(EXPORT_VERSION));
+        header.set_position(Some(isize::MIN));
+        header.decor_mut().set_prefix(
+            "# Mini Launcher config export. Import it from the app; to use it as\n\
+             # config.toml directly, delete this [mini_launcher] table.\n",
+        );
+        doc.insert(EXPORT_TABLE, Item::Table(header));
+        write_atomic(path, &doc.to_string(), false)
+    }
+
+    /// Reads and fully validates an export (or a plain `config.toml`).
+    pub fn read_export(path: &Path) -> Result<Self, EditError> {
+        let text = std::fs::read_to_string(path).map_err(|source| ConfigError::Io {
+            path: path.to_owned(),
+            source,
+        })?;
+        let bad = |m: String| EditError::BadExport(m);
+        let mut doc: DocumentMut = text.parse().map_err(|e| bad(format!("{e}")))?;
+        if let Some(item) = doc.remove(EXPORT_TABLE) {
+            let header = item
+                .as_table()
+                .ok_or_else(|| bad(format!("[{EXPORT_TABLE}] must be a table")))?;
+            match header.get("export_version").and_then(Item::as_integer) {
+                Some(EXPORT_VERSION) => {}
+                Some(n) => {
+                    return Err(bad(format!(
+                        "export_version {n} is not supported (expected {EXPORT_VERSION})"
+                    )))
+                }
+                None => return Err(bad("missing export_version".into())),
+            }
+            if header.len() != 1 {
+                return Err(bad(format!("unknown keys in [{EXPORT_TABLE}]")));
+            }
+        }
+        ConfigDocument::parse(&doc.to_string())
+    }
+
+    /// Validates the export at `from`, then saves it as the config at `to`
+    /// (the current config is kept as `<to>.bak`).
+    pub fn import(from: &Path, to: &Path) -> Result<Self, EditError> {
+        let doc = ConfigDocument::read_export(from)?;
+        doc.save(to)?;
+        Ok(doc)
+    }
+
+    /// Applies `change` to a copy and keeps it only if it still validates.
+    fn edit(
+        &mut self,
+        change: impl FnOnce(&mut DocumentMut) -> Result<(), EditError>,
+    ) -> Result<(), EditError> {
+        let mut doc = self.doc.clone();
+        change(&mut doc)?;
+        self.config = Config::parse(&doc.to_string())?;
+        self.doc = doc;
+        Ok(())
+    }
+}
+
+impl std::fmt::Display for ConfigDocument {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.doc.fmt(f)
+    }
+}
+
+fn games_mut(doc: &mut DocumentMut) -> Result<&mut ArrayOfTables, EditError> {
+    doc.entry("games")
+        .or_insert_with(|| Item::ArrayOfTables(ArrayOfTables::new()))
+        .as_array_of_tables_mut()
+        .ok_or_else(|| {
+            EditError::Unsupported(
+                "`games` must be written as [[games]] blocks to be edited by the app".into(),
+            )
+        })
+}
+
+fn find(games: &ArrayOfTables, id: &Slug) -> Option<usize> {
+    games
+        .iter()
+        .position(|t| t.get("id").and_then(Item::as_str) == Some(id.as_str()))
+}
+
+fn write_game(table: &mut Table, game: &Game) -> Result<(), EditError> {
+    set(table, "id", Some(game.id.as_str().into()));
+    set(table, "name", Some(game.name.as_str().into()));
+    set(
+        table,
+        "uid",
+        game.uid.as_deref().map(|u| format_uid(u).into()),
+    );
+    let path_value = |p: &Path| {
+        p.to_str().map(Value::from).ok_or_else(|| {
+            EditError::Unsupported(format!("path {} is not valid Unicode", p.display()))
+        })
+    };
+    let (appid, exe, args, cwd) = match &game.plan {
+        LaunchPlan::Steam { appid } => (Some(i64::from(*appid).into()), None, None, None),
+        LaunchPlan::Exe { path, args, cwd } => (
+            None,
+            Some(path_value(path)?),
+            (!args.is_empty()).then(|| Value::Array(args.iter().collect())),
+            cwd.as_deref().map(path_value).transpose()?,
+        ),
+    };
+    set(table, "steam_appid", appid);
+    set(table, "exe", exe);
+    set(table, "args", args);
+    set(table, "cwd", cwd);
+    Ok(())
+}
+
+/// Sets or removes `key`, keeping an existing value's comments and spacing.
+fn set(table: &mut Table, key: &str, value: Option<Value>) {
+    let Some(mut value) = value else {
+        table.remove(key);
+        return;
+    };
+    if let Some(old) = table.get(key).and_then(Item::as_value) {
+        if old.to_string().trim() == value.to_string().trim() {
+            return;
+        }
+        *value.decor_mut() = old.decor().clone();
+    }
+    table.insert(key, Item::Value(value));
+}
+
+/// Writes `text` to a temp file next to `path`, flushes it to disk, then
+/// renames it over `path` (`rename` replaces an existing file on Windows and
+/// Unix alike). With `backup`, an existing `path` is first copied to
+/// `<path>.bak`.
+pub fn write_atomic(path: &Path, text: &str, backup: bool) -> Result<(), EditError> {
+    let err = |source| EditError::Write {
+        path: path.to_owned(),
+        source,
+    };
+    let dir = match path.parent() {
+        Some(d) if !d.as_os_str().is_empty() => d,
+        _ => Path::new("."),
+    };
+    let name = path
+        .file_name()
+        .ok_or_else(|| err(std::io::ErrorKind::InvalidInput.into()))?;
+    std::fs::create_dir_all(dir).map_err(err)?;
+    let mut tmp_name = std::ffi::OsString::from(".");
+    tmp_name.push(name);
+    tmp_name.push(format!(".{}.tmp", std::process::id()));
+    let tmp = dir.join(tmp_name);
+    let result = (|| {
+        let mut file = std::fs::File::create(&tmp)?;
+        file.write_all(text.as_bytes())?;
+        file.sync_all()?;
+        drop(file);
+        if backup && path.exists() {
+            let mut bak = path.as_os_str().to_owned();
+            bak.push(".bak");
+            std::fs::copy(path, PathBuf::from(bak))?;
+        }
+        std::fs::rename(&tmp, path)
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    result.map_err(err)?;
+    #[cfg(unix)]
+    if let Ok(d) = std::fs::File::open(dir) {
+        let _ = d.sync_all();
+    }
+    Ok(())
+}
+
+/// Hashes of the last few configs saved by this process, so a file watcher
+/// can tell its own app's saves from outside edits.
+static SAVED: Mutex<Vec<u64>> = Mutex::new(Vec::new());
+
+fn hash(text: &str) -> u64 {
+    let mut h = std::hash::DefaultHasher::new();
+    text.hash(&mut h);
+    h.finish()
+}
+
+fn remember_saved(text: &str) {
+    let mut saved = SAVED.lock().unwrap_or_else(|e| e.into_inner());
+    if saved.len() >= 8 {
+        saved.remove(0);
+    }
+    saved.push(hash(text));
+}
+
+/// Whether this process recently saved exactly `text` (e.g. from the
+/// settings window), so a watcher reloading it need not announce it.
+pub fn saved_by_this_process(text: &str) -> bool {
+    let saved = SAVED.lock().unwrap_or_else(|e| e.into_inner());
+    saved.contains(&hash(text))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const COMMENTED: &str = r#"# My library
+# (hand-written)
+
+# Steam
+[[games]]
+id = "hl2"   # short id
+name = "Half-Life 2"
+steam_appid = 220 # the appid
+
+# Non-Steam
+[[games]]
+id = "my-game"
+name = "My Game"
+exe = 'C:\Games\MyGame\game.exe'
+args = ["--fullscreen"]
+"#;
+
+    fn temp(name: &str) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("mini-launcher-edit-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn slug(s: &str) -> Slug {
+        Slug::new(s).unwrap()
+    }
+
+    #[test]
+    fn unchanged_round_trip_is_byte_identical() {
+        let doc = ConfigDocument::parse(COMMENTED).unwrap();
+        assert_eq!(doc.to_string(), COMMENTED);
+        assert_eq!(doc.config(), &Config::parse(COMMENTED).unwrap());
+    }
+
+    #[test]
+    fn edits_keep_comments() {
+        let mut doc = ConfigDocument::parse(COMMENTED).unwrap();
+        let mut hl2 = doc.config().games[0].clone();
+        hl2.name = "Half-Life 2: Episode One".into();
+        hl2.plan = LaunchPlan::Steam { appid: 380 };
+        doc.upsert_game(&hl2).unwrap();
+        doc.set_uid(&slug("my-game"), Some(&[1, 2, 3, 4])).unwrap();
+        doc.upsert_game(&Game {
+            id: slug("new"),
+            name: "New".into(),
+            uid: None,
+            plan: LaunchPlan::Exe {
+                path: r"D:\New Game\new.exe".into(),
+                args: vec![],
+                cwd: Some(r"D:\New Game".into()),
+            },
+        })
+        .unwrap();
+        let text = doc.to_string();
+        for kept in [
+            "# My library\n# (hand-written)\n",
+            "# short id",
+            "# the appid",
+        ] {
+            assert!(text.contains(kept), "{kept:?} lost:\n{text}");
+        }
+        assert!(text.contains("steam_appid = 380 # the appid"), "{text}");
+        assert!(text.contains("uid = \"01:02:03:04\""), "{text}");
+        let cfg = Config::parse(&text).unwrap();
+        assert_eq!(cfg.games.len(), 3);
+        assert_eq!(&cfg, doc.config());
+        assert_eq!(cfg.by_uid(&[1, 2, 3, 4]).unwrap().id, slug("my-game"));
+
+        // Switching an entry from exe to Steam drops exe-only keys.
+        let mut game = cfg.games[1].clone();
+        game.plan = LaunchPlan::Steam { appid: 70 };
+        doc.upsert_game(&game).unwrap();
+        doc.set_uid(&slug("my-game"), None).unwrap();
+        doc.remove_game(&slug("hl2")).unwrap();
+        let text = doc.to_string();
+        assert!(
+            !text.contains("# Steam\n") && !text.contains("args"),
+            "{text}"
+        );
+        assert!(text.contains("# Non-Steam\n[[games]]"), "{text}");
+        assert_eq!(doc.config().games.len(), 2);
+    }
+
+    #[test]
+    fn invalid_edits_are_rejected_and_leave_the_document_unchanged() {
+        let mut doc = ConfigDocument::parse(COMMENTED).unwrap();
+        doc.set_uid(&slug("hl2"), Some(&[9, 9, 9, 9])).unwrap();
+        let before = doc.to_string();
+        let err = doc
+            .set_uid(&slug("my-game"), Some(&[9, 9, 9, 9]))
+            .unwrap_err();
+        assert!(err.to_string().contains("duplicate uid"), "{err}");
+        assert!(matches!(
+            doc.remove_game(&slug("nope")),
+            Err(EditError::NoSuchGame(_))
+        ));
+        assert_eq!(doc.to_string(), before);
+        let mut inline = ConfigDocument::parse("games = []").unwrap();
+        let game = doc.config().games[0].clone();
+        assert!(matches!(
+            inline.upsert_game(&game),
+            Err(EditError::Unsupported(_))
+        ));
+    }
+
+    #[test]
+    fn atomic_save_replaces_and_keeps_one_backup() {
+        let dir = temp("save");
+        let path = dir.join("config.toml");
+        let bak = dir.join("config.toml.bak");
+        let mut doc = ConfigDocument::load_or_empty(&path).unwrap();
+        doc.upsert_game(&Config::parse(COMMENTED).unwrap().games[0])
+            .unwrap();
+        doc.save(&path).unwrap();
+        assert!(!bak.exists());
+        let first = std::fs::read_to_string(&path).unwrap();
+        assert!(saved_by_this_process(&first));
+
+        doc.remove_game(&slug("hl2")).unwrap();
+        doc.save(&path).unwrap();
+        assert_eq!(std::fs::read_to_string(&bak).unwrap(), first);
+        assert_eq!(Config::load(&path).unwrap(), Config::default());
+        doc.save(&path).unwrap();
+        let names: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .collect();
+        assert_eq!(names.len(), 2, "temp file left behind: {names:?}");
+        assert!(!saved_by_this_process("something else"));
+    }
+
+    #[test]
+    fn export_import_round_trip() {
+        let dir = temp("export");
+        let (export, config) = (dir.join("backup.toml"), dir.join("config.toml"));
+        let doc = ConfigDocument::parse(COMMENTED).unwrap();
+        doc.export(&export).unwrap();
+        let text = std::fs::read_to_string(&export).unwrap();
+        assert!(text.starts_with("# Mini Launcher config export"), "{text}");
+        assert!(
+            text.contains("[mini_launcher]\nexport_version = 1\n"),
+            "{text}"
+        );
+
+        std::fs::write(&config, "# old\n").unwrap();
+        let imported = ConfigDocument::import(&export, &config).unwrap();
+        assert_eq!(imported.config(), doc.config());
+        assert_eq!(std::fs::read_to_string(&config).unwrap(), COMMENTED);
+        assert_eq!(
+            std::fs::read_to_string(dir.join("config.toml.bak")).unwrap(),
+            "# old\n"
+        );
+    }
+
+    #[test]
+    fn corrupted_imports_are_rejected_before_touching_the_config() {
+        let dir = temp("import");
+        let (export, config) = (dir.join("backup.toml"), dir.join("config.toml"));
+        std::fs::write(&config, COMMENTED).unwrap();
+        let body = "[[games]]\nid = \"a\"\nname = \"A\"\nsteam_appid = 1\n";
+        let cases = [
+            ("[[games]\nid =".to_owned(), "not a Mini Launcher export"),
+            (format!("[mini_launcher]\nexport_version = 2\n{body}"), "not supported"),
+            (format!("[mini_launcher]\n{body}"), "missing export_version"),
+            (format!("mini_launcher = 1\n{body}"), "must be a table"),
+            (
+                format!("[mini_launcher]\nexport_version = 1\nx = 1\n{body}"),
+                "unknown keys",
+            ),
+            (
+                "[mini_launcher]\nexport_version = 1\n[[games]]\nid = \"../x\"\nname = \"X\"\nsteam_appid = 1\n"
+                    .to_owned(),
+                "invalid slug",
+            ),
+        ];
+        for (text, want) in cases {
+            std::fs::write(&export, &text).unwrap();
+            let err = ConfigDocument::import(&export, &config)
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains(want), "{text:?}: got {err:?}, want {want:?}");
+        }
+        assert_eq!(std::fs::read_to_string(&config).unwrap(), COMMENTED);
+        assert!(!dir.join("config.toml.bak").exists());
+    }
+}
