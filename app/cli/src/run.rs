@@ -27,6 +27,8 @@ pub struct Options {
 struct Ctx {
     config: Config,
     path: Option<PathBuf>,
+    /// Why there is no config (an unavailable config folder).
+    unavailable: Option<String>,
     dry_run: bool,
 }
 
@@ -43,14 +45,31 @@ pub fn run(out: &mut impl Write, opts: Options, stop: &AtomicBool) -> Result<()>
         )?)
     };
     // An explicit --config must exist; a missing default config is empty.
+    let mut unavailable = None;
     let (path, load): (_, fn(&Path) -> _) = match opts.config {
         Some(p) => (Some(p), Config::load),
-        None => (Config::default_path(), Config::load_or_empty),
+        None => match Config::location().map(|l| l.config_file()) {
+            Some(Ok(p)) => (Some(p), Config::load_or_empty),
+            Some(Err(e)) => {
+                // Not the default folder instead: that is a different library.
+                tracing::warn!("{e}");
+                writeln!(
+                    out,
+                    "warning: {e}\nonly steam:// tags will work; restart once the folder is \
+                     available (`mini-launcher diagnose` explains)"
+                )?;
+                unavailable = Some(e.to_string());
+                (None, Config::load_or_empty)
+            }
+            None => (None, Config::load_or_empty),
+        },
     };
     let config = match &path {
         Some(p) => load(p).with_context(|| format!("cannot load {}", p.display()))?,
         None => {
-            tracing::warn!("no config directory on this system; only steam:// tags will work");
+            if unavailable.is_none() {
+                tracing::warn!("no config directory on this system; only steam:// tags will work");
+            }
             Config::default()
         }
     };
@@ -65,6 +84,7 @@ pub fn run(out: &mut impl Write, opts: Options, stop: &AtomicBool) -> Result<()>
     let ctx = Ctx {
         config,
         path,
+        unavailable,
         dry_run: opts.dry_run,
     };
     if opts.simulate {
@@ -115,14 +135,22 @@ fn poll_loop<E: Display>(
         clock,
         |_, now| next(now),
         |notice| {
-            print(out, ctx.path.as_deref(), notice)?;
+            print(out, ctx, notice)?;
             Ok(out.flush()?)
         },
     )
 }
 
-fn print(out: &mut impl Write, path: Option<&Path>, notice: Notice) -> Result<()> {
+fn print(out: &mut impl Write, ctx: &Ctx, notice: Notice) -> Result<()> {
+    let path = ctx.path.as_deref();
     match notice {
+        Notice::UnknownId { uid, .. } | Notice::Unmapped { uid } if ctx.unavailable.is_some() => {
+            let reason = ctx.unavailable.as_deref().unwrap_or_default();
+            writeln!(
+                out,
+                "tag {uid} needs the config, but {reason}; not launching"
+            )?;
+        }
         Notice::Launched {
             uid,
             plan,
@@ -257,6 +285,7 @@ mod tests {
         let ctx = Ctx {
             config: Config::default(),
             path: None,
+            unavailable: None,
             dry_run: true,
         };
         let stop = AtomicBool::new(false);

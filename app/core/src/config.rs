@@ -92,15 +92,10 @@ impl Config {
             .map(|dirs| dirs.config_dir().to_owned())
     }
 
-    /// The effective `config.toml`: in [`Config::default_dir`], or in the
-    /// folder its `location.toml` names. An unusable `location.toml` is
-    /// logged and ignored (`diagnose` reports it).
-    pub fn default_path() -> Option<PathBuf> {
-        let dir = Config::default_dir()?;
-        Some(location::resolve(&dir).unwrap_or_else(|e| {
-            tracing::warn!("{e}; using the default config folder");
-            dir.join(location::CONFIG_FILE)
-        }))
+    /// Where the config lives: [`Config::default_dir`] or the folder its
+    /// `location.toml` names. `None` if the OS has no config directory.
+    pub fn location() -> Option<location::ConfigLocation> {
+        Config::default_dir().map(|dir| location::ConfigLocation::resolve(&dir))
     }
 
     /// Loads and validates `path`, which must exist (e.g. a path the user

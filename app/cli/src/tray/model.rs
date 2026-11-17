@@ -22,8 +22,9 @@ pub struct View {
     pub pause_label: &'static str,
 }
 
-/// `reader` is `None` until the first open attempt has run.
-pub fn view(reader: Option<&ReaderState>, paused: bool) -> View {
+/// `reader` is `None` until the first open attempt has run; `config_problem`
+/// is why the config folder is unavailable, if it is.
+pub fn view(reader: Option<&ReaderState>, paused: bool, config_problem: Option<&str>) -> View {
     let reader = match reader {
         None => "starting…".to_owned(),
         Some(ReaderState::Connected { port }) => format!("ready ({port})"),
@@ -32,11 +33,15 @@ pub fn view(reader: Option<&ReaderState>, paused: bool) -> View {
             None => "reader not found, retrying…".to_owned(),
         },
     };
-    let (tooltip, status) = if paused {
+    let (mut tooltip, mut status) = if paused {
         ("paused".to_owned(), format!("Paused — {reader}"))
     } else {
         (reader.clone(), capitalize(&reader))
     };
+    if let Some(problem) = config_problem {
+        tooltip = format!("{tooltip}; {problem}");
+        status = format!("{status}; {problem}");
+    }
     View {
         tooltip: truncate_utf16(&format!("{APP} — {tooltip}"), TOOLTIP_MAX),
         status,
@@ -71,6 +76,9 @@ fn truncate_utf16(s: &str, max: usize) -> String {
     out
 }
 
+/// The notification title while the config folder is unavailable.
+pub const CONFIG_UNAVAILABLE: &str = "Config folder unavailable";
+
 /// How a notification is shown: an info or a warning icon.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Level {
@@ -80,9 +88,23 @@ pub enum Level {
 
 /// The balloon (level, title, text) for notices the user should see;
 /// everything else only goes to the log. A failed launch is a warning; an
-/// unknown cart is the user's to map, so it is info.
-pub fn notification(notice: &Notice) -> Option<(Level, &'static str, String)> {
+/// unknown cart is the user's to map, so it is info. While the config folder
+/// is unavailable (`config_problem`), a cart that needs the config says so.
+pub fn notification(
+    notice: &Notice,
+    config_problem: Option<&str>,
+) -> Option<(Level, &'static str, String)> {
     match notice {
+        Notice::UnknownId { uid, .. } | Notice::Unmapped { uid } if config_problem.is_some() => {
+            Some((
+                Level::Warning,
+                CONFIG_UNAVAILABLE,
+                format!(
+                    "Tag {uid} needs config.toml, but {}.",
+                    config_problem.unwrap_or_default()
+                ),
+            ))
+        }
         Notice::LaunchFailed { plan, error, .. } => Some((
             Level::Warning,
             "Could not start the game",
@@ -190,12 +212,12 @@ mod tests {
 
     #[test]
     fn tooltip_and_status_follow_the_reader() {
-        let v = view(Some(&connected()), false);
+        let v = view(Some(&connected()), false, None);
         assert_eq!(v.tooltip, "Mini Launcher — ready (COM7)");
         assert_eq!(v.status, "Ready (COM7)");
         assert_eq!(v.pause_label, "Pause");
 
-        let v = view(Some(&missing(Some("no CH340 adapter found"))), false);
+        let v = view(Some(&missing(Some("no CH340 adapter found"))), false, None);
         assert_eq!(
             v.tooltip,
             "Mini Launcher — reader not found, retrying… (no CH340 adapter found)"
@@ -204,26 +226,26 @@ mod tests {
             v.status,
             "Reader not found, retrying… (no CH340 adapter found)"
         );
-        let v = view(Some(&missing(None)), false);
+        let v = view(Some(&missing(None)), false, None);
         assert_eq!(v.tooltip, "Mini Launcher — reader not found, retrying…");
 
-        assert_eq!(view(None, false).status, "Starting…");
+        assert_eq!(view(None, false, None).status, "Starting…");
     }
 
     #[test]
     fn paused_wins_the_tooltip_and_flips_the_menu_label() {
-        let v = view(Some(&connected()), true);
+        let v = view(Some(&connected()), true, None);
         assert_eq!(v.tooltip, "Mini Launcher — paused");
         assert_eq!(v.status, "Paused — ready (COM7)");
         assert_eq!(v.pause_label, "Resume");
-        let v = view(Some(&missing(None)), true);
+        let v = view(Some(&missing(None)), true, None);
         assert_eq!(v.tooltip, "Mini Launcher — paused");
         assert_eq!(v.status, "Paused — reader not found, retrying…");
     }
 
     #[test]
     fn long_tooltips_are_cut_to_the_windows_limit() {
-        let v = view(Some(&missing(Some(&"é".repeat(300)))), false);
+        let v = view(Some(&missing(Some(&"é".repeat(300)))), false, None);
         assert_eq!(v.tooltip.encode_utf16().count(), TOOLTIP_MAX);
         assert!(v.tooltip.ends_with('…'));
         // Astral characters are two units and are never split.
@@ -240,11 +262,11 @@ mod tests {
             via: Via::TagSteam,
             error: "no handler".into(),
         };
-        let (level, title, text) = notification(&failed).unwrap();
+        let (level, title, text) = notification(&failed, None).unwrap();
         assert_eq!(level, Level::Warning);
         assert_eq!(title, "Could not start the game");
         assert_eq!(text, "open steam://rungameid/440: no handler");
-        let (level, title, text) = notification(&Notice::Unmapped { uid }).unwrap();
+        let (level, title, text) = notification(&Notice::Unmapped { uid }, None).unwrap();
         assert_eq!(level, Level::Info);
         assert_eq!(title, "Unknown cart");
         assert!(text.contains("04A1B2C3"), "{text}");
@@ -255,8 +277,43 @@ mod tests {
                 port: "COM7".into(),
             },
         ] {
-            assert_eq!(notification(&quiet), None);
+            assert_eq!(notification(&quiet, None), None);
         }
+    }
+
+    #[test]
+    fn unavailable_config_folder_shows_in_tooltip_and_cart_notices() {
+        let problem = "config folder \"D:\\Sync\" unavailable: not mounted";
+        let v = view(Some(&connected()), false, Some(problem));
+        assert_eq!(
+            v.tooltip,
+            format!("Mini Launcher — ready (COM7); {problem}")
+        );
+        assert_eq!(v.status, format!("Ready (COM7); {problem}"));
+        let v = view(Some(&connected()), true, Some(problem));
+        assert!(
+            v.tooltip.starts_with("Mini Launcher — paused; config"),
+            "{v:?}"
+        );
+
+        let uid = Uid::from_hex("04a1b2c3").unwrap();
+        let slug = mini_launcher_core::payload::Slug::new("my-game").unwrap();
+        for notice in [Notice::Unmapped { uid }, Notice::UnknownId { uid, slug }] {
+            let (level, title, text) = notification(&notice, Some(problem)).unwrap();
+            assert_eq!((level, title), (Level::Warning, CONFIG_UNAVAILABLE));
+            assert!(text.ends_with(&format!("but {problem}.")), "{text}");
+        }
+        // Launch failures (e.g. steam://) are reported as usual.
+        let failed = Notice::LaunchFailed {
+            uid,
+            plan: LaunchPlan::Steam { appid: 440 },
+            via: Via::TagSteam,
+            error: "no handler".into(),
+        };
+        assert_eq!(
+            notification(&failed, Some(problem)).unwrap().1,
+            "Could not start the game"
+        );
     }
 
     #[test]

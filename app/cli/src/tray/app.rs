@@ -12,6 +12,7 @@ use anyhow::{Context, Result};
 use mini_launcher_cli::{logging, port};
 use mini_launcher_core::autostart::{self, Status};
 use mini_launcher_core::config::edit::saved_by_this_process;
+use mini_launcher_core::config::location::{ConfigLocation, POINTER_FILE};
 use mini_launcher_core::config::{self, Config};
 use mini_launcher_core::reconnect::{Backoff, ReaderState, Reconnector, SystemClock};
 use mini_launcher_core::runner::{self, Notice, Runner};
@@ -27,6 +28,9 @@ use crate::model::{self, Level, RateLimiter, APP};
 const NOTIFY_GAP: Duration = Duration::from_secs(10);
 /// How often the worker checks whether `config.toml` changed (in polls).
 const CONFIG_CHECK_POLLS: u32 = 10;
+/// How often an unavailable config folder is checked again (it is also
+/// checked when `location.toml` changes).
+const CONFIG_RETRY: Duration = Duration::from_secs(30);
 /// How long the UI thread waits for window messages between other checks.
 const UI_WAIT_MS: u32 = 50;
 /// Placeholder port name until auto-detection finds the reader.
@@ -37,6 +41,8 @@ enum Update {
     Reader(ReaderState),
     Notice(Notice),
     ConfigError(String),
+    /// The config file in use, or why the config folder is unavailable.
+    Location(Result<PathBuf, String>),
 }
 
 pub fn main() -> ExitCode {
@@ -74,10 +80,9 @@ pub fn main() -> ExitCode {
 }
 
 fn run(log_dir: Option<PathBuf>) -> Result<()> {
-    let config_path = Config::default_path();
-    if config_path.is_none() {
-        tracing::warn!("no config directory on this system; only steam:// tags will work");
-    }
+    // Both follow `Update::Location`.
+    let mut config_path: Option<PathBuf> = None;
+    let mut config_problem: Option<String> = None;
     let exe = std::env::current_exe().context("cannot find this program's path")?;
     let stop = Arc::new(AtomicBool::new(false));
     let paused = Arc::new(AtomicBool::new(false));
@@ -85,14 +90,14 @@ fn run(log_dir: Option<PathBuf>) -> Result<()> {
     let worker = thread::Builder::new()
         .name("run-loop".into())
         .spawn({
-            let (path, stop, paused) = (config_path.clone(), stop.clone(), paused.clone());
-            move || work(path, &stop, &paused, &tx)
+            let (stop, paused) = (stop.clone(), paused.clone());
+            move || work(&stop, &paused, &tx)
         })
         .context("cannot start the run loop")?;
 
     let status = MenuItem::new("", false, None);
     let pause = MenuItem::new("", true, None);
-    let open_config = MenuItem::new("Open config", config_path.is_some(), None);
+    let open_config = MenuItem::new("Open config", Config::default_dir().is_some(), None);
     let open_logs = MenuItem::new("Open logs folder", log_dir.is_some(), None);
     let start_at_login = CheckMenuItem::new("Start at login", true, starts_at_login(&exe), None);
     let quit = MenuItem::new("Quit", true, None);
@@ -127,15 +132,15 @@ fn run(log_dir: Option<PathBuf>) -> Result<()> {
 
     let mut reader: Option<ReaderState> = None;
     let mut limiter = RateLimiter::new(NOTIFY_GAP);
-    let refresh = |reader: Option<&ReaderState>| {
-        let view = model::view(reader, paused.load(Ordering::Relaxed));
+    let refresh = |reader: Option<&ReaderState>, config_problem: Option<&str>| {
+        let view = model::view(reader, paused.load(Ordering::Relaxed), config_problem);
         if let Err(e) = tray.set_tooltip(Some(&view.tooltip)) {
             tracing::warn!("cannot set the tray tooltip: {e}");
         }
         status.set_text(&view.status);
         pause.set_text(view.pause_label);
     };
-    refresh(None);
+    refresh(None, None);
 
     'ui: loop {
         if !pump_messages() {
@@ -149,9 +154,11 @@ fn run(log_dir: Option<PathBuf>) -> Result<()> {
                 let now_paused = !paused.load(Ordering::Relaxed);
                 paused.store(now_paused, Ordering::Relaxed);
                 tracing::info!(paused = now_paused, "pause toggled from the tray");
-                refresh(reader.as_ref());
+                refresh(reader.as_ref(), config_problem.as_deref());
             } else if id == open_config.id() {
-                if let Some(path) = &config_path {
+                if let Some(problem) = &config_problem {
+                    balloon(Level::Warning, model::CONFIG_UNAVAILABLE, problem);
+                } else if let Some(path) = &config_path {
                     if let Err(e) = edit_config(path) {
                         tracing::warn!("cannot open {}: {e:#}", path.display());
                         balloon(Level::Warning, "Cannot open the config", &format!("{e:#}"));
@@ -174,16 +181,34 @@ fn run(log_dir: Option<PathBuf>) -> Result<()> {
             match rx.try_recv() {
                 Ok(Update::Reader(state)) => {
                     reader = Some(state);
-                    refresh(reader.as_ref());
+                    refresh(reader.as_ref(), config_problem.as_deref());
                 }
                 Ok(Update::Notice(notice)) => {
-                    if let Some((level, title, text)) = model::notification(&notice) {
+                    let problem = config_problem.as_deref();
+                    if let Some((level, title, text)) = model::notification(&notice, problem) {
                         if limiter.allow(Instant::now()) {
                             balloon(level, title, &text);
                         }
                     }
                 }
                 Ok(Update::ConfigError(e)) => balloon(Level::Warning, "Config not loaded", &e),
+                Ok(Update::Location(Ok(path))) => {
+                    if config_problem.take().is_some() {
+                        let text = format!("Loaded {}", path.display());
+                        balloon(Level::Info, "Config folder available", &text);
+                    }
+                    config_path = Some(path);
+                    refresh(reader.as_ref(), None);
+                }
+                Ok(Update::Location(Err(problem))) => {
+                    if config_problem.as_ref() != Some(&problem) {
+                        let text = format!("{problem}. Only steam:// tags work until it is.");
+                        balloon(Level::Warning, model::CONFIG_UNAVAILABLE, &text);
+                    }
+                    config_path = None;
+                    config_problem = Some(problem);
+                    refresh(reader.as_ref(), config_problem.as_deref());
+                }
                 Err(mpsc::TryRecvError::Empty) => break,
                 Err(mpsc::TryRecvError::Disconnected) => {
                     stop.store(true, Ordering::Relaxed);
@@ -203,28 +228,15 @@ fn run(log_dir: Option<PathBuf>) -> Result<()> {
 
 /// The worker: the shared run loop, with the reader opened (and reopened)
 /// in the background so a missing reader never stops the app.
-fn work(
-    config_path: Option<PathBuf>,
-    stop: &AtomicBool,
-    paused: &AtomicBool,
-    tx: &mpsc::Sender<Update>,
-) {
-    let mut stamp = config_path.as_deref().and_then(modified);
-    // The text behind the running library, to skip no-op reloads.
-    let mut loaded = config_path
-        .as_deref()
-        .and_then(|p| config::read_text_or_empty(p).ok());
-    let config = match config_path.as_deref().map(Config::load_or_empty) {
-        Some(Ok(config)) => config,
-        Some(Err(e)) => {
-            let e = config_error(config_path.as_deref(), &e);
-            tracing::warn!("{e}; starting with an empty library");
-            let _ = tx.send(Update::ConfigError(e));
-            Config::default()
-        }
-        None => Config::default(),
-    };
-    let mut runner = Runner::new(config, false);
+fn work(stop: &AtomicBool, paused: &AtomicBool, tx: &mpsc::Sender<Update>) {
+    let mut runner = Runner::new(Config::default(), false);
+    let mut watch = ConfigWatch::default();
+    if watch
+        .switch(Config::location(), &mut runner, Instant::now(), tx)
+        .is_none()
+    {
+        return;
+    }
     let mut reader = Reconnector::unopened(
         AUTO_PORT.to_owned(),
         || port::reopen_poller(None),
@@ -238,33 +250,8 @@ fn work(
         runner.set_paused(is_paused);
         reader.set_paused(is_paused);
         polls = polls.wrapping_add(1);
-        if let Some(path) = config_path
-            .as_deref()
-            .filter(|_| polls.is_multiple_of(CONFIG_CHECK_POLLS))
-        {
-            let current = modified(path);
-            if current != stamp {
-                stamp = current;
-                let text = config::read_text_or_empty(path);
-                // Touched but unchanged (e.g. re-saved as is): nothing to do.
-                if text.as_ref().ok() != loaded.as_ref() {
-                    match text.and_then(|t| Config::parse(&t).map(|c| (c, t))) {
-                        Ok((config, text)) => {
-                            // This app's own saves are expected; log outside edits.
-                            if !saved_by_this_process(&text) {
-                                tracing::info!("config reloaded ({} games)", config.games.len());
-                            }
-                            runner.set_config(config);
-                            loaded = Some(text);
-                        }
-                        Err(e) => {
-                            let e = config_error(Some(path), &e);
-                            tracing::warn!("{e}; keeping the previous library");
-                            tx.send(Update::ConfigError(e)).ok()?;
-                        }
-                    }
-                }
-            }
+        if polls.is_multiple_of(CONFIG_CHECK_POLLS) {
+            watch.check(runner, now, tx)?;
         }
         let tick = reader.tick(now);
         if last_state.as_ref() != Some(reader.state()) {
@@ -276,6 +263,130 @@ fn work(
     let notify = |notice| tx.send(Update::Notice(notice)).map_err(drop);
     // A send error means the UI is gone: stop quietly.
     let _ = runner::poll_loop(&mut runner, stop, &mut SystemClock, next, notify);
+}
+
+/// Follows the config: reloads `config.toml` when it changes. While the
+/// config folder is unavailable the library is empty (never the default
+/// folder's), and the folder is checked again every [`CONFIG_RETRY`] or when
+/// `location.toml` changes. Methods return `None` once the UI is gone.
+#[derive(Default)]
+struct ConfigWatch {
+    location: Option<ConfigLocation>,
+    /// `config.toml`'s mtime at the last check; `None` before the first.
+    stamp: Option<Option<SystemTime>>,
+    /// The text behind the running library, to skip no-op reloads.
+    loaded: Option<String>,
+    /// While unavailable: `location.toml`'s mtime and the next retry.
+    pointer_stamp: Option<SystemTime>,
+    retry_at: Option<Instant>,
+}
+
+impl ConfigWatch {
+    /// Starts following `location` with an empty library.
+    fn switch(
+        &mut self,
+        location: Option<ConfigLocation>,
+        runner: &mut Runner,
+        now: Instant,
+        tx: &mpsc::Sender<Update>,
+    ) -> Option<()> {
+        *self = ConfigWatch::default();
+        runner.set_config(Config::default());
+        let file = location.as_ref().map(ConfigLocation::config_file);
+        self.location = location;
+        match file {
+            Some(Ok(path)) => {
+                tx.send(Update::Location(Ok(path.clone()))).ok()?;
+                self.check_file(&path, runner, tx)?;
+            }
+            Some(Err(e)) => {
+                tracing::warn!("{e}; only steam:// tags will work until it is available");
+                self.pointer_stamp = pointer_path().as_deref().and_then(modified);
+                self.retry_at = Some(now + CONFIG_RETRY);
+                tx.send(Update::Location(Err(e.to_string()))).ok()?;
+            }
+            None => {
+                tracing::warn!("no config directory on this system; only steam:// tags will work");
+            }
+        }
+        Some(())
+    }
+
+    fn check(
+        &mut self,
+        runner: &mut Runner,
+        now: Instant,
+        tx: &mpsc::Sender<Update>,
+    ) -> Option<()> {
+        match self.location.as_ref().map(ConfigLocation::config_file) {
+            None => Some(()),
+            Some(Ok(path)) => {
+                // The file vanished: maybe with its folder (drive removed).
+                if modified(&path).is_none() && self.stamp.is_some_and(|s| s.is_some()) {
+                    if let Some(gone) = Config::location().filter(|l| !l.is_available()) {
+                        return self.switch(Some(gone), runner, now, tx);
+                    }
+                }
+                self.check_file(&path, runner, tx)
+            }
+            Some(Err(_)) => {
+                let pointer = pointer_path().as_deref().and_then(modified);
+                if pointer == self.pointer_stamp && self.retry_at.is_some_and(|t| now < t) {
+                    return Some(());
+                }
+                self.pointer_stamp = pointer;
+                self.retry_at = Some(now + CONFIG_RETRY);
+                let location = Config::location();
+                if location == self.location {
+                    return Some(());
+                }
+                if location.as_ref().is_some_and(ConfigLocation::is_available) {
+                    tracing::info!("config folder available again");
+                }
+                self.switch(location, runner, now, tx)
+            }
+        }
+    }
+
+    /// Reloads `path` if it changed since the last check.
+    fn check_file(
+        &mut self,
+        path: &Path,
+        runner: &mut Runner,
+        tx: &mpsc::Sender<Update>,
+    ) -> Option<()> {
+        let current = modified(path);
+        if self.stamp == Some(current) {
+            return Some(());
+        }
+        let first = self.stamp.is_none();
+        self.stamp = Some(current);
+        let text = config::read_text_or_empty(path);
+        // Touched but unchanged (e.g. re-saved as is): nothing to do.
+        if text.as_ref().ok() == self.loaded.as_ref() {
+            return Some(());
+        }
+        match text.and_then(|t| Config::parse(&t).map(|c| (c, t))) {
+            Ok((config, text)) => {
+                // This app's own saves are expected; log outside edits.
+                if !first && !saved_by_this_process(&text) {
+                    tracing::info!("config reloaded ({} games)", config.games.len());
+                }
+                runner.set_config(config);
+                self.loaded = Some(text);
+            }
+            Err(e) => {
+                let e = config_error(Some(path), &e);
+                tracing::warn!("{e}; keeping the previous library");
+                tx.send(Update::ConfigError(e)).ok()?;
+            }
+        }
+        Some(())
+    }
+}
+
+fn pointer_path() -> Option<PathBuf> {
+    Config::default_dir().map(|d| d.join(POINTER_FILE))
 }
 
 fn modified(path: &Path) -> Option<SystemTime> {

@@ -52,6 +52,26 @@ dir = 'D:\OneDrive\Mini Launcher'
 ```
 
 Mini Launcher then loads, saves and watches `config.toml` (and `config.toml.bak`) in that folder.
-`dir` must be a full path to a folder that already exists. If `location.toml` is invalid, the app
-logs a warning and uses the default folder; `diagnose` shows the problem on a
-`Config folder override ignored:` line. Restart the tray app after changing `location.toml`.
+`dir` must be a full path to a folder that already exists. Restart the tray app after changing
+`location.toml`.
+
+If `location.toml` can't be used (it is invalid, or the folder is missing, e.g. a drive or
+synced folder that isn't mounted yet at login), Mini Launcher does **not** switch to the default
+folder, since that would be a different library and saves there would be lost when the folder
+comes back. Instead:
+
+- the tray shows a "Config folder unavailable" notification and the reason in its tooltip;
+- `steam://` tags still launch, but `id:` tags and UID mappings don't;
+- every save and import fails with an error instead of writing anywhere;
+- the tray checks again every 30 seconds and when `location.toml` changes, and loads the config
+  as soon as the folder is there. `mini-launcher run` prints a warning and needs a restart.
+
+`mini-launcher diagnose` explains the problem on its `Config:` line. To go back to the default
+folder, delete `location.toml`.
+
+A network share (`\\server\share\...`) works, but while it is unreachable each check can hang
+until Windows gives up on it (often 20 seconds or more), which delays startup and tag reads. A
+local synced folder such as OneDrive doesn't have this problem.
+
+On Linux and macOS, saving keeps the file's permissions, and a symlinked `config.toml` stays a
+symlink (the file it points to is replaced). Imports larger than 1 MiB are rejected.
