@@ -1,0 +1,11 @@
+[package]
+name = "nfc-launcher-core"
+description = "Core library for the NFC game launcher: reader, tag parsing, config and launching"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+name = "nfc_launcher_core"
+
+[dependencies]
