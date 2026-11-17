@@ -33,6 +33,20 @@ fn uri(s: &str) -> Result<NdefRecord, NdefError> {
     Ok(NdefRecord::Uri(s.to_string()))
 }
 
+/// Early-stop property: wherever a reader may stop (`tlv_area_complete` on
+/// a prefix), the prefix must decode exactly like the full memory, so
+/// stopping early never changes the result or skips a check. `step` is the
+/// prefix stride (16 = one 4-page READ).
+fn assert_early_stop_agrees(full: &[u8], step: usize) {
+    let want = parse_user_memory(full);
+    for n in (0..=full.len()).step_by(step) {
+        let prefix = &full[..n];
+        if tlv_area_complete(prefix) {
+            assert_eq!(parse_user_memory(prefix), want, "stop at {n}: {full:02X?}");
+        }
+    }
+}
+
 /// Wraps an NDEF message in a 1-byte-length NDEF TLV + terminator.
 fn wrap(msg: &[u8]) -> Vec<u8> {
     let mut out = vec![0x03, u8::try_from(msg.len()).unwrap()];
@@ -193,15 +207,7 @@ fn tlv_area_completeness() {
         assert!(!tlv_area_complete(mem), "{mem:02X?}");
     }
     // A prefix of a complete area is complete exactly when it parses the same.
-    for len in 0..=NFC_TOOLS_URI.len() {
-        let mem = &NFC_TOOLS_URI[..len];
-        if tlv_area_complete(mem) {
-            assert_eq!(
-                parse_user_memory(mem),
-                parse_user_memory(&tag(NFC_TOOLS_URI))
-            );
-        }
-    }
+    assert_early_stop_agrees(&tag(NFC_TOOLS_URI), 1);
 }
 
 #[test]
@@ -218,6 +224,8 @@ fn every_truncation_and_byte_mutation_is_handled() {
                 mem[i] = b;
                 let _ = parse_user_memory(&mem);
                 let _ = tlv_area_complete(&mem);
+                // Every stop point, as read from a padded NTAG213.
+                assert_early_stop_agrees(&tag(&mem), 1);
             }
             mem[i] = original;
         }
@@ -244,5 +252,7 @@ fn random_buffers_never_panic() {
         }
         let _ = parse_user_memory(&mem);
         let _ = tlv_area_complete(&mem);
+        // The page-aligned stop points the reader actually uses.
+        assert_early_stop_agrees(&mem, 16);
     }
 }

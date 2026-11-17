@@ -14,7 +14,9 @@ use super::frame::{self, Frame, FrameError, ACK, NACK, WAKEUP};
 
 /// Default overall time limit for one command (ACK + response).
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_millis(1000);
-/// How many times a checksum-corrupted frame is NACKed before giving up.
+/// How many checksum-corrupted frames one command NACKs before giving up.
+/// The budget is per command: it spans every frame of that command's
+/// response phase and starts over with the next command.
 pub const MAX_NACK_RETRIES: u32 = 3;
 /// Upper bound for `MxRtyPassiveActivation`; `0xFF` would mean "retry forever".
 pub const MAX_PASSIVE_RETRIES: u8 = 0xFE;
@@ -222,7 +224,7 @@ impl<T: Transport> Pn532<T> {
         // stale frame from an earlier command, so drop it and keep waiting.
         // Checksum errors here are not NACKed (undefined before the ACK).
         loop {
-            match self.read_frame(deadline, false) {
+            match self.read_frame(deadline, None) {
                 Ok(Frame::Ack) => break,
                 Ok(_) => {}
                 Err(Pn532Error::Timeout) => {
@@ -237,8 +239,9 @@ impl<T: Transport> Pn532<T> {
         // earlier identical command cannot be told apart from ours; the
         // `clear_input` above makes that a one-off, not a lasting desync.
         let mut wrong = None;
+        let mut nacks = 0;
         loop {
-            match self.read_frame(deadline, true) {
+            match self.read_frame(deadline, Some(&mut nacks)) {
                 Ok(Frame::Response(resp)) => match resp.split_first() {
                     Some((&code, rest)) if code == expected => return Ok(rest.to_vec()),
                     got => wrong = Some(got.map(|(&c, _)| c)),
@@ -263,10 +266,14 @@ impl<T: Transport> Pn532<T> {
         let _ = self.io.write_all(&ACK).and_then(|()| self.io.flush());
     }
 
-    /// Reads the next frame. Checksum failures are NACKed (bounded retries)
-    /// if `nack` is set, otherwise just skipped.
-    fn read_frame(&mut self, deadline: Instant, nack: bool) -> Result<Frame, Pn532Error> {
-        let mut nacks = 0;
+    /// Reads the next frame. With `nacks` (the command's NACK counter),
+    /// checksum failures are NACKed until the counter passes
+    /// [`MAX_NACK_RETRIES`]; without it they are just skipped.
+    fn read_frame(
+        &mut self,
+        deadline: Instant,
+        mut nacks: Option<&mut u32>,
+    ) -> Result<Frame, Pn532Error> {
         loop {
             match frame::decode(&self.buf) {
                 Ok((frame, used)) => {
@@ -277,15 +284,15 @@ impl<T: Transport> Pn532<T> {
                     self.buf.drain(..e.skip);
                     match e.kind {
                         FrameError::Incomplete => self.fill(deadline)?,
-                        FrameError::BadDataChecksum | FrameError::BadLengthChecksum { .. }
-                            if nack =>
-                        {
-                            nacks += 1;
-                            if nacks > MAX_NACK_RETRIES {
-                                return Err(Pn532Error::Checksum);
+                        FrameError::BadDataChecksum | FrameError::BadLengthChecksum { .. } => {
+                            if let Some(nacks) = nacks.as_deref_mut() {
+                                *nacks += 1;
+                                if *nacks > MAX_NACK_RETRIES {
+                                    return Err(Pn532Error::Checksum);
+                                }
+                                self.io.write_all(&NACK)?;
+                                self.io.flush()?;
                             }
-                            self.io.write_all(&NACK)?;
-                            self.io.flush()?;
                         }
                         _ => {} // skip already applied; decode again
                     }
@@ -660,6 +667,65 @@ mod tests {
             ));
             let nacks = [&NACK[..]; MAX_NACK_RETRIES as usize].concat();
             assert_eq!(written(p), [GFV_REQ, &nacks].concat());
+        }
+    }
+
+    #[test]
+    fn nack_budget_spans_the_whole_command() {
+        // Corrupted frames alternate with wrong-code replies. A per-frame
+        // counter would restart after each wrong reply and NACK until the
+        // deadline; the per-command budget gives up after MAX_NACK_RETRIES.
+        let mut bad = GFV_RESP.to_vec();
+        bad[7] ^= 0x01;
+        let mut chunks: Vec<&[u8]> = vec![&ACK];
+        for _ in 0..=MAX_NACK_RETRIES {
+            chunks.extend([&bad[..], SAM_RESP]);
+        }
+        chunks.push(GFV_RESP);
+        for mut p in drivers(&chunks) {
+            assert!(matches!(
+                p.get_firmware_version(),
+                Err(Pn532Error::Checksum)
+            ));
+            let nacks = [&NACK[..]; MAX_NACK_RETRIES as usize].concat();
+            assert_eq!(written(p), [GFV_REQ, &nacks].concat());
+        }
+        // Within the budget, the same mix still ends in success.
+        let mut chunks: Vec<&[u8]> = vec![&ACK];
+        for _ in 0..MAX_NACK_RETRIES {
+            chunks.extend([&bad[..], SAM_RESP]);
+        }
+        chunks.push(GFV_RESP);
+        for mut p in drivers(&chunks) {
+            assert_eq!(p.get_firmware_version().unwrap().ic, 0x32);
+            let nacks = [&NACK[..]; MAX_NACK_RETRIES as usize].concat();
+            assert_eq!(written(p), [GFV_REQ, &nacks].concat());
+        }
+    }
+
+    #[test]
+    fn nack_budget_resets_per_command() {
+        // Each command uses its full budget and still succeeds, so nothing
+        // carries over from the previous command.
+        let mut bad = GFV_RESP.to_vec();
+        bad[7] ^= 0x01;
+        let mut bad_rel = REL_RESP.to_vec();
+        bad_rel[7] ^= 0x01;
+        let retries = MAX_NACK_RETRIES as usize;
+        let mut chunks: Vec<&[u8]> = vec![&ACK];
+        chunks.extend(vec![&bad[..]; retries]);
+        chunks.extend([GFV_RESP, &ACK]);
+        chunks.extend(vec![&bad[..]; retries]);
+        chunks.extend([GFV_RESP, &ACK]);
+        chunks.extend(vec![&bad_rel[..]; retries]);
+        chunks.push(REL_RESP);
+        for mut p in drivers(&chunks) {
+            assert_eq!(p.get_firmware_version().unwrap().ic, 0x32);
+            assert_eq!(p.get_firmware_version().unwrap().ic, 0x32);
+            p.in_release().unwrap();
+            let nacks = [&NACK[..]; MAX_NACK_RETRIES as usize].concat();
+            let want = [GFV_REQ, &nacks, GFV_REQ, &nacks, REL_REQ, &nacks].concat();
+            assert_eq!(written(p), want);
         }
     }
 
