@@ -97,8 +97,10 @@ jobs:
           $p = Start-Process $exe -Wait -PassThru -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES',
             '/NORESTART', '/SP-', '/CURRENTUSER', '/NOICONS', "/DIR=`"$dir`""
           if ($p.ExitCode -ne 0) { throw "Inno Setup install failed: $($p.ExitCode)" }
-          $version = (Get-Item "$dir\ISCC.exe").VersionInfo.ProductVersion
-          if (-not $version.StartsWith($env:INNO_VERSION)) { throw "unexpected ISCC version $version" }
+          # ISCC.exe itself carries no version resource; the compiler DLL does.
+          $version = (Get-Item "$dir\ISCmplr.dll").VersionInfo.FileVersion
+          Write-Host "Inno Setup compiler $version"
+          if (-not "$version".StartsWith($env:INNO_VERSION)) { throw "unexpected Inno Setup version $version" }
           "ISCC=$dir\ISCC.exe" >> $env:GITHUB_ENV
 
       - name: Build installer
