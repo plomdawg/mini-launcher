@@ -145,6 +145,26 @@ where
         }
     }
 
+    /// Starts without a reader: the first [`tick`](Self::tick) tries `open`
+    /// right away and failures are retried with backoff, as after a loss.
+    /// `port` names the reader in messages until it opens (e.g. the
+    /// configured port, or a placeholder when auto-detecting).
+    pub fn unopened(port: String, open: F, backoff: Backoff) -> Self {
+        Reconnector {
+            open,
+            reader: None,
+            state: ReaderState::Reconnecting {
+                last_port: port,
+                attempts: 0,
+                last_error: None,
+            },
+            backoff,
+            retry_at: None,
+            lost_at: None,
+            stuck_reported: false,
+        }
+    }
+
     pub fn state(&self) -> &ReaderState {
         &self.state
     }
@@ -186,6 +206,7 @@ where
                 Tick::Reconnected { port }
             }
             Err(e) => {
+                self.lost_at.get_or_insert(now);
                 let delay = self.backoff.next_delay();
                 self.retry_at = Some(now + delay);
                 let ReaderState::Reconnecting {
@@ -425,5 +446,31 @@ mod tests {
             .collect();
         // Five failed opens (the fifth stuck), a reconnect, then a new loss.
         assert_eq!(kinds, "LwwwwSRLwwwwSw");
+    }
+
+    #[test]
+    fn an_unopened_reader_keeps_retrying_until_it_appears() {
+        let mut opens = 0;
+        let open = || {
+            opens += 1;
+            if opens < 3 {
+                Err("no CH340 adapter found")
+            } else {
+                Ok(("COM7".to_owned(), Fake([tag()].into())))
+            }
+        };
+        let mut r = Reconnector::unopened("reader".into(), open, Backoff::default());
+        let t0 = Instant::now();
+        let at = |ms| t0 + Duration::from_millis(ms);
+        assert!(matches!(r.tick(at(0)), Tick::Waiting)); // attempt 1, right away
+        assert!(matches!(
+            r.state(),
+            ReaderState::Reconnecting { attempts: 1, last_error: Some(e), .. }
+                if e == "no CH340 adapter found"
+        ));
+        assert!(matches!(r.tick(at(400)), Tick::Waiting));
+        assert!(matches!(r.tick(at(500)), Tick::Waiting)); // attempt 2
+        assert!(matches!(r.tick(at(1500)), Tick::Reconnected { port } if port == "COM7"));
+        assert!(matches!(r.tick(at(1700)), Tick::Reading(Some(_))));
     }
 }

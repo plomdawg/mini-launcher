@@ -35,7 +35,10 @@ release is `app-v0.1.0`):
 
 Testers who want an unreleased build can also download the `mini-launcher-windows-x86_64`
 artifact from any green **CI** run in the repository's **Actions** tab (signed-in GitHub users
-only). It's a zip with `mini-launcher.exe` inside.
+only). It's a zip with `mini-launcher.exe` and `mini-launcher-tray.exe` inside. The tray app
+runs in the background without a console window: double-click it, then use its notification-area
+icon to pause, open the config or logs, turn on **Start at login**, or quit. It works like
+`mini-launcher run`, and only one of the two can use the reader at a time.
 
 The `.exe` isn't code-signed yet. If you start it from File Explorer, Windows SmartScreen may
 say "Windows protected your PC": click **More info**, then **Run anyway**. Starting it from
