@@ -72,6 +72,25 @@ Tag contents are untrusted input.
 - Releases are Windows-only for now: tags `app-v*` → GitHub Release with the `.exe` +
   `SHA256SUMS`. Windows code signing via SignPath (free for OSS) is planned later; until then
   document SmartScreen "More info → Run anyway". Keep ubuntu-latest in the CI matrix.
+- Workflows: `.github/workflows/ci.yml` (PRs/main) and `.github/workflows/release.yml` (tags).
+  Every third-party action is pinned to a full commit SHA with a `# vX.Y.Z` comment;
+  Dependabot (`.github/dependabot.yml`) bumps actions and cargo deps weekly. Keep
+  `permissions:` least-privilege (`contents: read` at the top, `contents: write` only on the
+  publish job). Lint workflow changes with `actionlint`.
+
+### Cutting a release
+
+1. Bump `[workspace.package] version` in `app/Cargo.toml` (run `cargo check` so `Cargo.lock`
+   follows), merge that PR to `main`.
+2. Optional dry run: Actions → Release → "Run workflow" on `main` with `dry-run` checked (the
+   default). It builds and uploads `mini-launcher-<version>-windows-x86_64.exe` + `SHA256SUMS`
+   as a workflow artifact and publishes nothing.
+3. Tag the merged commit and push the tag:
+   `git tag app-vX.Y.Z <sha> && git push origin app-vX.Y.Z`.
+   The workflow fails if `X.Y.Z` doesn't equal the Cargo version; otherwise it creates the
+   GitHub Release `app-vX.Y.Z` with auto-generated notes and the `.exe` + `SHA256SUMS` assets.
+4. A failed tag run can be retried with "Re-run jobs"; if the tag itself was wrong, delete it
+   (and any draft release) and push a corrected one.
 
 ## Web (box-art generator)
 
