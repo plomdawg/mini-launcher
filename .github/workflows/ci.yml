@@ -147,18 +147,6 @@ jobs:
               Get-ChildItem $env:MINI_LAUNCHER_LOG_DIR -File -ErrorAction SilentlyContinue | Get-Content
           }
 
-      - name: TEMP tray dist size vs main (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          git fetch --depth 1 origin main
-          git worktree add ../base FETCH_HEAD
-          cargo build --profile dist --locked -p mini-launcher-cli --bin mini-launcher-tray
-          cargo build --profile dist --locked --manifest-path ../base/app/Cargo.toml --target-dir target/base -p mini-launcher-cli --bin mini-launcher-tray
-          foreach ($f in 'target/base/dist/mini-launcher-tray.exe', 'target/dist/mini-launcher-tray.exe') {
-              '{0}: {1} bytes ({2:N2} MiB)' -f $f, (Get-Item $f).Length, ((Get-Item $f).Length / 1MB)
-          }
-
       - name: Upload binary
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
