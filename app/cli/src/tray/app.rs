@@ -17,6 +17,7 @@ use mini_launcher_core::config::{self, Config};
 use mini_launcher_core::reconnect::{Backoff, ReaderState, Reconnector, SystemClock};
 use mini_launcher_core::runner::{self, Notice, Runner};
 use mini_launcher_core::{instance, logs};
+use mini_launcher_ui::window::{Event as WindowEvent, SettingsWindow};
 use muda::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem};
 use tray_icon::{Icon, TrayIcon, TrayIconAttributes};
 use windows_sys::Win32::UI::WindowsAndMessaging as wm;
@@ -96,6 +97,7 @@ fn run(log_dir: Option<PathBuf>) -> Result<()> {
         .context("cannot start the run loop")?;
 
     let status = MenuItem::new("", false, None);
+    let settings = MenuItem::new("Settings…", true, None);
     let pause = MenuItem::new("", true, None);
     let open_config = MenuItem::new("Open config", Config::default_dir().is_some(), None);
     let open_logs = MenuItem::new("Open logs folder", log_dir.is_some(), None);
@@ -105,6 +107,7 @@ fn run(log_dir: Option<PathBuf>) -> Result<()> {
     menu.append_items(&[
         &status,
         &PredefinedMenuItem::separator(),
+        &settings,
         &pause,
         &open_config,
         &open_logs,
@@ -142,10 +145,19 @@ fn run(log_dir: Option<PathBuf>) -> Result<()> {
     };
     refresh(None, None);
 
+    // The settings window runs on its own thread, so this loop keeps
+    // handling the menu and the worker while it is open.
+    let (window_tx, window_rx) = mpsc::channel();
+    let window = SettingsWindow::spawn(window_tx).context("cannot start the settings window")?;
     // Each `--settings` opens the window once more after the previous one
-    // closes (CI repeats it to check re-opening on eframe's kept event loop).
-    for _ in std::env::args_os().skip(1).filter(|a| a == "--settings") {
-        settings_window();
+    // closes (CI repeats it to check re-opening on the kept event loop).
+    let mut reopen = std::env::args_os()
+        .skip(1)
+        .filter(|a| a == "--settings")
+        .count();
+    if reopen > 0 {
+        reopen -= 1;
+        window.show();
     }
 
     'ui: loop {
@@ -156,6 +168,9 @@ fn run(log_dir: Option<PathBuf>) -> Result<()> {
             let id = event.id();
             if id == quit.id() {
                 break 'ui;
+            } else if id == settings.id() {
+                // Opens it, or brings the open one to the front.
+                window.show();
             } else if id == pause.id() {
                 let now_paused = !paused.load(Ordering::Relaxed);
                 paused.store(now_paused, Ordering::Relaxed);
@@ -201,6 +216,21 @@ fn run(log_dir: Option<PathBuf>) -> Result<()> {
                 start_at_login.set_checked(starts_at_login(&exe));
             }
         }
+        while let Ok(event) = window_rx.try_recv() {
+            let closed = matches!(event, WindowEvent::Closed(_));
+            match event {
+                WindowEvent::Opened => tracing::info!("settings window opened"),
+                WindowEvent::Closed(Ok(())) => tracing::info!("settings window closed"),
+                WindowEvent::Closed(Err(e)) => {
+                    tracing::error!("settings window failed: {e}");
+                    balloon(Level::Warning, "Cannot open the settings", &e);
+                }
+            }
+            if closed && reopen > 0 {
+                reopen -= 1;
+                window.show();
+            }
+        }
         loop {
             match rx.try_recv() {
                 Ok(Update::Reader(state)) => {
@@ -233,22 +263,16 @@ fn run(log_dir: Option<PathBuf>) -> Result<()> {
     }
     tracing::info!("quitting");
     stop.store(true, Ordering::Relaxed);
+    if window.is_open() {
+        tracing::info!("closing the settings window");
+    }
+    if !window.shut_down(Duration::from_secs(3)) {
+        tracing::warn!("the settings window did not close in time");
+    }
     drop(tray);
     // The worker notices `stop` within one poll (or one reopen attempt).
     let _ = worker.join();
     Ok(())
-}
-
-/// Opens the settings window on this (the UI) thread and blocks until it
-/// closes. Tray messages keep flowing meanwhile: winit pumps this thread's
-/// message queue, and queued menu clicks and worker updates are handled after.
-/// The window's wgpu device and surface are dropped before this returns.
-fn settings_window() {
-    tracing::info!("opening the settings window");
-    match mini_launcher_ui::window::open() {
-        Ok(()) => tracing::info!("settings window closed"),
-        Err(e) => tracing::error!("settings window failed: {e}"),
-    }
 }
 
 /// The worker: the shared run loop, with the reader opened (and reopened)

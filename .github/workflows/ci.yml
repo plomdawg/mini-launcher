@@ -114,6 +114,8 @@ jobs:
       # The settings window must give its wgpu device and surface back on close
       # (ADR 0001): open it from the tray, close it, and check the tray lives on.
       # Prints private memory idle / window open / after close for the PR.
+      # While it is open, the tray's own window must live on another thread and
+      # keep answering messages (the tray loop is never blocked by the window).
       - name: Settings window open/close memory (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
@@ -125,6 +127,31 @@ jobs:
               $p.Refresh()
               '{0,6:N1} MiB private, {1,6:N1} MiB working set' -f ($p.PrivateMemorySize64 / 1MB), ($p.WorkingSet64 / 1MB)
           }
+          Add-Type -TypeDefinition @'
+          using System;
+          using System.Runtime.InteropServices;
+          using System.Text;
+          public static class TrayThreads {
+              delegate bool EnumProc(IntPtr hwnd, IntPtr param);
+              [DllImport("user32")] static extern bool EnumWindows(EnumProc cb, IntPtr param);
+              [DllImport("user32")] static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint pid);
+              [DllImport("user32", CharSet = CharSet.Unicode)] static extern int GetClassNameW(IntPtr hwnd, StringBuilder name, int max);
+              [DllImport("user32")] static extern IntPtr SendMessageTimeoutW(IntPtr hwnd, uint msg, IntPtr w, IntPtr l, uint flags, uint ms, out IntPtr result);
+              public static IntPtr TrayWindow(int pid) {
+                  IntPtr found = IntPtr.Zero;
+                  EnumWindows((h, p) => {
+                      uint owner; GetWindowThreadProcessId(h, out owner);
+                      var name = new StringBuilder(64); GetClassNameW(h, name, 64);
+                      if (owner == pid && name.ToString() == "tray_icon_app") { found = h; return false; }
+                      return true;
+                  }, IntPtr.Zero);
+                  return found;
+              }
+              public static uint Thread(IntPtr hwnd) { uint pid; return GetWindowThreadProcessId(hwnd, out pid); }
+              // WM_NULL with SMTO_ABORTIFHUNG; true if the window's thread answered within 2 s.
+              public static bool Responds(IntPtr hwnd) { IntPtr r; return SendMessageTimeoutW(hwnd, 0, IntPtr.Zero, IntPtr.Zero, 2, 2000, out r) != IntPtr.Zero; }
+          }
+          '@
           try {
               $idle = Start-Process $exe -PassThru
               Start-Sleep 5
@@ -142,6 +169,13 @@ jobs:
                   if ($p.MainWindowHandle -eq 0) { throw "the settings window did not open (cycle $cycle)" }
                   Start-Sleep 3
                   Write-Host "cycle ${cycle}: window open:  $(Mem $p)"
+                  $tray = [TrayThreads]::TrayWindow($p.Id)
+                  if ($tray -eq [IntPtr]::Zero) { throw "the tray's window was not found" }
+                  $trayThread = [TrayThreads]::Thread($tray)
+                  $windowThread = [TrayThreads]::Thread($p.MainWindowHandle)
+                  Write-Host "cycle ${cycle}: tray thread $trayThread, settings window thread $windowThread"
+                  if ($trayThread -eq $windowThread) { throw "the settings window runs on the tray's thread" }
+                  if (-not [TrayThreads]::Responds($tray)) { throw "the tray stopped answering while the window is open" }
                   $null = $p.CloseMainWindow()
                   Start-Sleep 5
                   if ($p.HasExited) { throw "the tray exited (code $($p.ExitCode)) when the window closed" }
