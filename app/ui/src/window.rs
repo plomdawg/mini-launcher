@@ -1,16 +1,131 @@
-//! The native settings window (eframe, wgpu backend).
+//! The native settings window (eframe, wgpu backend) on its own thread.
+//!
+//! The tray keeps its own Win32 message loop on the main thread; the window
+//! runs a winit event loop on a dedicated thread, so neither blocks the
+//! other (Quit, Pause and tag launches keep working while the window is
+//! open). winit allows only one event loop per process, so the thread lives
+//! as long as the [`SettingsWindow`] and reuses eframe's kept loop
+//! (`run_and_return`) for every opening. The window, its wgpu surface and
+//! device belong to one opening and are dropped when it closes, so the
+//! process goes back to its idle footprint.
+
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{mpsc, Arc, Mutex};
+use std::thread::{self, JoinHandle};
+use std::time::{Duration, Instant};
 
 use crate::mock::{self, Screen, Settings};
 use crate::theme;
 
 const ICON: &[u8] = include_bytes!("../../assets/icon/mini-launcher.png");
 
-/// Opens the settings window and blocks until it is closed.
-///
-/// eframe keeps the winit event loop between calls (`run_and_return`), but
-/// the window, its wgpu surface and device belong to the app and are dropped
-/// when this returns, so the caller goes back to its idle footprint.
-pub fn open() -> Result<(), eframe::Error> {
+/// What the window thread reports back.
+#[derive(Debug)]
+pub enum Event {
+    Opened,
+    /// The window closed; `Err` if it could not run.
+    Closed(Result<(), String>),
+}
+
+/// A handle to the settings window thread. Dropping it closes the window
+/// (if open) and ends the thread.
+pub struct SettingsWindow {
+    requests: Option<mpsc::Sender<()>>,
+    thread: Option<JoinHandle<()>>,
+    /// Set from an open request until the window has closed again.
+    open: Arc<AtomicBool>,
+    /// The open window's context, to focus or close it from another thread.
+    ctx: Arc<Mutex<Option<egui::Context>>>,
+}
+
+impl SettingsWindow {
+    /// Starts the (idle) window thread; `events` receives its [`Event`]s.
+    pub fn spawn(events: mpsc::Sender<Event>) -> std::io::Result<Self> {
+        let (requests, rx) = mpsc::channel::<()>();
+        let open = Arc::new(AtomicBool::new(false));
+        let ctx = Arc::new(Mutex::new(None));
+        let thread = thread::Builder::new()
+            .name("settings-window".into())
+            .spawn({
+                let (open, ctx) = (open.clone(), ctx.clone());
+                move || {
+                    while rx.recv().is_ok() {
+                        let _ = events.send(Event::Opened);
+                        let result = run(&ctx).map_err(|e| e.to_string());
+                        *lock(&ctx) = None;
+                        open.store(false, Ordering::SeqCst);
+                        let _ = events.send(Event::Closed(result));
+                    }
+                }
+            })?;
+        Ok(SettingsWindow {
+            requests: Some(requests),
+            thread: Some(thread),
+            open,
+            ctx,
+        })
+    }
+
+    /// Opens the window, or brings the open one to the front.
+    pub fn show(&self) {
+        if self.open.swap(true, Ordering::SeqCst) {
+            if let Some(ctx) = lock(&self.ctx).as_ref() {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+                ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+            }
+        } else if let Some(requests) = &self.requests {
+            let _ = requests.send(());
+        }
+    }
+
+    pub fn is_open(&self) -> bool {
+        self.open.load(Ordering::SeqCst)
+    }
+
+    /// Asks the open window (if any) to close; returns at once.
+    pub fn close(&self) {
+        if let Some(ctx) = lock(&self.ctx).as_ref() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
+    }
+
+    /// Closes the window and waits up to `timeout` for the thread to end.
+    /// Returns whether it did.
+    pub fn shut_down(mut self, timeout: Duration) -> bool {
+        self.stop(timeout)
+    }
+
+    fn stop(&mut self, timeout: Duration) -> bool {
+        self.requests = None;
+        let Some(thread) = self.thread.take() else {
+            return true;
+        };
+        let start = Instant::now();
+        // An open request may still be on its way to becoming a window.
+        while !thread.is_finished() {
+            self.close();
+            if start.elapsed() > timeout {
+                return false;
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+        let _ = thread.join();
+        true
+    }
+}
+
+impl Drop for SettingsWindow {
+    fn drop(&mut self) {
+        self.stop(Duration::from_secs(3));
+    }
+}
+
+fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Runs one opening of the window on this thread until it is closed.
+fn run(ctx_slot: &Arc<Mutex<Option<egui::Context>>>) -> Result<(), eframe::Error> {
     let mut viewport = egui::ViewportBuilder::default()
         .with_title("Mini Launcher")
         .with_inner_size([640.0, 440.0])
@@ -22,13 +137,25 @@ pub fn open() -> Result<(), eframe::Error> {
         viewport,
         renderer: eframe::Renderer::Wgpu,
         run_and_return: true,
+        // Only used when the thread's event loop is first created.
+        event_loop_builder: Some(Box::new(|builder| {
+            #[cfg(windows)]
+            {
+                use winit::platform::windows::EventLoopBuilderExtWindows;
+                builder.with_any_thread(true);
+            }
+            #[cfg(not(windows))]
+            let _ = builder;
+        })),
         ..Default::default()
     };
+    let ctx_slot = ctx_slot.clone();
     eframe::run_native(
         "mini-launcher-settings",
         options,
-        Box::new(|cc| {
+        Box::new(move |cc| {
             theme::install(&cc.egui_ctx);
+            *lock(&ctx_slot) = Some(cc.egui_ctx.clone());
             Ok(Box::new(App(Settings::new(Screen::Library))))
         }),
     )

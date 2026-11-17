@@ -24,8 +24,8 @@ build on those.
    retro theme (see [Visual direction](#visual-direction)).
 3. **Process model: two executables from one workspace.** The existing console-subsystem
    `mini-launcher.exe` stays the CLI; a new GUI-subsystem `mini-launcher-tray.exe` (new crate
-   `app/tray`) hosts the tray icon and the settings window on one UI thread (the winit
-   event loop doubles as the Win32 message pump `tray-icon` needs).
+   `app/tray`) hosts the tray icon and the settings window (amended in #76: on two UI
+   threads, see [Process model](#process-model)).
 4. **Installer: Inno Setup 6**, per-user (`PrivilegesRequired=lowest`), with a pinned
    ISCC download in CI.
 
@@ -125,8 +125,19 @@ Consequences: the tray exe owns the reader and takes the existing `Local\mini-la
 mutex, so `run` and the tray exclude each other and `scan` keeps warning when the port is
 held. `autostart enable` must point the `Mini Launcher` Run value at
 `mini-launcher-tray.exe` (sibling of the CLI) instead of `mini-launcher.exe run`, otherwise
-login opens a console. The tray process runs the tray and the window on the winit event-loop
-thread; the reader loop stays on its worker thread and wakes the UI with an event-loop proxy.
+login opens a console. The reader loop stays on its worker thread.
+
+Amended in #76: the tray keeps its own Win32 message loop on the main thread, and the settings
+window runs a winit event loop on a dedicated `settings-window` thread (winit's
+`with_any_thread`). Running the window with `run_and_return` on the tray's thread blocked the
+tray's loop while the window was open (menu clicks, Quit and worker updates queued until it
+closed). A shared winit loop driving both would mean rewriting the tray around winit; a second
+thread leaves the tray untouched. winit allows one event loop per process, so the thread lives
+as long as the app and reuses eframe's kept loop for every opening; each opening's window,
+surface and wgpu device are still dropped on close. The tray talks to the window through the
+window's `egui::Context` (focus, close on Quit) and gets opened/closed events over a channel.
+CI checks the two windows live on different threads and that the tray answers messages while
+the window is open.
 
 ### Installer
 
