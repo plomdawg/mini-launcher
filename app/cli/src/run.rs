@@ -1,5 +1,6 @@
 //! `mini-launcher run`: reader → debounce → resolve via config → launch.
 
+use std::fmt::Display;
 use std::io::{BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -10,6 +11,7 @@ use mini_launcher_core::config::Config;
 use mini_launcher_core::debounce::{DebounceConfig, Debouncer, Event, DEFAULT_POLL_INTERVAL};
 use mini_launcher_core::launch::{self, Outcome, Resolution, Via};
 use mini_launcher_core::reader::{Reader, Simulated, Uid};
+use mini_launcher_core::reconnect::{Backoff, Clock, Reconnector, SystemClock, Tick};
 
 use crate::port;
 
@@ -61,42 +63,67 @@ pub fn run(out: &mut impl Write, opts: Options, stop: &AtomicBool) -> Result<()>
             "simulating: one command per line, `insert <uid-hex> [payload]` or `remove`"
         )?;
         let mut sim = Simulated::spawn(BufReader::new(std::io::stdin()));
-        poll_loop(out, &mut sim, &ctx, stop, |e| {
-            tracing::warn!("ignoring input line: {e}");
-            None
+        poll_loop(out, &ctx, stop, &mut SystemClock, |_| {
+            if sim.is_closed() {
+                return None;
+            }
+            Some(sim.poll().map_or_else(
+                |e| {
+                    tracing::warn!("ignoring input line: {e}");
+                    Tick::<std::convert::Infallible>::Waiting
+                },
+                Tick::Reading,
+            ))
         })
     } else {
-        let (name, mut reader) = port::open_poller(opts.port.as_deref())?;
+        let explicit = opts.port.as_deref();
+        let (name, reader) = port::open_poller(explicit)?;
         writeln!(out, "watching {name} for tags (Ctrl-C to stop)")?;
-        poll_loop(out, &mut reader, &ctx, stop, |e| Some(port::lost(&name, e)))
+        // Without --port, auto-detection runs again on every attempt: the
+        // adapter may come back under another name.
+        let reopen = || port::open_poller(explicit);
+        let mut reader = Reconnector::new(name, reader, reopen, Backoff::default());
+        poll_loop(out, &ctx, stop, &mut SystemClock, |now| {
+            Some(reader.tick(now))
+        })
     }
 }
 
-/// Polls `reader`, feeding the debouncer. `on_error` turns a poll error into
-/// a fatal error, or `None` to skip the tick.
-fn poll_loop<R: Reader>(
+/// Feeds `next` ticks to the debouncer once per poll interval until `stop`
+/// is set or `next` returns `None` (the source is closed).
+fn poll_loop<E: Display>(
     out: &mut impl Write,
-    reader: &mut R,
     ctx: &Ctx,
     stop: &AtomicBool,
-    on_error: impl Fn(R::Error) -> Option<anyhow::Error>,
+    clock: &mut impl Clock,
+    mut next: impl FnMut(Instant) -> Option<Tick<E>>,
 ) -> Result<()> {
     let mut debouncer = Debouncer::new(DebounceConfig::default());
-    while !stop.load(Ordering::Relaxed) && !reader.is_closed() {
-        match reader.poll() {
-            Ok(reading) => {
-                for event in debouncer.update(reading, Instant::now()) {
-                    handle(out, ctx, event)?;
-                    out.flush()?;
-                }
+    while !stop.load(Ordering::Relaxed) {
+        let now = clock.now();
+        let Some(tick) = next(now) else { break };
+        let events = match tick {
+            Tick::Reading(reading) => debouncer.update(reading, now),
+            Tick::Lost { port, error } => {
+                tracing::warn!(
+                    "lost the reader on {port} ({error}); was the adapter unplugged? \
+                     Reconnecting when it is back"
+                );
+                debouncer.disconnect().into_iter().collect()
             }
-            Err(e) => {
-                if let Some(fatal) = on_error(e) {
-                    return Err(fatal);
-                }
+            Tick::Reconnected { port } => {
+                tracing::info!(%port, "reader reconnected");
+                writeln!(out, "reader reconnected on {port}")?;
+                out.flush()?;
+                Vec::new()
             }
+            Tick::Waiting => Vec::new(),
+        };
+        for event in events {
+            handle(out, ctx, event)?;
+            out.flush()?;
         }
-        std::thread::sleep(DEFAULT_POLL_INTERVAL);
+        clock.sleep(DEFAULT_POLL_INTERVAL);
     }
     Ok(())
 }
@@ -165,4 +192,109 @@ fn snippet(out: &mut impl Write, id: &str, uid: Option<Uid>) -> Result<()> {
         "    steam_appid = 440   # or: exe = 'C:\\Games\\MyGame\\game.exe'"
     )?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mini_launcher_core::payload::Payload;
+    use std::collections::VecDeque;
+    use std::io;
+    use std::time::Duration;
+
+    /// Advances on `sleep`; sets `stop` after `ticks` sleeps.
+    struct FakeClock<'a> {
+        now: Instant,
+        ticks: u32,
+        stop: &'a AtomicBool,
+    }
+
+    impl Clock for FakeClock<'_> {
+        fn now(&self) -> Instant {
+            self.now
+        }
+        fn sleep(&mut self, d: Duration) {
+            self.now += d;
+            self.ticks -= 1;
+            if self.ticks == 0 {
+                self.stop.store(true, Ordering::Relaxed);
+            }
+        }
+    }
+
+    /// Replays polls; runs dry → the tag stays on the reader.
+    struct Fake(VecDeque<io::Result<Option<(Uid, Payload)>>>);
+
+    impl Reader for Fake {
+        type Error = io::Error;
+        fn poll(&mut self) -> io::Result<Option<(Uid, Payload)>> {
+            self.0.pop_front().unwrap_or_else(tag)
+        }
+    }
+
+    fn tag() -> io::Result<Option<(Uid, Payload)>> {
+        Ok(Some((
+            Uid::from_hex("04a1b2c3").unwrap(),
+            Payload::Steam(440),
+        )))
+    }
+
+    /// The tag sits on the reader, the reader is unplugged, the first
+    /// `failed_opens` reopens fail and then it comes back with the tag still
+    /// on it. Returns the output of `ticks` polls.
+    fn unplug_and_replug(failed_opens: u32, ticks: u32) -> String {
+        let ctx = Ctx {
+            config: Config::default(),
+            path: None,
+            dry_run: true,
+        };
+        let stop = AtomicBool::new(false);
+        let mut clock = FakeClock {
+            now: Instant::now(),
+            ticks,
+            stop: &stop,
+        };
+        let mut opens = 0;
+        let open = || {
+            opens += 1;
+            if opens <= failed_opens {
+                return Err("adapter not found");
+            }
+            Ok(("COM9".to_owned(), Fake(VecDeque::new())))
+        };
+        let first = Fake([tag(), tag(), Err(io::ErrorKind::BrokenPipe.into())].into());
+        let mut reader = Reconnector::new("COM7".into(), first, open, Backoff::default());
+        let mut out = Vec::new();
+        poll_loop(&mut out, &ctx, &stop, &mut clock, |now| {
+            Some(reader.tick(now))
+        })
+        .unwrap();
+        String::from_utf8(out).unwrap()
+    }
+
+    #[test]
+    fn quick_replug_keeps_running_without_relaunching() {
+        // Lost at 400 ms; reopens at 1 s (fails), then ~2 s: inside the 5 s
+        // re-seat window.
+        let out = unplug_and_replug(1, 50);
+        let lines: Vec<_> = out.lines().collect();
+        assert_eq!(
+            lines,
+            [
+                "launch 04A1B2C3: open steam://rungameid/440 (tag steam:) [dry run]",
+                "removed 04A1B2C3",
+                "reader reconnected on COM9",
+                "reseated 04A1B2C3: not relaunching",
+            ]
+        );
+    }
+
+    #[test]
+    fn long_outage_relaunches_the_tag_like_a_fresh_insert() {
+        // Five failed reopens: 0.5+1+2+4+5+5 s of backoff, past the window.
+        let out = unplug_and_replug(5, 150);
+        assert_eq!(out.matches("launch 04A1B2C3").count(), 2, "{out}");
+        assert!(out.contains("reader reconnected on COM9"), "{out}");
+        assert!(!out.contains("reseated"), "{out}");
+    }
 }
