@@ -271,7 +271,7 @@ impl Wizard {
         let game = self.game.as_ref()?;
         Some(match &game.plan {
             LaunchPlan::Steam { appid } => Payload::Steam(*appid),
-            LaunchPlan::Exe { .. } => Payload::Id(game.id.clone()),
+            LaunchPlan::Exe { .. } | LaunchPlan::Emulator { .. } => Payload::Id(game.id.clone()),
         })
     }
 

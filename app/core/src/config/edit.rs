@@ -254,6 +254,11 @@ fn write_game(table: &mut Table, game: &Game) -> Result<(), EditError> {
             (!args.is_empty()).then(|| Value::Array(args.iter().collect())),
             cwd.as_deref().map(path_value).transpose()?,
         ),
+        LaunchPlan::Emulator { .. } => {
+            return Err(EditError::Unsupported(
+                "emulator games can't be saved by the app yet; edit config.toml".into(),
+            ))
+        }
     };
     set(table, "steam_appid", appid);
     set(table, "exe", exe);
@@ -481,6 +486,23 @@ args = ["--fullscreen"]
             inline.upsert_game(&game),
             Err(EditError::Unsupported(_))
         ));
+    }
+
+    #[test]
+    fn emulator_entries_survive_edits_but_are_not_written_yet() {
+        let text = "[[emulators]] # mine\nid = \"eden\"\nname = \"Eden\"\nexe = \"e\"\n\
+                    args = [\"{rom}\"]\n\n[[games]]\nid = \"mk8\"\nname = \"MK8\"\n\
+                    emulator = \"eden\"\nrom = \"r\"\n";
+        let mut doc = ConfigDocument::parse(text).unwrap();
+        doc.set_uid(&slug("mk8"), Some(&[1, 2, 3, 4])).unwrap();
+        doc.set_uid(&slug("mk8"), None).unwrap();
+        assert_eq!(doc.to_string(), text);
+        let game = doc.config().games[0].clone();
+        assert!(matches!(
+            doc.upsert_game(&game),
+            Err(EditError::Unsupported(_))
+        ));
+        assert_eq!(doc.to_string(), text);
     }
 
     #[test]

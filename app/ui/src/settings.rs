@@ -103,10 +103,18 @@ impl Settings {
         }
     }
 
-    /// Opens the form on game `i`.
+    /// Opens the form on game `i`. Emulator games are read-only here for
+    /// now: they are edited in `config.toml`.
     pub fn edit(&mut self, i: usize) {
         if let Some(game) = self.library.games().get(i) {
             self.selected = Some(i);
+            if matches!(game.plan, LaunchPlan::Emulator { .. }) {
+                self.problem = Some(format!(
+                    "\"{}\" uses an emulator; edit it in config.toml for now.",
+                    game.name
+                ));
+                return;
+            }
             self.form = Form::from_game(game);
             self.screen = Screen::Edit;
         }
@@ -469,6 +477,7 @@ fn library(ui: &mut Ui, s: &mut Settings) {
             let launch = match &game.plan {
                 LaunchPlan::Steam { appid } => format!("Steam {appid}"),
                 LaunchPlan::Exe { .. } => "Program".to_owned(),
+                LaunchPlan::Emulator { .. } => "Emulator".to_owned(),
             };
             theme::label_at(ui, row, cols[0] + 2.0 * U, &game.name, fg);
             theme::label_at(ui, row, cols[1] + 2.0 * U, &launch, fg);

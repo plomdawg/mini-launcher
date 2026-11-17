@@ -281,8 +281,8 @@ steam_appid = 400
 
 Rules:
 
-- Each game is a `[[games]]` block with an `id` and a `name`, plus **either** `steam_appid` **or**
-  `exe`, not both.
+- Each game is a `[[games]]` block with an `id` and a `name`, plus **exactly one** of
+  `steam_appid`, `exe`, or `emulator` + `rom` (see [Emulator games](#emulator-games)).
 - `id`: lowercase letters, digits and `-`, starting with a letter or digit (up to 64 characters).
   Every `id` must be different.
 - `exe`: use the **full path**. Put Windows paths in single quotes (`'C:\...'`) so the
@@ -297,12 +297,39 @@ Rules:
 - `args` and `cwd` are only allowed with `exe`. Unknown keys are an error, so typos show up right
   away.
 
+### Emulator games
+
+Describe each emulator once in an `[[emulators]]` block, then point games at it with `emulator`
+(its `id`) and `rom` (the full path to the game file):
+
+```toml
+[[emulators]]
+id = "eden"
+name = "Eden"
+exe = 'C:\Emulators\Eden\eden.exe'
+args = ["-f", "-g", "{rom}"]
+# cwd = 'C:\Emulators\Eden'   (optional)
+
+[[games]]
+id = "mario-kart-8"
+name = "Mario Kart 8 Deluxe"
+emulator = "eden"
+rom = 'D:\Games\mk8.nsp'
+```
+
+- `args` must contain `"{rom}"` exactly once, as an item of its own. It is replaced by the
+  game's `rom` path as one argument, spaces included. `{rom}` inside a longer item (e.g.
+  `"--rom={rom}"`) is an error; nothing else is substituted.
+- `args` and `cwd` belong to the emulator; a game with `emulator` can't set them.
+- The tag still only says `id:<slug>` (or is mapped by `uid`); nothing on the tag reaches the
+  command line. The settings window lists emulator games but can't edit them yet.
+
 Backups, export/import and keeping the config in a synced folder are covered in
 [config.md](config.md).
 
 Restart `run` after you edit the config. If the file has a mistake, `run` stops with
 `error: cannot load ...config.toml: ...` and the message names the problem, e.g.
-`games[1]: "my-game": set one of steam_appid or exe`. `games[1]` is the second block (counting
+`games[1]: "my-game": set one of steam_appid, exe or emulator`. `games[1]` is the second block (counting
 starts at 0).
 
 ### Mapping an unknown tag
