@@ -102,6 +102,19 @@ pub trait Reader {
     /// Reports what is on the reader right now. Must not block for long.
     fn poll(&mut self) -> Result<Option<Reading>, Self::Error>;
 
+    /// Stops sensing until [`resume`](Self::resume): no polls are made in
+    /// between, so hardware can switch its antenna off. Only errors that
+    /// mean the reader is gone are returned.
+    fn pause(&mut self) -> Result<(), Self::Error> {
+        Ok(())
+    }
+
+    /// Undoes [`pause`](Self::pause); the next [`poll`](Self::poll) senses
+    /// again. A reader lost while paused fails here or on that poll.
+    fn resume(&mut self) -> Result<(), Self::Error> {
+        Ok(())
+    }
+
     /// True once the reader can never report anything new (e.g. simulated
     /// input reached EOF and every line was applied). Hardware never closes.
     fn is_closed(&self) -> bool {

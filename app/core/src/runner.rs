@@ -73,6 +73,9 @@ pub struct Runner {
     config: Config,
     dry_run: bool,
     paused: bool,
+    /// Resumed, but no reading has come in since: the first one only
+    /// records what is on the reader (see [`Self::set_paused`]).
+    resuming: bool,
     debouncer: Debouncer,
 }
 
@@ -82,13 +85,20 @@ impl Runner {
             config,
             dry_run,
             paused: false,
+            resuming: false,
             debouncer: Debouncer::new(DebounceConfig::default()),
         }
     }
 
-    /// While paused, inserted tags are tracked (so resuming does not launch
-    /// the tag already on the reader) but nothing is launched.
+    /// While paused nothing is launched. Readings taken while paused (a
+    /// reader that keeps polling) are tracked; a reader that idles (see
+    /// [`crate::reconnect::Reconnector::set_paused`]) sends none. Either way
+    /// the first reading after resuming only records the tags already on
+    /// the reader, so resuming never launches the cart left in it.
     pub fn set_paused(&mut self, paused: bool) {
+        if self.paused && !paused {
+            self.resuming = true;
+        }
         self.paused = paused;
     }
 
@@ -99,8 +109,12 @@ impl Runner {
 
     /// Handles one tick taken at `now`, launching as needed.
     pub fn step<E: Display>(&mut self, tick: Tick<E>, now: Instant) -> Vec<Notice> {
+        let silent = self.paused || self.resuming;
         let events = match tick {
-            Tick::Reading(reading) => self.debouncer.update(reading, now),
+            Tick::Reading(reading) => {
+                self.resuming = false;
+                self.debouncer.update(reading, now)
+            }
             Tick::Lost { port, error } => {
                 tracing::warn!(
                     "lost the reader on {port} ({error}); was the adapter unplugged? \
@@ -108,7 +122,8 @@ impl Runner {
                 );
                 let error = error.to_string();
                 let mut notices = vec![Notice::ReaderLost { port, error }];
-                notices.extend(self.debouncer.disconnect().map(|e| self.handle(e)));
+                let removed = self.debouncer.disconnect();
+                notices.extend(removed.map(|e| self.handle(e, true)));
                 return notices;
             }
             Tick::Reconnected { port } => {
@@ -130,12 +145,13 @@ impl Runner {
                     error,
                 }];
             }
-            Tick::Waiting => Vec::new(),
+            Tick::Waiting | Tick::Paused => Vec::new(),
         };
-        events.into_iter().map(|e| self.handle(e)).collect()
+        events.into_iter().map(|e| self.handle(e, silent)).collect()
     }
 
-    fn handle(&self, event: Event) -> Notice {
+    /// Turns `event` into a notice, launching unless `silent`.
+    fn handle(&self, event: Event, silent: bool) -> Notice {
         let (uid, payload) = match event {
             Event::Inserted { uid, payload } => (uid, payload),
             Event::Reseated { uid, .. } => {
@@ -147,8 +163,8 @@ impl Runner {
                 return Notice::Removed { uid };
             }
         };
-        if self.paused {
-            tracing::info!(%uid, "inserted while paused; not launching");
+        if silent {
+            tracing::info!(%uid, "on the reader while paused; not launching");
             return Notice::Paused { uid };
         }
         match launch::resolve(&self.config, uid.as_bytes(), &payload) {
@@ -279,5 +295,44 @@ mod tests {
         assert_eq!(runner.step(tag(), now), [Notice::Paused { uid: uid() }]);
         runner.set_paused(false);
         assert_eq!(runner.step(tag(), now), []);
+    }
+
+    #[test]
+    fn resuming_an_idle_reader_skips_the_tags_on_it_then_launches_new_ones() {
+        let mut runner = Runner::new(Config::default(), true);
+        let now = Instant::now();
+        let read = |hex: &str, appid| {
+            let uid = Uid::from_hex(hex).unwrap();
+            Tick::<Infallible>::Reading(Some((uid, Payload::Steam(appid))))
+        };
+        runner.set_paused(true);
+        assert_eq!(runner.step(Tick::<Infallible>::Paused, now), []);
+        // A cart put in while paused is found by the first poll: no launch.
+        runner.set_paused(false);
+        assert_eq!(
+            runner.step(read("04a1b2c3", 440), now),
+            [Notice::Paused { uid: uid() }]
+        );
+        assert_eq!(runner.step(read("04a1b2c3", 440), now), []);
+        // A swap after resuming launches.
+        let other = Uid::from_hex("04d4e5f6").unwrap();
+        let notices = runner.step(read("04d4e5f6", 570), now);
+        assert_eq!(notices[0], Notice::Removed { uid: uid() });
+        assert!(matches!(&notices[1], Notice::Launched { uid, .. } if *uid == other));
+        assert_eq!(notices.len(), 2);
+    }
+
+    #[test]
+    fn a_new_tag_after_resuming_with_an_empty_reader_launches() {
+        let mut runner = Runner::new(Config::default(), true);
+        let now = Instant::now();
+        runner.set_paused(true);
+        runner.set_paused(false);
+        assert_eq!(runner.step(Tick::<Infallible>::Reading(None), now), []);
+        let tick = Tick::<Infallible>::Reading(Some((uid(), Payload::Steam(440))));
+        assert!(matches!(
+            &runner.step(tick, now)[..],
+            [Notice::Launched { .. }]
+        ));
     }
 }

@@ -169,6 +169,28 @@ impl<T: Transport> Reader for Pn532Hsu<T> {
         self.cached = if failing { None } else { reading.clone() };
         Ok(reading)
     }
+
+    /// Releases any target and switches the RF field off, so the reader
+    /// idles (no polling traffic, no field). The cached reading is dropped:
+    /// the tag may be swapped or rewritten while paused.
+    fn pause(&mut self) -> Result<(), Pn532Error> {
+        self.cached = None;
+        self.failing = None;
+        self.misses = 0;
+        self.release()?;
+        self.dev
+            .rf_field(false)
+            .or_else(|e| transient(e, "RF field off"))
+    }
+
+    /// Switches the RF field back on. A transient failure is only logged:
+    /// the next `InListPassiveTarget` needs the field anyway, and a reader
+    /// that is really gone fails with an I/O error.
+    fn resume(&mut self) -> Result<(), Pn532Error> {
+        self.dev
+            .rf_field(true)
+            .or_else(|e| transient(e, "RF field on"))
+    }
 }
 
 impl<T: Transport> Pn532Hsu<T> {
@@ -332,6 +354,37 @@ mod tests {
         assert_eq!(r.poll().unwrap(), want);
         assert_eq!(r.poll().unwrap(), None);
         assert_drained(r);
+    }
+
+    #[test]
+    fn pause_releases_and_switches_the_field_off_resume_rereads() {
+        let mut polls = list_tag().to_vec();
+        polls.extend(read_replies(&memory()));
+        polls.extend(reply(&[0x53, 0x00]));
+        polls.extend(reply(&[0x53, 0x00])); // pause: InRelease
+        polls.extend(reply(&[0x33])); // pause: field off
+        polls.extend(reply(&[0x33])); // resume: field on
+        polls.extend(list_tag()); // cache dropped: read again
+        polls.extend(read_replies(&memory()));
+        polls.extend(reply(&[0x53, 0x00]));
+        let mut r = reader(polls);
+        let want = Some((Uid::new(&UID).unwrap(), Payload::Steam(440)));
+        assert_eq!(r.poll().unwrap(), want);
+        r.pause().unwrap();
+        r.resume().unwrap();
+        assert_eq!(r.poll().unwrap(), want);
+        assert_drained(r);
+    }
+
+    #[test]
+    fn pause_and_resume_fail_only_on_port_errors() {
+        // Silent PN532 (timeouts): logged, not fatal.
+        let mut r = reader(Vec::new());
+        r.pause().unwrap();
+        r.resume().unwrap();
+        // Unplugged while paused: resuming reports it.
+        let mut r = reader(vec![None]);
+        assert!(matches!(r.resume(), Err(Pn532Error::Io(_))));
     }
 
     #[test]
