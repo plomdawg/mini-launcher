@@ -4,6 +4,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use clap::{Args, Parser, Subcommand};
 
+mod autostart;
 mod diagnose;
 mod logging;
 mod port;
@@ -53,6 +54,25 @@ enum Command {
         #[arg(long, value_name = "PATH")]
         config: Option<PathBuf>,
     },
+    /// Start `run` when you log in (Windows only for now).
+    Autostart {
+        #[command(subcommand)]
+        action: AutostartAction,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum AutostartAction {
+    /// Start `run` at login (per user, no admin rights needed).
+    Enable {
+        /// Pass this reader port to `run` instead of auto-detecting it.
+        #[arg(short, long, value_name = "NAME")]
+        port: Option<String>,
+    },
+    /// Stop starting at login.
+    Disable,
+    /// Show whether `run` starts at login.
+    Status,
 }
 
 /// Reader port selection, shared by every command that opens the reader.
@@ -121,6 +141,14 @@ fn main() -> ExitCode {
             };
             run::run(&mut out, opts, &STOP)
         }
+        Command::Autostart { action } => {
+            let action = match action {
+                AutostartAction::Enable { port } => autostart::Action::Enable(port),
+                AutostartAction::Disable => autostart::Action::Disable,
+                AutostartAction::Status => autostart::Action::Status,
+            };
+            autostart::run(&mut out, action)
+        }
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -181,6 +209,21 @@ mod tests {
         let e: anyhow::Error = std::io::Error::from(std::io::ErrorKind::BrokenPipe).into();
         assert!(is_broken_pipe(&e.context("writing report")));
         assert!(!is_broken_pipe(&anyhow::anyhow!("no reply")));
+    }
+
+    #[test]
+    fn autostart_takes_an_action() {
+        let cli =
+            Cli::try_parse_from(["mini-launcher", "autostart", "enable", "-p", "COM7"]).unwrap();
+        let Command::Autostart {
+            action: AutostartAction::Enable { port },
+        } = cli.command
+        else {
+            panic!("not autostart enable")
+        };
+        assert_eq!(port.as_deref(), Some("COM7"));
+        assert!(Cli::try_parse_from(["mini-launcher", "autostart", "status"]).is_ok());
+        assert!(Cli::try_parse_from(["mini-launcher", "autostart"]).is_err());
     }
 
     #[test]

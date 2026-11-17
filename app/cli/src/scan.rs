@@ -5,6 +5,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::Result;
 use mini_launcher_core::debounce::{DebounceConfig, DEFAULT_POLL_INTERVAL};
+use mini_launcher_core::instance;
 use mini_launcher_core::payload::{steam_launch_uri, Payload};
 use mini_launcher_core::pn532::reader::{
     self, decode, is_fatal, FIRST_USER_PAGE, LAST_USER_PAGE, TYPE2_SAK,
@@ -16,6 +17,12 @@ use crate::port;
 
 /// Polls until `stop` is set, printing each new tag once.
 pub fn run(out: &mut impl Write, explicit: Option<&str>, stop: &AtomicBool) -> Result<()> {
+    if instance::is_running() {
+        tracing::warn!(
+            "`mini-launcher run` is running and probably holds the reader port; \
+             quit it first if the port will not open"
+        );
+    }
     let (name, mut reader) = port::open_poller(explicit)?;
     writeln!(
         out,
