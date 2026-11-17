@@ -233,6 +233,9 @@ jobs:
                   Start-Sleep -Milliseconds 250; $p.Refresh()
               } while ($p.PrivateMemorySize64 -ge 40MB -and $watch.Elapsed.TotalSeconds -lt 15)
               Write-Host ("after {0} cycles: {1:N1} MiB private" -f $cycles, ($p.PrivateMemorySize64 / 1MB))
+              # How often the close race (#88) really happened (informational, #90).
+              $nudged = @(Get-ChildItem $env:MINI_LAUNCHER_LOG_DIR -File -ErrorAction SilentlyContinue | Select-String 'settings window close needed \d+ wake-ups').Count
+              Write-Host "closes that needed a wake-up: $nudged of $cycles"
               if ($p.PrivateMemorySize64 -ge 40MB) { throw "private memory still at or above 40 MiB 15 s after the last close" }
           } finally {
               if (-not $p.HasExited) { Stop-Process $p -ErrorAction SilentlyContinue }

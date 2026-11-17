@@ -14,9 +14,10 @@
 //! arrive while one is being handled and delivers them on the next wake-up,
 //! so with `ControlFlow::Wait` and nothing else coming, the loop could sleep
 //! forever on a destroyed window (#88). [`App::on_exit`] therefore starts a
-//! [`Nudge`] that wakes the thread until the loop has returned.
+//! [`Nudge`] that wakes the thread until the loop has returned, and the
+//! thread logs how many wake-ups that took when it needed any (#90).
 
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -57,6 +58,11 @@ pub struct SettingsWindow {
 struct Nudge {
     /// Set by `on_exit` (the window is gone) until the loop has returned.
     closing: Arc<AtomicBool>,
+    /// Bumped by every `start`, so a helper left over from an earlier
+    /// close stops instead of running alongside the new one.
+    generation: Arc<AtomicU64>,
+    /// Wake-ups posted since the last `start`.
+    wakes: Arc<AtomicU32>,
     /// The window thread's id (Win32), 0 until it started.
     #[cfg_attr(not(windows), allow(dead_code))]
     thread_id: Arc<AtomicU32>,
@@ -68,19 +74,39 @@ impl Nudge {
 
     /// Wakes the loop until it returns (or for [`Self::GIVE_UP`]).
     fn start(&self) {
+        let generation = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
+        self.wakes.store(0, Ordering::SeqCst);
         self.closing.store(true, Ordering::SeqCst);
         let nudge = self.clone();
         let spawned = thread::Builder::new()
             .name("settings-window-nudge".into())
             .spawn(move || {
                 let start = Instant::now();
-                while nudge.closing.load(Ordering::SeqCst) && start.elapsed() < Self::GIVE_UP {
+                loop {
                     thread::sleep(Self::EVERY);
+                    // Checked after the sleep, so no wake-up is posted once
+                    // the loop has returned.
+                    if !nudge.closing.load(Ordering::SeqCst)
+                        || nudge.generation.load(Ordering::SeqCst) != generation
+                        || start.elapsed() >= Self::GIVE_UP
+                    {
+                        break;
+                    }
                     nudge.wake();
                 }
             });
         if spawned.is_err() {
             self.wake();
+        }
+    }
+
+    /// The loop has returned: stops the helper and logs the wake-ups it
+    /// took, if any (the close would otherwise have hung, #88).
+    fn finish(&self) {
+        self.closing.store(false, Ordering::SeqCst);
+        let wakes = self.wakes.swap(0, Ordering::SeqCst);
+        if wakes > 0 {
+            tracing::info!("settings window close needed {wakes} wake-ups");
         }
     }
 
@@ -93,7 +119,9 @@ impl Nudge {
             let id = self.thread_id.load(Ordering::SeqCst);
             if id != 0 {
                 // SAFETY: plain message post; fails harmlessly if the thread is gone.
-                unsafe { PostThreadMessageW(id, WM_NULL, 0, 0) };
+                if unsafe { PostThreadMessageW(id, WM_NULL, 0, 0) } != 0 {
+                    self.wakes.fetch_add(1, Ordering::SeqCst);
+                }
             }
         }
     }
@@ -121,7 +149,7 @@ impl SettingsWindow {
                         let _ = events.send(Event::Opened);
                         let result = run(&ctx, &host, &nudge).map_err(|e| e.to_string());
                         *lock(&ctx) = None;
-                        nudge.closing.store(false, Ordering::SeqCst);
+                        nudge.finish();
                         open.store(false, Ordering::SeqCst);
                         let _ = events.send(Event::Closed(result));
                     }
