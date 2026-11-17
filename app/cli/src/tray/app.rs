@@ -339,6 +339,8 @@ impl Host for TrayHost {
     fn moved(&self) {
         // The window shows the new folder at once; the worker follows on
         // its next poll (the same switch as when the folder comes back).
+        // Resolving runs on the window thread and can briefly stall it
+        // while a network share times out (see docs/config.md).
         lock(&self.state).0 = Config::location();
         self.relocate.store(true, Ordering::Relaxed);
     }

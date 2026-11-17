@@ -10,7 +10,7 @@ use mini_launcher_core::config::location::ConfigLocation;
 use super::Settings;
 use crate::library::Library;
 use crate::theme::{self, FACE, INK, PAPER, SHADE, U};
-use crate::transfer::{export, export_name, Existing, ImportPlan, Move};
+use crate::transfer::{export, export_name, mine, Existing, ImportPlan, Move};
 
 /// A native file dialog the window should open.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -109,8 +109,12 @@ impl Settings {
         match Move::plan(&default, current.as_ref(), &dir) {
             Ok(None) => self.transfer.problem = Some("The config is already there.".into()),
             Ok(Some(mv)) if mv.needs_choice() => self.open(Dialog::Existing(mv)),
-            // Nothing there yet: take the library along.
-            Ok(Some(mv)) => self.finish_move(&mv, true),
+            // Nothing there yet: take the library along, if there is one
+            // (an unavailable folder has none: just switch).
+            Ok(Some(mv)) => {
+                let copy = mine(current.as_ref()).is_some();
+                self.finish_move(&mv, copy);
+            }
             Err(e) => self.transfer.problem = Some(e),
         }
     }
@@ -120,11 +124,14 @@ impl Settings {
             return;
         };
         let current = self.host.location();
-        match mv.apply(&default, current.as_ref(), copy_mine) {
-            Ok(()) => {
+        match mv.apply(&default, current.as_ref(), copy_mine, SystemTime::now()) {
+            Ok(kept) => {
                 self.host.moved();
                 self.reload();
-                let text = format!("Mini Launcher now uses {}.", mv.dir.display());
+                let mut text = format!("Mini Launcher now uses {}.", mv.dir.display());
+                if let Some(kept) = kept {
+                    text.push_str(&format!(" The config that was there is saved as {kept}."));
+                }
                 self.open(Dialog::Done("Config folder", text));
             }
             Err(e) => {
@@ -239,10 +246,11 @@ pub(super) fn dialogs(ui: &mut Ui, s: &mut Settings) {
             };
             let text = format!(
                 "{}\n\nThis folder already has {there}. Use the one there, or copy your \
-                 library over it? (The one there is then kept as config.toml.bak.)",
+                 library over it? (The one there is then kept as \
+                 config.toml.move-<date>-<time>.bak.)",
                 mv.dir.display()
             );
-            let mine = s.host.location().is_some_and(|l| l.is_available());
+            let mine = mine(s.host.location().as_ref()).is_some();
             let theirs = !matches!(mv.existing, Existing::Broken(_));
             let buttons = [
                 ("Use the one there", theirs),

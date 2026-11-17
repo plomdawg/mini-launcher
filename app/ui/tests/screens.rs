@@ -171,10 +171,21 @@ fn host(name: &str) -> Arc<TestHost> {
 }
 
 fn host_with_loop(name: &str) -> (Arc<TestHost>, Loop) {
-    let dir = std::env::temp_dir().join(format!(
+    host_at(std::env::temp_dir().join(format!(
         "mini-launcher-screens-{name}-{}",
         std::process::id()
-    ));
+    )))
+}
+
+/// The screenshots' host: a fixed folder, so the paths the config folder
+/// dialogs show are the same on every run.
+fn design_host() -> Arc<TestHost> {
+    let (host, run_loop) = host_at(std::env::temp_dir().join("mini-launcher").join("config"));
+    *host.server.lock().unwrap() = Some(run_loop.server);
+    host
+}
+
+fn host_at(dir: PathBuf) -> (Arc<TestHost>, Loop) {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let mut text = String::from("# My carts\n");
@@ -583,7 +594,7 @@ fn design_screenshots() {
         }),
         ("config-folder", |s| s.open_folder()),
         ("config-folder-existing", |s| {
-            let synced = config_dir(s).join("OneDrive");
+            let synced = config_dir(s).parent().unwrap().join("OneDrive");
             std::fs::create_dir_all(&synced).unwrap();
             std::fs::write(synced.join("config.toml"), "").unwrap();
             s.move_to(synced);
@@ -591,7 +602,7 @@ fn design_screenshots() {
     ];
     for (name, setup) in shots {
         for scale in [1.0, 2.0] {
-            let mut h = harness(host(name), scale);
+            let mut h = harness(design_host(), scale);
             setup(h.state_mut());
             h.run();
             let image = h.render().expect("render");

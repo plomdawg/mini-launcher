@@ -54,7 +54,9 @@ The easiest way is the settings window: **Folder...** shows where the config liv
 folder, a custom folder, or why the custom folder is unavailable). **Move to folder...** picks a
 folder and writes `location.toml` for you; if that folder already has a `config.toml` you choose
 between using the one there and copying yours over it (the one there is then kept as
-`config.toml.bak`), otherwise your library is copied there. **Reset to default** removes
+`config.toml.move-<date>-<time>.bak`, which later saves don't replace); otherwise your library
+is copied there. Moving away from an unavailable folder (e.g. **Reset to default** while the
+synced drive is missing) just switches folders, since there is nothing to copy. **Reset to default** removes
 `location.toml` the same way. The tray switches to the new folder at once.
 
 To set it up by hand instead, create `location.toml` next to where

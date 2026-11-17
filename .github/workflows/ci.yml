@@ -150,6 +150,9 @@ jobs:
               public static uint Thread(IntPtr hwnd) { uint pid; return GetWindowThreadProcessId(hwnd, out pid); }
               // WM_NULL with SMTO_ABORTIFHUNG; true if the window's thread answered within 2 s.
               public static bool Responds(IntPtr hwnd) { IntPtr r; return SendMessageTimeoutW(hwnd, 0, IntPtr.Zero, IntPtr.Zero, 2, 2000, out r) != IntPtr.Zero; }
+              [DllImport("user32")] static extern bool PostMessageW(IntPtr hwnd, uint msg, IntPtr w, IntPtr l);
+              // WM_CLOSE to this exact window (not whatever MainWindowHandle names now).
+              public static bool Close(IntPtr hwnd) { return PostMessageW(hwnd, 0x0010, IntPtr.Zero, IntPtr.Zero); }
           }
           '@
           try {
@@ -162,29 +165,46 @@ jobs:
               # the window and that memory doesn't climb across cycles. The tray
               # reopens at once, so "after close" is only measurable after the last.
               $p = Start-Process $exe -ArgumentList '--settings', '--settings' -PassThru
+              # The tray's own "settings window closed" log lines.
+              function Closed { @(Get-ChildItem $env:MINI_LAUNCHER_LOG_DIR -File -ErrorAction SilentlyContinue | Select-String 'settings window closed').Count }
+              $prev = [IntPtr]::Zero
               foreach ($cycle in 1, 2) {
-                  for ($i = 0; $i -lt 60 -and $p.MainWindowHandle -eq 0; $i++) {
-                      Start-Sleep -Milliseconds 500; $p.Refresh()
+                  # Wait for a window that is not the previous cycle's (which
+                  # MainWindowHandle can still name while it is going away).
+                  $hwnd = [IntPtr]::Zero
+                  for ($i = 0; $i -lt 60; $i++) {
+                      $p.Refresh(); $hwnd = $p.MainWindowHandle
+                      if ($hwnd -ne [IntPtr]::Zero -and $hwnd -ne $prev) { break }
+                      Start-Sleep -Milliseconds 500
                   }
-                  if ($p.MainWindowHandle -eq 0) { throw "the settings window did not open (cycle $cycle)" }
+                  if ($hwnd -eq [IntPtr]::Zero -or $hwnd -eq $prev) { throw "the settings window did not open (cycle $cycle)" }
+                  $prev = $hwnd
                   Start-Sleep 3
                   Write-Host "cycle ${cycle}: window open:  $(Mem $p)"
                   $tray = [TrayThreads]::TrayWindow($p.Id)
                   if ($tray -eq [IntPtr]::Zero) { throw "the tray's window was not found" }
                   $trayThread = [TrayThreads]::Thread($tray)
-                  $windowThread = [TrayThreads]::Thread($p.MainWindowHandle)
+                  $windowThread = [TrayThreads]::Thread($hwnd)
                   Write-Host "cycle ${cycle}: tray thread $trayThread, settings window thread $windowThread"
                   if ($trayThread -eq $windowThread) { throw "the settings window runs on the tray's thread" }
                   if (-not [TrayThreads]::Responds($tray)) { throw "the tray stopped answering while the window is open" }
-                  $null = $p.CloseMainWindow()
-                  Start-Sleep 5
+                  # Close this window and wait for the tray to log it; retry
+                  # if the request was not delivered or not acted on.
+                  $done = $false
+                  for ($try = 1; $try -le 5 -and -not $done; $try++) {
+                      if (-not [TrayThreads]::Close($hwnd)) { Write-Host "cycle ${cycle}: WM_CLOSE not posted (try $try)" }
+                      for ($i = 0; $i -lt 20; $i++) {
+                          if ((Closed) -ge $cycle) { $done = $true; break }
+                          Start-Sleep -Milliseconds 500
+                      }
+                      if (-not $done) { Write-Host "cycle ${cycle}: close not logged within 10 s (try $try)" }
+                  }
+                  if (-not $done) { throw "the settings window did not close (cycle $cycle)" }
                   if ($p.HasExited) { throw "the tray exited (code $($p.ExitCode)) when the window closed" }
-                  $p.Refresh()
               }
+              Start-Sleep 2
               Write-Host "after both closed:      $(Mem $p)"
-              # MainWindowHandle can still name a hidden or dying window here, so
-              # count the tray's own "settings window closed" log lines instead.
-              $closed = @(Get-ChildItem $env:MINI_LAUNCHER_LOG_DIR -File | Select-String 'settings window closed').Count
+              $closed = Closed
               if ($closed -ne 2) { throw "expected 2 'settings window closed' log lines, found $closed" }
               Stop-Process $p
           } finally {

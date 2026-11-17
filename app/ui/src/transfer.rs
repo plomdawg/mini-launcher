@@ -80,20 +80,30 @@ impl ImportPlan {
         now: SystemTime,
     ) -> Result<Option<String>, String> {
         let file = location.writable_file().map_err(|e| e.to_string())?;
-        let backup = if file.exists() {
-            let (y, m, d, s) = civil(now);
-            let (h, min, sec) = (s / 3600, s / 60 % 60, s % 60);
-            let name =
-                format!("{CONFIG_FILE}.import-{y:04}{m:02}{d:02}-{h:02}{min:02}{sec:02}.bak");
-            std::fs::copy(&file, file.with_file_name(&name))
-                .map_err(|e| format!("cannot back up {}: {e}", file.display()))?;
-            Some(name)
-        } else {
-            None
-        };
+        let backup = backup(&file, "import", now)?;
         ConfigDocument::import_into(&self.from, location).map_err(|e| chain(&e))?;
         Ok(backup)
     }
+}
+
+/// Copies `file` (if it exists) to `config.toml.<kind>-<date>-<time>.bak`
+/// next to it, a name later saves never replace. Returns that name.
+fn backup(file: &Path, kind: &str, now: SystemTime) -> Result<Option<String>, String> {
+    if !file.exists() {
+        return Ok(None);
+    }
+    let (y, m, d, s) = civil(now);
+    let (h, min, sec) = (s / 3600, s / 60 % 60, s % 60);
+    let name = format!("{CONFIG_FILE}.{kind}-{y:04}{m:02}{d:02}-{h:02}{min:02}{sec:02}.bak");
+    std::fs::copy(file, file.with_file_name(&name))
+        .map_err(|e| format!("cannot back up {}: {e}", file.display()))?;
+    Ok(Some(name))
+}
+
+/// The current `config.toml`, if the folder is available and it exists
+/// (so there is a library to take along).
+pub fn mine(current: Option<&ConfigLocation>) -> Option<PathBuf> {
+    current?.config_file().ok().filter(|f| f.is_file())
 }
 
 /// What is already in a folder the config is moving to.
@@ -124,10 +134,10 @@ impl Move {
         current: Option<&ConfigLocation>,
         dir: &Path,
     ) -> Result<Option<Move>, String> {
-        if !dir.is_absolute() || !dir.is_dir() {
+        let to_default = same(dir, default_dir);
+        if !dir.is_absolute() || !(dir.is_dir() || to_default) {
             return Err(format!("\"{}\" is not a folder.", dir.display()));
         }
-        let to_default = same(dir, default_dir);
         let here = match current {
             Some(ConfigLocation::Default(d) | ConfigLocation::Override(d)) => same(dir, d),
             _ => false,
@@ -157,30 +167,35 @@ impl Move {
         self.existing != Existing::Nothing
     }
 
-    /// Switches to the new folder: with `copy_mine`, the current config is
-    /// first saved there (an existing one is kept as `config.toml.bak`).
-    /// Then `location.toml` is written (or removed for the default folder).
+    /// Switches to the new folder: with `copy_mine`, the current config
+    /// (see [`mine`]) is first saved there, after the one there (if any) is
+    /// copied to `config.toml.move-<date>-<time>.bak`, whose name is
+    /// returned. Then `location.toml` is written (or removed for the
+    /// default folder, which is created if missing).
     pub fn apply(
         &self,
         default_dir: &Path,
         current: Option<&ConfigLocation>,
         copy_mine: bool,
-    ) -> Result<(), String> {
+        now: SystemTime,
+    ) -> Result<Option<String>, String> {
+        let target = self.dir.join(CONFIG_FILE);
+        let mut kept = None;
         if copy_mine {
-            let file = current
-                .ok_or("this system has no config folder")?
-                .config_file()
-                .map_err(|e| format!("Your config can't be copied: {e}"))?;
-            if file.exists() {
-                let doc = ConfigDocument::load_or_empty(&file).map_err(|e| chain(&e))?;
-                doc.save(&self.dir.join(CONFIG_FILE))
-                    .map_err(|e| chain(&e))?;
-            }
+            let file = mine(current).ok_or("you have no config to copy")?;
+            let doc = ConfigDocument::load_or_empty(&file).map_err(|e| chain(&e))?;
+            kept = backup(&target, "move", now)?;
+            doc.save(&target).map_err(|e| chain(&e))?;
         } else if let Existing::Broken(e) = &self.existing {
             return Err(format!("The config there can't be loaded: {e}"));
         }
+        if self.to_default {
+            std::fs::create_dir_all(default_dir)
+                .map_err(|e| format!("cannot create {}: {e}", default_dir.display()))?;
+        }
         let pointer = (!self.to_default).then_some(self.dir.as_path());
-        set_pointer(default_dir, pointer).map_err(|e| chain(&e))
+        set_pointer(default_dir, pointer).map_err(|e| chain(&e))?;
+        Ok(kept)
     }
 }
 
@@ -264,6 +279,29 @@ mod tests {
         assert!(plan.apply(&gone, SystemTime::now()).is_err());
     }
 
+    fn t() -> SystemTime {
+        SystemTime::UNIX_EPOCH + Duration::from_secs(1_795_437_296)
+    }
+
+    #[test]
+    fn reset_from_an_unavailable_folder_to_an_empty_default() {
+        let (default, synced) = (temp("unavail"), temp("unavail-synced"));
+        set_pointer(&default, Some(&synced)).unwrap();
+        std::fs::remove_dir_all(&synced).unwrap();
+        let gone = ConfigLocation::resolve(&default);
+        assert!(!gone.is_available() && mine(Some(&gone)).is_none());
+        let mv = Move::plan(&default, Some(&gone), &default)
+            .unwrap()
+            .unwrap();
+        assert!(!mv.needs_choice() && mv.to_default);
+        assert!(mv.apply(&default, Some(&gone), true, t()).is_err());
+        assert_eq!(mv.apply(&default, Some(&gone), false, t()), Ok(None));
+        assert_eq!(
+            ConfigLocation::resolve(&default),
+            ConfigLocation::Default(default)
+        );
+    }
+
     #[test]
     fn move_copies_mine_or_uses_theirs_and_resets() {
         let (default, synced) = (temp("mv-default"), temp("mv-synced"));
@@ -275,7 +313,7 @@ mod tests {
         // Empty target: mine is copied there.
         let mv = Move::plan(&default, Some(&home), &synced).unwrap().unwrap();
         assert!(!mv.needs_choice() && !mv.to_default);
-        mv.apply(&default, Some(&home), true).unwrap();
+        mv.apply(&default, Some(&home), true, t()).unwrap();
         let there = ConfigLocation::resolve(&default);
         assert_eq!(there, ConfigLocation::Override(synced.clone()));
         assert_eq!(
@@ -292,22 +330,30 @@ mod tests {
             (back.to_default, back.existing.clone()),
             (true, Existing::Config(0))
         );
-        back.apply(&default, Some(&there), false).unwrap();
+        back.apply(&default, Some(&there), false, t()).unwrap();
         assert_eq!(ConfigLocation::resolve(&default), home);
         assert_eq!(
             std::fs::read_to_string(default.join(CONFIG_FILE)).unwrap(),
             ""
         );
 
-        // Copy mine over an existing one: theirs is kept as .bak.
+        // Copy mine over an existing one: theirs is kept under a dated name
+        // that later saves don't replace.
         let mv = Move::plan(&default, Some(&home), &synced).unwrap().unwrap();
         assert_eq!(mv.existing, Existing::Config(2));
-        mv.apply(&default, Some(&home), true).unwrap();
+        let kept = mv.apply(&default, Some(&home), true, t()).unwrap().unwrap();
+        assert_eq!(kept, "config.toml.move-20261123-123456.bak");
+        let there = ConfigLocation::resolve(&default);
+        ConfigDocument::load_or_empty(&synced.join(CONFIG_FILE))
+            .unwrap()
+            .save_to(&there)
+            .unwrap();
         assert_eq!(
             std::fs::read_to_string(synced.join(CONFIG_FILE)).unwrap(),
             ""
         );
-        assert_eq!(
+        assert_eq!(std::fs::read_to_string(synced.join(&kept)).unwrap(), TWO);
+        assert_ne!(
             std::fs::read_to_string(synced.join("config.toml.bak")).unwrap(),
             TWO
         );
@@ -319,7 +365,7 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(matches!(mv.existing, Existing::Broken(_)));
-        assert!(mv.apply(&default, Some(&there), false).is_err());
+        assert!(mv.apply(&default, Some(&there), false, t()).is_err());
         assert_eq!(ConfigLocation::resolve(&default), there);
     }
 }
