@@ -1,10 +1,15 @@
+use std::io::IsTerminal;
+use std::path::PathBuf;
 use std::process::ExitCode;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use clap::{Args, Parser, Subcommand};
 use tracing_subscriber::EnvFilter;
 
 mod diagnose;
 mod port;
+mod run;
+mod scan;
 
 /// Launch games by inserting NFC-tagged carts into a reader.
 #[derive(Debug, Parser)]
@@ -29,6 +34,26 @@ enum Command {
         #[arg(long)]
         all: bool,
     },
+    /// Print UID, raw pages, NDEF record and payload of each tag placed on the reader.
+    Scan {
+        #[command(flatten)]
+        port: PortArgs,
+    },
+    /// Launch the game for each cart inserted into the reader.
+    Run {
+        #[command(flatten)]
+        port: PortArgs,
+        /// Read tag events from stdin instead of a reader, one per poll:
+        /// `insert <uid-hex> [payload]` or `remove`. Exits at end of input.
+        #[arg(long, conflicts_with = "port")]
+        simulate: bool,
+        /// Log what would be launched without starting anything.
+        #[arg(long)]
+        dry_run: bool,
+        /// Use this config file instead of the default location.
+        #[arg(long, value_name = "PATH")]
+        config: Option<PathBuf>,
+    },
 }
 
 /// Reader port selection, shared by every command that opens the reader.
@@ -51,7 +76,24 @@ fn init_logging(verbose: u8) {
     tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_writer(std::io::stderr)
+        // Old Windows consoles and redirected output show raw escape codes.
+        .with_ansi(std::io::stderr().is_terminal())
         .init();
+}
+
+/// Set by Ctrl-C; long-running commands poll it and return cleanly.
+static STOP: AtomicBool = AtomicBool::new(false);
+
+fn handle_ctrl_c() {
+    let result = ctrlc::set_handler(|| {
+        // A second Ctrl-C exits right away, in case a command is stuck.
+        if STOP.swap(true, Ordering::Relaxed) {
+            std::process::exit(130);
+        }
+    });
+    if let Err(e) = result {
+        tracing::warn!("cannot install Ctrl-C handler: {e}");
+    }
 }
 
 /// Whether `e` came from writing to a closed stdout pipe.
@@ -70,6 +112,25 @@ fn main() -> ExitCode {
     let mut out = std::io::stdout().lock();
     let result = match cli.command {
         Command::Diagnose { port, all } => diagnose::run(&mut out, port.port.as_deref(), all),
+        Command::Scan { port } => {
+            handle_ctrl_c();
+            scan::run(&mut out, port.port.as_deref(), &STOP)
+        }
+        Command::Run {
+            port,
+            simulate,
+            dry_run,
+            config,
+        } => {
+            handle_ctrl_c();
+            let opts = run::Options {
+                port: port.port,
+                simulate,
+                dry_run,
+                config,
+            };
+            run::run(&mut out, opts, &STOP)
+        }
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -97,14 +158,32 @@ mod tests {
         let cli =
             Cli::try_parse_from(["nfc-launcher", "diagnose", "-vv", "--port", "COM7"]).unwrap();
         assert_eq!(cli.verbose, 2);
-        let Command::Diagnose { port, all } = cli.command;
+        let Command::Diagnose { port, all } = cli.command else {
+            panic!("not diagnose")
+        };
         assert_eq!(port.port.as_deref(), Some("COM7"));
         assert!(!all);
 
         let cli = Cli::try_parse_from(["nfc-launcher", "diagnose", "--all"]).unwrap();
-        let Command::Diagnose { port, all } = cli.command;
+        let Command::Diagnose { port, all } = cli.command else {
+            panic!("not diagnose")
+        };
         assert_eq!(port.port, None);
         assert!(all);
+    }
+
+    #[test]
+    fn run_simulate_conflicts_with_port() {
+        let parse = |args: &[&str]| Cli::try_parse_from([&["nfc-launcher", "run"], args].concat());
+        assert!(parse(&["--simulate", "--port", "COM7"]).is_err());
+        let Command::Run {
+            simulate, dry_run, ..
+        } = parse(&["--simulate", "--dry-run"]).unwrap().command
+        else {
+            panic!("not run")
+        };
+        assert!(simulate && dry_run);
+        assert!(parse(&["-p", "COM7"]).is_ok());
     }
 
     #[test]
