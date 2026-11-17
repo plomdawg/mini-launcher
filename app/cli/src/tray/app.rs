@@ -14,12 +14,15 @@ use mini_launcher_core::autostart::{self, Status};
 use mini_launcher_core::config::edit::saved_by_this_process;
 use mini_launcher_core::config::location::{ConfigLocation, POINTER_FILE};
 use mini_launcher_core::config::{self, Config};
+use mini_launcher_core::launch::{self, LaunchPlan};
 use mini_launcher_core::reconnect::{Backoff, ReaderState, Reconnector, SystemClock};
 use mini_launcher_core::runner::{self, Notice, Runner};
-use mini_launcher_core::session::{self, SessionClient, SessionServer, Sessions};
+use mini_launcher_core::session::{self, SessionServer, Sessions};
+use mini_launcher_core::steam::{self, SteamGame};
 use mini_launcher_core::{instance, logs};
 use mini_launcher_ui::settings::{Host, ReaderStatus};
 use mini_launcher_ui::window::{Event as WindowEvent, SettingsWindow};
+use mini_launcher_ui::wizard::Link;
 use muda::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem};
 use tray_icon::{Icon, TrayIcon, TrayIconAttributes};
 use windows_sys::Win32::UI::WindowsAndMessaging as wm;
@@ -314,8 +317,20 @@ impl Host for TrayHost {
         self.reload.store(true, Ordering::Relaxed);
     }
 
-    fn tag_session(&self) -> Option<SessionClient> {
-        Some(self.sessions.open())
+    fn tag_session(&self) -> Option<Box<dyn Link>> {
+        Some(Box::new(self.sessions.open()))
+    }
+
+    fn steam_games(&self) -> Result<Vec<SteamGame>, String> {
+        steam::installed_games().map_err(|e| e.to_string())
+    }
+
+    fn launch(&self, plan: &LaunchPlan) -> Result<(), String> {
+        tracing::info!("launch from the settings window: {plan}");
+        launch::execute(plan, false).map(drop).map_err(|e| {
+            tracing::warn!("launch from the settings window failed: {e}");
+            e.to_string()
+        })
     }
 }
 

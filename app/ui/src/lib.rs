@@ -8,3 +8,5 @@ pub mod settings;
 pub mod theme;
 #[cfg(feature = "window")]
 pub mod window;
+pub mod wizard;
+pub mod wizard_view;

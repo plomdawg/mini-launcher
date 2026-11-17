@@ -114,6 +114,16 @@ already configured.
 
 ## Writing a tag with the launcher
 
+In the tray app, **Settings… → Add game** (or **Write tag…** in a game's edit form) opens a
+wizard: pick an installed Steam game or a program, hold the cart on the reader, and the app
+writes `steam://<appid>` (Steam) or `id:<slug>` (programs) as below and saves the library.
+While the wizard waits for a tag, inserted carts don't launch. If the tag already holds another
+game, or its UID is bound to another game, the wizard asks before using it (and removes the other
+game's UID binding, which would otherwise override what was written). A read-only, too-small or
+non-NDEF tag is not written; the wizard binds its UID instead and says why. Closing the wizard at
+any point gives the reader back.
+
+From the command line:
 `mini-launcher write steam://440` (or `id:my-game`, optionally `--port COM7`) waits for a tag,
 writes the payload and reads it back to verify. Quit the tray app first: it holds the reader.
 `steam://` payloads are written as a URI record (prefix code `0x00`), `id:` payloads as a UTF-8

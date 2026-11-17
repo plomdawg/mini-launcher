@@ -64,6 +64,25 @@ impl Library {
         self.change(&game.id, |doc| doc.upsert_game(game))
     }
 
+    /// Adds or updates `game` and saves; `take_uid` is first unbound from
+    /// every other entry (a tag UID maps to one game, and a UID mapping
+    /// would override what was just written to the tag).
+    pub fn save_game_taking_uid(&mut self, game: &Game, take_uid: &[u8]) -> Result<(), String> {
+        self.change(&game.id, |doc| {
+            let others: Vec<Slug> = doc
+                .config()
+                .games
+                .iter()
+                .filter(|g| g.id != game.id && g.uid.as_deref() == Some(take_uid))
+                .map(|g| g.id.clone())
+                .collect();
+            for id in &others {
+                doc.set_uid(id, None)?;
+            }
+            doc.upsert_game(game)
+        })
+    }
+
     /// Removes the game with this id and saves.
     pub fn remove(&mut self, id: &Slug) -> Result<(), String> {
         self.change(id, |doc| doc.remove_game(id))
@@ -141,6 +160,8 @@ fn chain(e: &dyn std::error::Error) -> String {
 pub enum Field {
     Name,
     AppId,
+    /// The id a new program gets (`id:<slug>` on its tag).
+    Id,
     Exe,
     Args,
     Cwd,
