@@ -5,10 +5,12 @@
 //! to be testable without hardware.
 
 pub mod config;
+pub mod debounce;
 pub mod launch;
 pub mod ndef;
 pub mod payload;
 pub mod pn532;
+pub mod reader;
 
 /// Version of the core library, taken from `Cargo.toml`.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
