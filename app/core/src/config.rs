@@ -45,7 +45,9 @@ pub struct Game {
 /// Why a config could not be loaded.
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
-    #[error("{}: {source}", path.display())]
+    /// The file could not be read. The display omits `path` and `source`
+    /// (reported by the error chain) so callers can add context once.
+    #[error("cannot read the file")]
     Io {
         path: PathBuf,
         source: std::io::Error,
@@ -83,16 +85,26 @@ impl Config {
             .map(|dirs| dirs.config_dir().join("config.toml"))
     }
 
-    /// Loads and validates `path`. A missing file is an empty library, so
-    /// `steam://` tags work with zero configuration.
+    /// Loads and validates `path`, which must exist (e.g. a path the user
+    /// gave explicitly, where a typo must not silently drop every mapping).
     pub fn load(path: &Path) -> Result<Config, ConfigError> {
-        match std::fs::read_to_string(path) {
-            Ok(text) => Config::parse(&text),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Config::default()),
-            Err(source) => Err(ConfigError::Io {
-                path: path.to_owned(),
-                source,
-            }),
+        let text = std::fs::read_to_string(path).map_err(|source| ConfigError::Io {
+            path: path.to_owned(),
+            source,
+        })?;
+        Config::parse(&text)
+    }
+
+    /// Like [`Config::load`], but a missing file is an empty library, so
+    /// `steam://` tags work with zero configuration. For the default location.
+    pub fn load_or_empty(path: &Path) -> Result<Config, ConfigError> {
+        match Config::load(path) {
+            Err(ConfigError::Io { source, .. })
+                if source.kind() == std::io::ErrorKind::NotFound =>
+            {
+                Ok(Config::default())
+            }
+            result => result,
         }
     }
 
@@ -319,8 +331,13 @@ mod tests {
     }
 
     #[test]
-    fn missing_file_is_empty_library() {
+    fn missing_file_is_empty_library_only_by_default() {
         let path = std::env::temp_dir().join("nfc-launcher-test-does-not-exist/config.toml");
-        assert_eq!(Config::load(&path).unwrap(), Config::default());
+        assert_eq!(Config::load_or_empty(&path).unwrap(), Config::default());
+        let err = Config::load(&path).unwrap_err();
+        assert!(
+            matches!(&err, ConfigError::Io { source, .. } if source.kind() == std::io::ErrorKind::NotFound),
+            "{err:?}"
+        );
     }
 }

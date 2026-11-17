@@ -3,7 +3,9 @@
 //! Each poll lists one ISO/IEC 14443-A target, reads the NTAG213 user memory
 //! (pages 4..=39), decodes it into a [`Payload`] and releases the target.
 //! Flaky radio or serial traffic (timeouts, stray frames, a tag pulled
-//! mid-read) counts as a missed poll; the debouncer absorbs it. Only port I/O
+//! mid-read) counts as a missed poll; the debouncer absorbs it. A failed read
+//! is retried on every poll while the tag stays present, so a cart that is
+//! still sliding in is reported once a read succeeds. Only port I/O
 //! errors (adapter unplugged) are returned, and those are fatal.
 
 use std::time::Duration;
@@ -24,9 +26,10 @@ pub const USER_MEMORY_LEN: usize = 144;
 pub const PASSIVE_RETRIES: u8 = 0x05;
 /// Per-command timeout while polling.
 pub const COMMAND_TIMEOUT: Duration = Duration::from_millis(500);
-/// Consecutive failed reads of a present tag before it is reported with an
-/// unusable payload (e.g. a non-NTAG card), so it can still be mapped by UID.
-pub const MAX_READ_FAILURES: u32 = 3;
+/// SAK of an NFC Forum Type 2 tag (NTAG21x, MIFARE Ultralight). Any other
+/// target (e.g. MIFARE Classic, DESFire) is reported with an unusable payload
+/// without trying to read it, so it can still be mapped by UID.
+pub const TYPE2_SAK: u8 = 0x00;
 
 /// True for errors that mean the reader is gone (port I/O), as opposed to a
 /// transient hiccup that should count as a missed poll.
@@ -54,10 +57,8 @@ pub fn payload_from_memory(mem: &[u8]) -> Payload {
 pub struct Pn532Hsu<T> {
     dev: Pn532<T>,
     /// The tag read on the previous poll; a tag sitting on the reader is not
-    /// re-read every poll.
+    /// re-read every poll. Only successful readings are cached.
     cached: Option<Reading>,
-    /// Consecutive failed reads of the present tag.
-    read_failures: u32,
 }
 
 impl<T: Transport> Pn532Hsu<T> {
@@ -67,11 +68,7 @@ impl<T: Transport> Pn532Hsu<T> {
         dev.wakeup()?;
         dev.sam_configuration()?;
         dev.rf_configuration_max_retries(PASSIVE_RETRIES)?;
-        Ok(Pn532Hsu {
-            dev,
-            cached: None,
-            read_failures: 0,
-        })
+        Ok(Pn532Hsu { dev, cached: None })
     }
 
     /// Looks for a tag. Transient errors are logged and reported as no tag.
@@ -108,7 +105,6 @@ impl<T: Transport> Reader for Pn532Hsu<T> {
     fn poll(&mut self) -> Result<Option<Reading>, Pn532Error> {
         let Some(target) = self.detect()? else {
             self.cached = None;
-            self.read_failures = 0;
             return Ok(None);
         };
         let reading = match Uid::new(&target.uid) {
@@ -118,6 +114,7 @@ impl<T: Transport> Reader for Pn532Hsu<T> {
             }
             Ok(uid) => match &self.cached {
                 Some(cached) if cached.0 == uid => Some(cached.clone()),
+                _ if target.sak != TYPE2_SAK => Some((uid, Payload::Unusable)),
                 _ => self.read_payload(uid)?,
             },
         };
@@ -128,22 +125,11 @@ impl<T: Transport> Reader for Pn532Hsu<T> {
 }
 
 impl<T: Transport> Pn532Hsu<T> {
+    /// A failed read is a missed poll; it is retried on the next one.
     fn read_payload(&mut self, uid: Uid) -> Result<Option<Reading>, Pn532Error> {
         match self.read_user_memory() {
-            Ok(mem) => {
-                self.read_failures = 0;
-                Ok(Some((uid, payload_from_memory(&mem))))
-            }
-            Err(e) => {
-                transient(e, "NTAG READ")?;
-                self.read_failures += 1;
-                if self.read_failures >= MAX_READ_FAILURES {
-                    self.read_failures = 0;
-                    Ok(Some((uid, Payload::Unusable)))
-                } else {
-                    Ok(None)
-                }
-            }
+            Ok(mem) => Ok(Some((uid, payload_from_memory(&mem)))),
+            Err(e) => transient(e, "NTAG READ").map(|()| None),
         }
     }
 }
@@ -160,9 +146,11 @@ fn transient(e: Pn532Error, what: &str) -> Result<(), Pn532Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::debounce::{DebounceConfig, Debouncer, Event};
     use crate::pn532::frame::ACK;
     use std::collections::VecDeque;
     use std::io::{self, ErrorKind, Read, Write};
+    use std::time::Instant;
 
     /// Replays canned replies; `None` is a port I/O error. Runs dry → timeouts.
     struct Mock(VecDeque<Option<Vec<u8>>>);
@@ -263,19 +251,47 @@ mod tests {
 
     #[test]
     fn transient_errors_are_missed_polls() {
-        // Silence: NoAck on list. Then a tag whose READ keeps failing: two
-        // missed polls, then reported as unusable so it can be mapped by UID.
+        // Silence: NoAck on list.
+        let mut r = reader(Vec::new());
+        assert_eq!(r.poll().unwrap(), None);
+    }
+
+    #[test]
+    fn slow_insert_retries_reads_until_one_succeeds() {
+        // A cart still sliding in: several READs fail, then one succeeds.
+        const FAILED_READS: usize = 6;
         let mut polls = Vec::new();
-        for _ in 0..MAX_READ_FAILURES {
+        for _ in 0..FAILED_READS {
             polls.extend(list_tag());
             polls.extend(reply(&[0x41, 0x01])); // READ status: timeout
             polls.extend(reply(&[0x53, 0x00]));
         }
-        let mut r = reader(Vec::new());
-        assert_eq!(r.poll().unwrap(), None);
+        polls.extend(list_tag());
+        polls.extend(read_replies(&memory()));
+        polls.extend(reply(&[0x53, 0x00]));
+        polls.extend(list_tag()); // cached from here on
+        polls.extend(reply(&[0x53, 0x00]));
         let mut r = reader(polls);
-        assert_eq!(r.poll().unwrap(), None);
-        assert_eq!(r.poll().unwrap(), None);
+        let mut debouncer = Debouncer::new(DebounceConfig::default());
+        let now = Instant::now();
+        let mut events = Vec::new();
+        for i in 0..FAILED_READS + 2 {
+            let reading = r.poll().unwrap();
+            assert_eq!(reading.is_some(), i >= FAILED_READS, "poll {i}");
+            events.extend(debouncer.update(reading, now));
+        }
+        let uid = Uid::new(&UID).unwrap();
+        let payload = Payload::Steam(440);
+        assert_eq!(events, [Event::Inserted { uid, payload }]);
+    }
+
+    #[test]
+    fn non_type2_target_is_unusable_without_reading() {
+        // MIFARE Classic 1K (SAK 08): no READ is sent, only InRelease.
+        let mut polls =
+            reply(&[[0x4B, 1, 1, 0x00, 0x04, 0x08, 7].as_slice(), &UID].concat()).to_vec();
+        polls.extend(reply(&[0x53, 0x00]));
+        let mut r = reader(polls);
         let (uid, payload) = r.poll().unwrap().unwrap();
         assert_eq!((uid.as_bytes(), payload), (&UID[..], Payload::Unusable));
     }

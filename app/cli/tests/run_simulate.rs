@@ -97,3 +97,21 @@ fn simulate_dry_run_logs_launches() {
     assert!(stdout.contains("    uid = \"11223344\"\n"), "{stdout}");
     assert!(stderr.contains(r#"unknown command "bogus""#), "{stderr}");
 }
+
+#[test]
+fn explicit_missing_config_is_an_error() {
+    let missing = std::env::temp_dir().join(format!(
+        "nfc-launcher-test-missing-{}/config.toml",
+        std::process::id()
+    ));
+    let output = Command::new(env!("CARGO_BIN_EXE_nfc-launcher"))
+        .args(["run", "--simulate", "--dry-run", "--config"])
+        .arg(&missing)
+        .env_remove("RUST_LOG")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(!output.status.success(), "{stderr}");
+    assert!(stderr.contains("cannot load"), "{stderr}");
+}
