@@ -2130,6 +2130,7 @@ dependencies = [
  "egui_kittest",
  "mini-launcher-core",
  "rfd",
+ "windows-sys 0.61.2",
  "winit",
 ]
 

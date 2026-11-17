@@ -138,6 +138,9 @@ surface and wgpu device are still dropped on close. The tray talks to the window
 window's `egui::Context` (focus, close on Quit) and gets opened/closed events over a channel.
 CI checks the two windows live on different threads and that the tray answers messages while
 the window is open.
+Fixed in #88: eframe leaves `run_and_return` only on a window event after the close, and winit
+can hold that event until the loop next wakes, so after a close the window posts `WM_NULL` to its
+thread until the loop has returned. CI opens and closes the window 20 times with random delays.
 
 ### Installer
 
