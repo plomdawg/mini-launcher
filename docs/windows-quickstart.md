@@ -289,3 +289,4 @@ gets a similar message with that `id` filled in.
 | `launch ...: failed to start: ...` | The `exe` path or `cwd` is wrong, or the file has moved. |
 | A Steam game doesn't start | Make sure Steam is installed and signed in. Try opening `steam://rungameid/440` (with your app ID) from the Run dialog (Win+R) to check. |
 | `error: cannot load ...config.toml` | The config has a mistake; the error names the block and the problem. |
+| Need to see what happened earlier | `run` also writes a log file per day to `%LOCALAPPDATA%\mini-launcher\logs\` (the last 7 are kept); `diagnose` prints the folder. |

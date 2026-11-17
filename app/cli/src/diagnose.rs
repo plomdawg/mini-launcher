@@ -4,6 +4,7 @@ use std::io::Write;
 
 use anyhow::Result;
 use mini_launcher_core::config::Config;
+use mini_launcher_core::logs;
 use mini_launcher_core::pn532::FirmwareVersion;
 use mini_launcher_core::ports;
 
@@ -41,6 +42,10 @@ pub fn run(out: &mut impl Write, explicit: Option<&str>, all: bool) -> Result<()
             writeln!(out, "Config: {} ({state})", path.display())?;
         }
         None => writeln!(out, "Config: no config directory available on this system")?,
+    }
+    match logs::default_dir() {
+        Some(dir) => writeln!(out, "Logs: {} (written by `run`)", dir.display())?,
+        None => writeln!(out, "Logs: no data directory available on this system")?,
     }
 
     writeln!(out)?;
