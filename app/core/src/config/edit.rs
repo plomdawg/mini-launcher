@@ -52,6 +52,8 @@ pub enum EditError {
 pub struct ConfigDocument {
     doc: DocumentMut,
     config: Config,
+    /// Whether the source text used CRLF line endings, kept on output.
+    crlf: bool,
 }
 
 impl ConfigDocument {
@@ -61,7 +63,11 @@ impl ConfigDocument {
         let doc = text
             .parse()
             .map_err(|e| EditError::Unsupported(format!("invalid config.toml: {e}")))?;
-        Ok(ConfigDocument { doc, config })
+        Ok(ConfigDocument {
+            doc,
+            config,
+            crlf: uses_crlf(text),
+        })
     }
 
     /// Loads `path`; a missing file is an empty document.
@@ -151,7 +157,7 @@ impl ConfigDocument {
 
     /// [`ConfigDocument::save`], creating the folder only if `create_dir`.
     fn save_at(&self, path: &Path, create_dir: bool) -> Result<(), EditError> {
-        let text = self.doc.to_string();
+        let text = self.to_string();
         Config::parse(&text)?;
         write_atomic(path, &text, true, create_dir)?;
         remember_saved(&text);
@@ -178,7 +184,7 @@ impl ConfigDocument {
              # config.toml directly, delete this [mini_launcher] table.\n",
         );
         doc.insert(EXPORT_TABLE, Item::Table(header));
-        write_atomic(path, &doc.to_string(), false, true)
+        write_atomic(path, &render(&doc, self.crlf), false, true)
     }
 
     /// Reads and fully validates an export (or a plain `config.toml`).
@@ -213,7 +219,7 @@ impl ConfigDocument {
                 return Err(bad(format!("unknown keys in [{EXPORT_TABLE}]")));
             }
         }
-        ConfigDocument::parse(&doc.to_string())
+        ConfigDocument::parse(&render(&doc, uses_crlf(&text)))
     }
 
     /// Validates the export at `from`, then saves it as the config at `to`
@@ -248,7 +254,23 @@ impl ConfigDocument {
 
 impl std::fmt::Display for ConfigDocument {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.doc.fmt(f)
+        f.write_str(&render(&self.doc, self.crlf))
+    }
+}
+
+/// Whether `text` uses CRLF line endings, judged by its first line.
+fn uses_crlf(text: &str) -> bool {
+    text.find('\n').is_some_and(|i| text[..i].ends_with('\r'))
+}
+
+/// `doc` as text. toml_edit drops every `\r` when writing, so CRLF line
+/// endings are restored here (a file mixing both comes back all CRLF).
+fn render(doc: &DocumentMut, crlf: bool) -> String {
+    let text = doc.to_string();
+    if crlf {
+        text.replace('\n', "\r\n")
+    } else {
+        text
     }
 }
 
@@ -287,16 +309,27 @@ fn games_after_emulators(doc: &mut DocumentMut) -> Option<(Option<isize>, String
     if let Some(first) = first {
         let prefix = first.decor().prefix().and_then(|p| p.as_str());
         let prefix = prefix.unwrap_or_default().to_owned();
-        let (header, own) = match prefix.rfind("\n\n") {
-            Some(i) => prefix.split_at(i + 2),
-            None => ("", prefix.as_str()),
-        };
+        let (header, own) = prefix.split_at(after_last_blank_line(&prefix).unwrap_or(0));
         above = (first.position(), header.to_owned());
         first.decor_mut().set_prefix(format!("\n{own}"));
     }
     doc.insert(EMULATORS, Item::ArrayOfTables(ArrayOfTables::new()));
     doc.as_table_mut().insert_formatted(&key, games);
     Some(above)
+}
+
+/// The byte offset just past the last blank line in `text`, which may end
+/// in `\n` or `\r\n` (toml_edit keeps CRLF in comment decor, and a file can
+/// mix the two).
+fn after_last_blank_line(text: &str) -> Option<usize> {
+    let b = text.as_bytes();
+    (1..b.len()).rev().find_map(|i| {
+        if b[i] != b'\n' {
+            return None;
+        }
+        let start = if b[i - 1] == b'\r' { i - 1 } else { i };
+        (start > 0 && b[start - 1] == b'\n').then_some(i + 1)
+    })
 }
 
 /// The `[[name]]` entry with this id, appended if there is none.
@@ -812,6 +845,107 @@ args = [
         assert_eq!((cfg.emulators.len(), cfg.games.len()), (2, 2));
     }
 
+    fn crlf(text: &str) -> String {
+        text.replace('\n', "\r\n")
+    }
+
+    /// No `\n` without a `\r` before it.
+    fn all_crlf(text: &str) -> bool {
+        text.match_indices('\n')
+            .all(|(i, _)| text[..i].ends_with('\r'))
+    }
+
+    #[test]
+    fn crlf_files_keep_their_line_endings() {
+        for lf in [COMMENTED, EMULATED] {
+            let text = crlf(lf);
+            let mut doc = ConfigDocument::parse(&text).unwrap();
+            assert_eq!(doc.to_string(), text);
+            // No-op saves leave the file alone.
+            let cfg = doc.config().clone();
+            for game in &cfg.games {
+                doc.upsert_game(game).unwrap();
+            }
+            for emulator in &cfg.emulators {
+                doc.upsert_emulator(emulator).unwrap();
+            }
+            assert_eq!(doc.to_string(), text);
+        }
+
+        // Real edits match the LF result, with CRLF line endings.
+        let edit = |doc: &mut ConfigDocument| {
+            let mut hl2 = doc.config().games[0].clone();
+            hl2.plan = LaunchPlan::Steam { appid: 380 };
+            doc.upsert_game(&hl2).unwrap();
+            doc.set_uid(&slug("my-game"), Some(&[1, 2, 3, 4])).unwrap();
+            doc.upsert_game(&emulator_game("smo", "eden", r"D:\smo.nsp"))
+                .unwrap();
+            doc.remove_game(&slug("hl2")).unwrap();
+        };
+        let mut lf = ConfigDocument::parse(COMMENTED).unwrap();
+        lf.upsert_emulator(&emulator("eden", &["{rom}"])).unwrap();
+        edit(&mut lf);
+        let mut doc = ConfigDocument::parse(&crlf(COMMENTED)).unwrap();
+        doc.upsert_emulator(&emulator("eden", &["{rom}"])).unwrap();
+        edit(&mut doc);
+        let text = doc.to_string();
+        assert_eq!(text, crlf(&lf.to_string()));
+        assert!(all_crlf(&text), "{text:?}");
+        assert_eq!(&Config::parse(&text).unwrap(), doc.config());
+    }
+
+    #[test]
+    fn a_new_emulators_section_goes_above_the_games_in_crlf_files() {
+        let want = crlf(
+            r#"# My library
+# (hand-written)
+
+[[emulators]]
+id = "eden"
+name = "EDEN"
+exe = 'C:\Emulators\eden.exe'
+args = ["{rom}"]
+
+# Steam
+[[games]]
+id = "hl2"   # short id
+name = "Half-Life 2"
+steam_appid = 220 # the appid
+
+# Non-Steam
+[[games]]
+id = "my-game"
+name = "My Game"
+exe = 'C:\Games\MyGame\game.exe'
+args = ["--fullscreen"]
+"#,
+        );
+        // Also a file whose blank line mixes `\r\n` and `\n`.
+        let mixed = crlf(COMMENTED).replacen("\r\n\r\n", "\r\n\n", 1);
+        for text in [crlf(COMMENTED), mixed] {
+            let mut doc = ConfigDocument::parse(&text).unwrap();
+            doc.upsert_emulator(&emulator("eden", &["{rom}"])).unwrap();
+            assert_eq!(doc.to_string(), want);
+            assert_eq!(&Config::parse(&want).unwrap(), doc.config());
+        }
+    }
+
+    #[test]
+    fn blank_lines_are_found_with_either_line_ending() {
+        for (text, want) in [
+            ("# a\n\n# b\n", Some(5)),
+            ("# a\r\n\r\n# b\r\n", Some(7)),
+            ("# a\r\n\n# b\r\n", Some(6)),
+            ("# a\n\r\n# b\n", Some(6)),
+            ("\n\n# a\n", Some(2)),
+            ("# a\r\n# b\r\n", None),
+            ("\r\n", None),
+            ("", None),
+        ] {
+            assert_eq!(after_last_blank_line(text), want, "{text:?}");
+        }
+    }
+
     #[test]
     fn removing_an_emulator_in_use_names_its_games() {
         let mut doc = ConfigDocument::parse(EMULATED).unwrap();
@@ -899,6 +1033,14 @@ args = [
             std::fs::read_to_string(dir.join("config.toml.bak")).unwrap(),
             "# old\n"
         );
+
+        // CRLF files stay CRLF through export and import.
+        let doc = ConfigDocument::parse(&crlf(COMMENTED)).unwrap();
+        doc.export(&export).unwrap();
+        let text = std::fs::read_to_string(&export).unwrap();
+        assert!(all_crlf(&text), "{text:?}");
+        ConfigDocument::import(&export, &config).unwrap();
+        assert_eq!(std::fs::read_to_string(&config).unwrap(), crlf(COMMENTED));
     }
 
     #[test]
