@@ -10,6 +10,7 @@ use mini_launcher_core::config::format_uid;
 use mini_launcher_core::config::location::ConfigLocation;
 use mini_launcher_core::launch::LaunchPlan;
 use mini_launcher_core::payload::Slug;
+use mini_launcher_core::session::SessionClient;
 
 use crate::library::{Field, Form, Library};
 use crate::theme::{self, BIG, BLUE, FACE, INK, PAPER, ROW, SHADE, SIGNAL, TEXT, U};
@@ -22,6 +23,9 @@ pub trait Host: Send + Sync {
     fn reader(&self) -> ReaderStatus;
     /// The window saved `config.toml`: load the new library now.
     fn saved(&self);
+    /// Borrows the reader from the run loop (launches stop until the
+    /// session is dropped); `None` if this host has no reader.
+    fn tag_session(&self) -> Option<SessionClient>;
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

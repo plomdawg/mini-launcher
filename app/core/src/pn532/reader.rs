@@ -17,9 +17,10 @@
 use std::time::Duration;
 
 use super::driver::{Pn532, Pn532Error, Target, Transport};
+use super::write::{write_payload, WriteError, WriteOutcome};
 use crate::ndef::{self, NdefError, NdefRecord};
 use crate::payload::Payload;
-use crate::reader::{Reader, Reading, Uid};
+use crate::reader::{Reader, Reading, TagWriter, Uid};
 
 /// First NTAG213 user page.
 pub const FIRST_USER_PAGE: u8 = 4;
@@ -190,6 +191,22 @@ impl<T: Transport> Reader for Pn532Hsu<T> {
         self.dev
             .rf_field(true)
             .or_else(|e| transient(e, "RF field on"))
+    }
+}
+
+impl<T: Transport> TagWriter for Pn532Hsu<T> {
+    /// Lists the tag again, checks it is `uid`, then writes and verifies it
+    /// (see [`write_payload`]) and releases it.
+    fn write_tag(&mut self, uid: Uid, payload: &Payload) -> Result<WriteOutcome, WriteError> {
+        let target = self.detect().map_err(WriteError::Transport)?;
+        let Some(target) = target.filter(|t| Uid::new(&t.uid).ok() == Some(uid)) else {
+            return Err(WriteError::TagRemoved);
+        };
+        let result = write_payload(self.driver(), &target, payload);
+        // Best effort: the outcome is already known; a dead port shows up on
+        // the next poll.
+        let _ = self.release();
+        result
     }
 }
 

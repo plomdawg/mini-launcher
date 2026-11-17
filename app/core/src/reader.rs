@@ -9,6 +9,7 @@ use std::io::{BufRead, Read};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 
 use crate::payload::Payload;
+use crate::pn532::write::{WriteError, WriteOutcome};
 
 /// A tag UID: 4, 7 or 10 bytes (single, double, triple size). NTAG213 is 7.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -120,6 +121,15 @@ pub trait Reader {
     fn is_closed(&self) -> bool {
         false
     }
+}
+
+/// A reader that can also write a payload to the tag on it (see
+/// [`crate::session`]).
+pub trait TagWriter {
+    /// Writes `payload` to the tag `uid`, which must be on the reader now,
+    /// and verifies it. Never locks the tag. Another tag in its place is
+    /// [`WriteError::TagRemoved`].
+    fn write_tag(&mut self, uid: Uid, payload: &Payload) -> Result<WriteOutcome, WriteError>;
 }
 
 /// A command for the [`Simulated`] reader.
@@ -276,6 +286,22 @@ impl Reader for Simulated {
     }
 }
 
+/// Writes replace the simulated tag's payload (no memory limits).
+impl TagWriter for Simulated {
+    fn write_tag(&mut self, uid: Uid, payload: &Payload) -> Result<WriteOutcome, WriteError> {
+        let mem = crate::ndef::encode_payload(payload).ok_or(WriteError::Unusable)?;
+        match &mut self.current {
+            Some((on, p)) if *on == uid => *p = payload.clone(),
+            _ => return Err(WriteError::TagRemoved),
+        }
+        let pages = mem.len().div_ceil(4) as u8;
+        Ok(WriteOutcome {
+            first_page: 4,
+            last_page: 3 + pages,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -407,5 +433,28 @@ mod tests {
         // A leading Ok(None) only shows up if a poll beat the thread.
         let seen: Vec<_> = seen.into_iter().skip_while(|r| r == &Ok(None)).collect();
         assert_eq!(seen, want);
+    }
+
+    #[test]
+    fn simulated_writes_replace_the_payload_of_the_tag_on_it() {
+        let (tx, rx) = mpsc::sync_channel(4);
+        let mut sim = Simulated::from_channel(rx);
+        let a = uid("04a1b2c3");
+        assert!(matches!(
+            sim.write_tag(a, &Payload::Steam(440)),
+            Err(WriteError::TagRemoved)
+        ));
+        tx.send("insert 04a1b2c3".into()).unwrap();
+        sim.poll().unwrap();
+        assert!(matches!(
+            sim.write_tag(a, &Payload::Unusable),
+            Err(WriteError::Unusable)
+        ));
+        sim.write_tag(a, &Payload::Steam(440)).unwrap();
+        assert_eq!(sim.poll(), Ok(Some((a, Payload::Steam(440)))));
+        assert!(matches!(
+            sim.write_tag(uid("04d4e5f6"), &Payload::Steam(1)),
+            Err(WriteError::TagRemoved)
+        ));
     }
 }

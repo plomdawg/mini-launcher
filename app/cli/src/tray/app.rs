@@ -16,6 +16,7 @@ use mini_launcher_core::config::location::{ConfigLocation, POINTER_FILE};
 use mini_launcher_core::config::{self, Config};
 use mini_launcher_core::reconnect::{Backoff, ReaderState, Reconnector, SystemClock};
 use mini_launcher_core::runner::{self, Notice, Runner};
+use mini_launcher_core::session::{self, SessionClient, SessionServer, Sessions};
 use mini_launcher_core::{instance, logs};
 use mini_launcher_ui::settings::{Host, ReaderStatus};
 use mini_launcher_ui::window::{Event as WindowEvent, SettingsWindow};
@@ -89,13 +90,19 @@ fn run(log_dir: Option<PathBuf>) -> Result<()> {
     // Set when "Open config" finds the folder gone: the worker checks again.
     let recheck = Arc::new(AtomicBool::new(false));
     let (tx, rx) = mpsc::channel();
-    let host = Arc::new(TrayHost::default());
+    // The settings window's wizard borrows the reader through these.
+    let (sessions, server) = session::channel();
+    let host = Arc::new(TrayHost {
+        state: Mutex::default(),
+        reload: AtomicBool::new(false),
+        sessions,
+    });
     let worker = thread::Builder::new()
         .name("run-loop".into())
         .spawn({
             let (stop, paused, recheck) = (stop.clone(), paused.clone(), recheck.clone());
             let host = host.clone();
-            move || work(&stop, &paused, &recheck, &host.reload, &tx)
+            move || work(&stop, &paused, &recheck, &host.reload, server, &tx)
         })
         .context("cannot start the run loop")?;
 
@@ -285,12 +292,13 @@ fn run(log_dir: Option<PathBuf>) -> Result<()> {
 }
 
 /// What the settings window reads from the tray, and its way back.
-#[derive(Default)]
 struct TrayHost {
     /// The config location in use, and the reader cell.
     state: Mutex<(Option<ConfigLocation>, ReaderStatus)>,
     /// Set when the window saved; the worker reloads the library.
     reload: AtomicBool,
+    /// Tag sessions with the worker, which owns the reader.
+    sessions: Sessions,
 }
 
 impl Host for TrayHost {
@@ -305,6 +313,10 @@ impl Host for TrayHost {
     fn saved(&self) {
         self.reload.store(true, Ordering::Relaxed);
     }
+
+    fn tag_session(&self) -> Option<SessionClient> {
+        Some(self.sessions.open())
+    }
 }
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -318,6 +330,7 @@ fn work(
     paused: &AtomicBool,
     recheck: &AtomicBool,
     reload: &AtomicBool,
+    mut sessions: SessionServer,
     tx: &mpsc::Sender<Update>,
 ) {
     let mut runner = Runner::new(Config::default(), false);
@@ -333,10 +346,10 @@ fn work(
     let mut last_state = None;
     let mut polls = 0u32;
     let next = |runner: &mut Runner, now| {
-        // Paused: the reader idles with its RF field off (no polling).
+        // Paused: the reader idles with its RF field off (no polling),
+        // unless the settings window's wizard has a tag session (then it
+        // polls and nothing launches until the session ends).
         let is_paused = paused.load(Ordering::Relaxed);
-        runner.set_paused(is_paused);
-        reader.set_paused(is_paused);
         polls = polls.wrapping_add(1);
         // A save from the settings window is loaded at once (`force` makes
         // the check reread the file even if its mtime looks the same).
@@ -347,7 +360,7 @@ fn work(
         if saved || polls.is_multiple_of(CONFIG_CHECK_POLLS) {
             watch.check(runner, recheck.swap(false, Ordering::Relaxed), tx)?;
         }
-        let tick = reader.tick(now);
+        let tick = sessions.tick(&mut reader, runner, is_paused, now);
         if last_state.as_ref() != Some(reader.state()) {
             last_state = Some(reader.state().clone());
             tx.send(Update::Reader(reader.state().clone())).ok()?;
