@@ -1,0 +1,14 @@
+[package]
+name = "nfc-launcher-cli"
+description = "Command-line front end for the NFC game launcher"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "nfc-launcher"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+nfc-launcher-core = { path = "../core" }
