@@ -4,6 +4,7 @@ description = "Command-line front end for the NFC game launcher"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
+license.workspace = true
 
 [[bin]]
 name = "nfc-launcher"
