@@ -148,7 +148,10 @@ jobs:
                   $p.Refresh()
               }
               Write-Host "after both closed:      $(Mem $p)"
-              if ($p.MainWindowHandle -ne 0) { throw 'a settings window is still open' }
+              # MainWindowHandle can still name a hidden or dying window here, so
+              # count the tray's own "settings window closed" log lines instead.
+              $closed = @(Get-ChildItem $env:MINI_LAUNCHER_LOG_DIR -File | Select-String 'settings window closed').Count
+              if ($closed -ne 2) { throw "expected 2 'settings window closed' log lines, found $closed" }
               Stop-Process $p
           } finally {
               Get-ChildItem $env:MINI_LAUNCHER_LOG_DIR -File -ErrorAction SilentlyContinue | Get-Content
