@@ -71,6 +71,9 @@ pub fn install(ctx: &Context) {
         s.window_margin = Margin::same(3 * U as i8);
         s.scroll = egui::style::ScrollStyle::solid();
         s.scroll.bar_width = 4.0 * U;
+        // A solid ink handle on a paper track (the face-coloured default
+        // handle disappears into the window).
+        s.scroll.foreground_color = true;
         style.visuals = visuals();
     });
 }
@@ -355,4 +358,97 @@ pub fn group<R>(ui: &mut Ui, title: &str, add: impl FnOnce(&mut Ui) -> R) -> R {
     );
     text(p, at + vec2(U, 0.0), g);
     out.inner
+}
+
+/// A sunken list with raised column headers and scrolling rows. Columns
+/// start at the fractions `cols` of the list's width. `row` paints row `i`
+/// into its rect (see [`list_row`]). Returns the rows' area.
+pub fn list(
+    ui: &mut Ui,
+    cols: &[f32],
+    headers: &[&str],
+    rows: usize,
+    mut row: impl FnMut(&mut Ui, usize, Rect, &[f32]),
+) -> Rect {
+    let rect = snap(ui.available_rect_before_wrap());
+    ui.allocate_rect(rect, Sense::hover());
+    sunken(ui.painter(), rect, PAPER);
+    let inner = rect.shrink(2.0);
+    let header = Rect::from_min_size(inner.min, vec2(inner.width(), ROW));
+    let body = Rect::from_min_max(pos2(inner.min.x, header.max.y), inner.max);
+    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(body));
+    child.set_clip_rect(body);
+    // Rows touch; show_rows sizes the content with this spacing.
+    child.spacing_mut().item_spacing.y = 0.0;
+    // Column positions follow the whole list, so they don't move when a
+    // scroll bar appears.
+    let x: Vec<f32> = cols.iter().map(|f| body.min.x + body.width() * f).collect();
+    egui::ScrollArea::vertical().auto_shrink(false).show_rows(
+        &mut child,
+        ROW,
+        rows,
+        |ui, range| {
+            let width = ui.available_width();
+            for i in range {
+                let (r, _) = ui.allocate_exact_size(vec2(width, ROW), Sense::hover());
+                row(ui, i, r, &x);
+            }
+        },
+    );
+    column_headers(ui, header, &x, headers);
+    body
+}
+
+/// A warning line: a small yellow "!" box, then `text`, `indent` points in.
+pub fn warning(ui: &mut Ui, indent: f32, text: &str) {
+    ui.horizontal(|ui| {
+        ui.add_space(indent);
+        let (r, _) = ui.allocate_exact_size(vec2(12.0, ROW), Sense::hover());
+        let b = snap(Rect::from_center_size(r.center(), Vec2::splat(12.0)));
+        ui.painter().rect_filled(b, 0.0, SIGNAL);
+        outline(ui.painter(), b, INK);
+        let g = galley(ui, "!", TEXT, INK);
+        text_at_center(ui.painter(), b, g);
+        ui.add(egui::Label::new(text).wrap());
+    });
+}
+
+fn text_at_center(p: &Painter, r: Rect, g: Arc<Galley>) {
+    text(p, r.center() - g.size() / 2.0, g);
+}
+
+/// A modal question with two buttons; `Some(true)` when `yes` is clicked,
+/// `Some(false)` on the other button or Escape, `None` while open.
+pub fn confirm(ctx: &Context, title: &str, body: &str, yes: &str, no: &str) -> Option<bool> {
+    let frame = egui::Frame::NONE
+        .fill(FACE)
+        .stroke(Stroke::new(1.0, INK))
+        .inner_margin(Margin::same((3.0 * U) as i8));
+    let modal = egui::Modal::new(Id::NULL.with(("confirm", title)))
+        .frame(frame)
+        .backdrop_color(Color32::from_black_alpha(64))
+        .show(ctx, |ui| {
+            ui.set_width(100.0 * U);
+            let r = ui.max_rect().expand(3.0 * U);
+            bevel(ui.painter(), r.shrink(1.0), PAPER, SHADE);
+            ui.label(egui::RichText::new(title).color(INK));
+            ui.add_space(U);
+            ui.add(egui::Label::new(body).wrap());
+            ui.add_space(2.0 * U);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if button(ui, no, true, false).clicked() {
+                    Some(false)
+                } else if button(ui, yes, true, true).clicked() {
+                    Some(true)
+                } else {
+                    None
+                }
+            })
+            .inner
+        });
+    if modal.should_close() {
+        Some(false)
+    } else {
+        modal.inner
+    }
 }

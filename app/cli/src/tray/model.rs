@@ -305,6 +305,17 @@ impl From<Result<Option<ConfigLocation>, std::sync::mpsc::TryRecvError>> for Ret
     }
 }
 
+/// The settings window's status-bar reader cell: its text, and whether
+/// the reader is ready (lights the mark).
+pub fn reader_cell(reader: Option<&ReaderState>, paused: bool) -> (String, bool) {
+    match (reader, paused) {
+        (_, true) => ("Reader: paused".to_owned(), false),
+        (None, _) => ("Reader: starting".to_owned(), false),
+        (Some(ReaderState::Connected { port }), _) => (format!("Reader {port}: ready"), true),
+        (Some(ReaderState::Reconnecting { .. }), _) => ("Reader: not found".to_owned(), false),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -612,5 +623,21 @@ mod tests {
              `tray_icon_app`, icon uID 1 with `TrayIcon::with_id`, no GUID), then \
              update this test"
         );
+    }
+
+    #[test]
+    fn reader_cell_for_the_settings_window() {
+        let connected = ReaderState::Connected {
+            port: "COM3".into(),
+        };
+        assert_eq!(
+            reader_cell(Some(&connected), false),
+            ("Reader COM3: ready".into(), true)
+        );
+        assert_eq!(
+            reader_cell(Some(&connected), true),
+            ("Reader: paused".into(), false)
+        );
+        assert_eq!(reader_cell(None, false), ("Reader: starting".into(), false));
     }
 }

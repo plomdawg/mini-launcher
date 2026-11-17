@@ -4,7 +4,7 @@
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{mpsc, Arc};
+use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
@@ -17,6 +17,7 @@ use mini_launcher_core::config::{self, Config};
 use mini_launcher_core::reconnect::{Backoff, ReaderState, Reconnector, SystemClock};
 use mini_launcher_core::runner::{self, Notice, Runner};
 use mini_launcher_core::{instance, logs};
+use mini_launcher_ui::settings::{Host, ReaderStatus};
 use mini_launcher_ui::window::{Event as WindowEvent, SettingsWindow};
 use muda::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem};
 use tray_icon::{Icon, TrayIcon, TrayIconAttributes};
@@ -88,11 +89,13 @@ fn run(log_dir: Option<PathBuf>) -> Result<()> {
     // Set when "Open config" finds the folder gone: the worker checks again.
     let recheck = Arc::new(AtomicBool::new(false));
     let (tx, rx) = mpsc::channel();
+    let host = Arc::new(TrayHost::default());
     let worker = thread::Builder::new()
         .name("run-loop".into())
         .spawn({
             let (stop, paused, recheck) = (stop.clone(), paused.clone(), recheck.clone());
-            move || work(&stop, &paused, &recheck, &tx)
+            let host = host.clone();
+            move || work(&stop, &paused, &recheck, &host.reload, &tx)
         })
         .context("cannot start the run loop")?;
 
@@ -133,22 +136,27 @@ fn run(log_dir: Option<PathBuf>) -> Result<()> {
         );
     }
 
+    // The settings window runs on its own thread, so this loop keeps
+    // handling the menu and the worker while it is open.
+    let (window_tx, window_rx) = mpsc::channel();
+    let window = SettingsWindow::spawn(host.clone(), window_tx)
+        .context("cannot start the settings window")?;
     let mut reader: Option<ReaderState> = None;
     let mut limiter = RateLimiter::new(NOTIFY_GAP);
     let refresh = |reader: Option<&ReaderState>, config_problem: Option<&str>| {
-        let view = model::view(reader, paused.load(Ordering::Relaxed), config_problem);
+        let is_paused = paused.load(Ordering::Relaxed);
+        let (text, ready) = model::reader_cell(reader, is_paused);
+        lock(&host.state).1 = ReaderStatus { text, ready };
+        let view = model::view(reader, is_paused, config_problem);
         if let Err(e) = tray.set_tooltip(Some(&view.tooltip)) {
             tracing::warn!("cannot set the tray tooltip: {e}");
         }
         status.set_text(&view.status);
         pause.set_text(view.pause_label);
+        window.repaint();
     };
     refresh(None, None);
 
-    // The settings window runs on its own thread, so this loop keeps
-    // handling the menu and the worker while it is open.
-    let (window_tx, window_rx) = mpsc::channel();
-    let window = SettingsWindow::spawn(window_tx).context("cannot start the settings window")?;
     // Each `--settings` opens the window once more after the previous one
     // closes (CI repeats it to check re-opening on the kept event loop).
     let mut reopen = std::env::args_os()
@@ -247,6 +255,7 @@ fn run(log_dir: Option<PathBuf>) -> Result<()> {
                 }
                 Ok(Update::ConfigError(e)) => balloon(Level::Warning, "Config not loaded", &e),
                 Ok(Update::Location(location)) => {
+                    lock(&host.state).0 = Some(location.clone());
                     if let Some((level, title, text)) = config.set_location(location) {
                         balloon(level, title, &text);
                     }
@@ -275,9 +284,42 @@ fn run(log_dir: Option<PathBuf>) -> Result<()> {
     Ok(())
 }
 
+/// What the settings window reads from the tray, and its way back.
+#[derive(Default)]
+struct TrayHost {
+    /// The config location in use, and the reader cell.
+    state: Mutex<(Option<ConfigLocation>, ReaderStatus)>,
+    /// Set when the window saved; the worker reloads the library.
+    reload: AtomicBool,
+}
+
+impl Host for TrayHost {
+    fn location(&self) -> Option<ConfigLocation> {
+        lock(&self.state).0.clone()
+    }
+
+    fn reader(&self) -> ReaderStatus {
+        lock(&self.state).1.clone()
+    }
+
+    fn saved(&self) {
+        self.reload.store(true, Ordering::Relaxed);
+    }
+}
+
+fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 /// The worker: the shared run loop, with the reader opened (and reopened)
 /// in the background so a missing reader never stops the app.
-fn work(stop: &AtomicBool, paused: &AtomicBool, recheck: &AtomicBool, tx: &mpsc::Sender<Update>) {
+fn work(
+    stop: &AtomicBool,
+    paused: &AtomicBool,
+    recheck: &AtomicBool,
+    reload: &AtomicBool,
+    tx: &mpsc::Sender<Update>,
+) {
     let mut runner = Runner::new(Config::default(), false);
     let mut watch = ConfigWatch::default();
     if watch.switch(Config::location(), &mut runner, tx).is_none() {
@@ -296,7 +338,13 @@ fn work(stop: &AtomicBool, paused: &AtomicBool, recheck: &AtomicBool, tx: &mpsc:
         runner.set_paused(is_paused);
         reader.set_paused(is_paused);
         polls = polls.wrapping_add(1);
-        if polls.is_multiple_of(CONFIG_CHECK_POLLS) {
+        // A save from the settings window is loaded at once (`stamp = None`
+        // makes the check reread the file even if its mtime looks the same).
+        let saved = reload.swap(false, Ordering::Relaxed);
+        if saved {
+            watch.stamp = None;
+        }
+        if saved || polls.is_multiple_of(CONFIG_CHECK_POLLS) {
             watch.check(runner, recheck.swap(false, Ordering::Relaxed), tx)?;
         }
         let tick = reader.tick(now);

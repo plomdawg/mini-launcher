@@ -10,9 +10,10 @@ rust-version.workspace = true
 [features]
 # The native window (eframe + wgpu). Off by default so the theme and screens
 # build and test anywhere without a windowing stack.
-window = ["dep:eframe", "dep:winit"]
+window = ["dep:eframe", "dep:winit", "dep:rfd"]
 
 [dependencies]
+mini-launcher-core = { path = "../core" }
 egui = { version = "=0.37.0", default-features = false }
 eframe = { version = "=0.37.0", optional = true, default-features = false, features = ["accesskit", "wgpu"] }
 
@@ -20,6 +21,8 @@ eframe = { version = "=0.37.0", optional = true, default-features = false, featu
 # needs winit's Windows extension; same version as eframe's.
 [target.'cfg(windows)'.dependencies]
 winit = { version = "=0.30.13", optional = true, default-features = false }
+# Native file dialogs for the edit form's Browse buttons.
+rfd = { version = "=0.18.0", optional = true, default-features = false }
 
 [dev-dependencies]
 egui_kittest = { version = "=0.37.0", features = ["wgpu", "snapshot"] }

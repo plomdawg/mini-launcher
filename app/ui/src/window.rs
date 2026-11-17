@@ -14,7 +14,7 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use crate::mock::{self, Screen, Settings};
+use crate::settings::{self, Host, Settings};
 use crate::theme;
 
 const ICON: &[u8] = include_bytes!("../../assets/icon/mini-launcher.png");
@@ -40,7 +40,7 @@ pub struct SettingsWindow {
 
 impl SettingsWindow {
     /// Starts the (idle) window thread; `events` receives its [`Event`]s.
-    pub fn spawn(events: mpsc::Sender<Event>) -> std::io::Result<Self> {
+    pub fn spawn(host: Arc<dyn Host>, events: mpsc::Sender<Event>) -> std::io::Result<Self> {
         let (requests, rx) = mpsc::channel::<()>();
         let open = Arc::new(AtomicBool::new(false));
         let ctx = Arc::new(Mutex::new(None));
@@ -51,7 +51,7 @@ impl SettingsWindow {
                 move || {
                     while rx.recv().is_ok() {
                         let _ = events.send(Event::Opened);
-                        let result = run(&ctx).map_err(|e| e.to_string());
+                        let result = run(&ctx, &host).map_err(|e| e.to_string());
                         *lock(&ctx) = None;
                         open.store(false, Ordering::SeqCst);
                         let _ = events.send(Event::Closed(result));
@@ -80,6 +80,13 @@ impl SettingsWindow {
 
     pub fn is_open(&self) -> bool {
         self.open.load(Ordering::SeqCst)
+    }
+
+    /// Redraws the open window (e.g. after the reader state changed).
+    pub fn repaint(&self) {
+        if let Some(ctx) = lock(&self.ctx).as_ref() {
+            ctx.request_repaint();
+        }
     }
 
     /// Asks the open window (if any) to close; returns at once.
@@ -125,7 +132,10 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 }
 
 /// Runs one opening of the window on this thread until it is closed.
-fn run(ctx_slot: &Arc<Mutex<Option<egui::Context>>>) -> Result<(), eframe::Error> {
+fn run(
+    ctx_slot: &Arc<Mutex<Option<egui::Context>>>,
+    host: &Arc<dyn Host>,
+) -> Result<(), eframe::Error> {
     let mut viewport = egui::ViewportBuilder::default()
         .with_title("Mini Launcher")
         .with_inner_size([640.0, 440.0])
@@ -149,14 +159,14 @@ fn run(ctx_slot: &Arc<Mutex<Option<egui::Context>>>) -> Result<(), eframe::Error
         })),
         ..Default::default()
     };
-    let ctx_slot = ctx_slot.clone();
+    let (ctx_slot, host) = (ctx_slot.clone(), host.clone());
     eframe::run_native(
         "mini-launcher-settings",
         options,
         Box::new(move |cc| {
             theme::install(&cc.egui_ctx);
             *lock(&ctx_slot) = Some(cc.egui_ctx.clone());
-            Ok(Box::new(App(Settings::new(Screen::Library))))
+            Ok(Box::new(App(Settings::new(host))))
         }),
     )
 }
@@ -164,7 +174,42 @@ fn run(ctx_slot: &Arc<Mutex<Option<egui::Context>>>) -> Result<(), eframe::Error
 struct App(Settings);
 
 impl eframe::App for App {
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        mock::show(ui, &mut self.0);
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
+        settings::show(ui, &mut self.0);
+        if let Some((pick, start)) = self.0.take_browse() {
+            if let Some(path) = browse(frame, pick, start) {
+                self.0.picked(pick, path);
+            }
+        }
     }
+}
+
+/// The native file dialog, modal to the settings window.
+#[cfg(windows)]
+fn browse(
+    frame: &eframe::Frame,
+    pick: settings::Pick,
+    start: Option<std::path::PathBuf>,
+) -> Option<std::path::PathBuf> {
+    let mut dialog = rfd::FileDialog::new().set_parent(frame);
+    if let Some(dir) = start {
+        dialog = dialog.set_directory(dir);
+    }
+    match pick {
+        settings::Pick::Exe => dialog
+            .set_title("Choose the program")
+            .add_filter("Programs", &["exe", "bat", "cmd"])
+            .add_filter("All files", &["*"])
+            .pick_file(),
+        settings::Pick::Cwd => dialog.set_title("Choose the working folder").pick_folder(),
+    }
+}
+
+#[cfg(not(windows))]
+fn browse(
+    _: &eframe::Frame,
+    _: settings::Pick,
+    _: Option<std::path::PathBuf>,
+) -> Option<std::path::PathBuf> {
+    None
 }
