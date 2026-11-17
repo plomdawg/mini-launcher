@@ -215,6 +215,8 @@ impl Form {
                     .map(|c| c.display().to_string())
                     .unwrap_or_default();
             }
+            // Not editable in the form yet (Settings::edit refuses them).
+            LaunchPlan::Emulator { .. } => {}
         }
         form
     }

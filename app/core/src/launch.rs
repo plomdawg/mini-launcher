@@ -6,7 +6,7 @@
 //! [`steam_launch_uri`], and executables/args come only from the local config.
 
 use std::fmt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use crate::config::Config;
@@ -23,20 +23,48 @@ pub enum LaunchPlan {
         args: Vec<String>,
         cwd: Option<PathBuf>,
     },
+    /// Start a configured emulator on a ROM, resolved when the config is
+    /// loaded: `args` is the emulator's argv with `{rom}` already replaced by
+    /// `rom` as one argument. Spawned like [`LaunchPlan::Exe`] (no shell).
+    Emulator {
+        /// The `[[emulators]]` entry this came from.
+        emulator: Slug,
+        rom: PathBuf,
+        path: PathBuf,
+        args: Vec<String>,
+        cwd: Option<PathBuf>,
+    },
 }
 
 impl fmt::Display for LaunchPlan {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             LaunchPlan::Steam { appid } => write!(f, "open {}", steam_launch_uri(*appid)),
-            LaunchPlan::Exe { path, args, cwd } => {
-                write!(f, "run {:?} with args {args:?}", path.display().to_string())?;
-                match cwd {
-                    Some(cwd) => write!(f, " in {:?}", cwd.display().to_string()),
-                    None => Ok(()),
-                }
+            LaunchPlan::Exe { path, args, cwd } => write_run(f, path, args, cwd),
+            LaunchPlan::Emulator {
+                emulator,
+                path,
+                args,
+                cwd,
+                ..
+            } => {
+                write!(f, "emulator {emulator}: ")?;
+                write_run(f, path, args, cwd)
             }
         }
+    }
+}
+
+fn write_run(
+    f: &mut fmt::Formatter<'_>,
+    path: &Path,
+    args: &[String],
+    cwd: &Option<PathBuf>,
+) -> fmt::Result {
+    write!(f, "run {:?} with args {args:?}", path.display().to_string())?;
+    match cwd {
+        Some(cwd) => write!(f, " in {:?}", cwd.display().to_string()),
+        None => Ok(()),
     }
 }
 
@@ -107,19 +135,26 @@ pub fn execute(plan: &LaunchPlan, dry_run: bool) -> std::io::Result<Outcome> {
         // opener) on Linux — never the `steam` binary, which Flatpak Steam
         // lacks. The URI is rebuilt from the number, never taken from the tag.
         LaunchPlan::Steam { appid } => open::that_detached(steam_launch_uri(*appid))?,
-        LaunchPlan::Exe { path, args, cwd } => {
-            let mut cmd = Command::new(path);
-            cmd.args(args).stdin(Stdio::null());
-            if let Some(cwd) = cwd {
-                cmd.current_dir(cwd);
-            }
-            detach(&mut cmd);
-            let mut child = cmd.spawn()?;
-            // Reap the child when it exits so it doesn't linger as a zombie.
-            std::thread::spawn(move || child.wait());
-        }
+        LaunchPlan::Exe { path, args, cwd }
+        | LaunchPlan::Emulator {
+            path, args, cwd, ..
+        } => spawn(path, args, cwd.as_deref())?,
     }
     Ok(Outcome::Started)
+}
+
+/// Starts `path` directly (no shell), each of `args` as one argument.
+fn spawn(path: &Path, args: &[String], cwd: Option<&Path>) -> std::io::Result<()> {
+    let mut cmd = Command::new(path);
+    cmd.args(args).stdin(Stdio::null());
+    if let Some(cwd) = cwd {
+        cmd.current_dir(cwd);
+    }
+    detach(&mut cmd);
+    let mut child = cmd.spawn()?;
+    // Reap the child when it exits so it doesn't linger as a zombie.
+    std::thread::spawn(move || child.wait());
+    Ok(())
 }
 
 /// Keeps the launcher's Ctrl-C away from the game (killing games loses
@@ -242,5 +277,33 @@ mod tests {
         // Dry run never touches the system, even for a path that doesn't exist.
         assert_eq!(execute(&steam, true).unwrap(), Outcome::DryRun);
         assert_eq!(execute(&exe, true).unwrap(), Outcome::DryRun);
+    }
+
+    #[test]
+    fn emulator_entry_resolves_by_tag_id() {
+        let cfg = Config::parse(
+            r#"
+            [[emulators]]
+            id = "eden"
+            name = "Eden"
+            exe = "/emu/eden"
+            args = ["-g", "{rom}"]
+            [[games]]
+            id = "mk8"
+            name = "MK8"
+            emulator = "eden"
+            rom = "/roms/mario kart.nsp"
+            "#,
+        )
+        .unwrap();
+        let Resolution::Launch { plan, via } = resolve(&cfg, OTHER, &Id(s("mk8"))) else {
+            panic!("not launched");
+        };
+        assert_eq!(via, Via::TagId(s("mk8")));
+        assert_eq!(
+            plan.to_string(),
+            r#"emulator eden: run "/emu/eden" with args ["-g", "/roms/mario kart.nsp"]"#
+        );
+        assert_eq!(execute(&plan, true).unwrap(), Outcome::DryRun);
     }
 }
