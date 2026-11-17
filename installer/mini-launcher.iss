@@ -45,7 +45,31 @@ OutputBaseFilename=mini-launcher-{#AppVersion}-windows-x86_64-setup
 Compression=lzma2/max
 SolidCompression=yes
 WizardStyle=modern
-; Don't restore the task choice from the last install: on an upgrade the [Code]
+; Don't restore the task choice from the last install: on an upgrade the code below
+; ticks "autostart" only if start at login is currently on (the tray toggle wins).
+UsePreviousTasks=no
+
+[Tasks]
+Name: "autostart"; Description: "Start {#AppName} when I sign in"
+
+[Files]
+Source: "{#PayloadDir}\{#TrayExe}"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#PayloadDir}\mini-launcher.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\LICENSE-MIT"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\LICENSE-APACHE"; DestDir: "{app}"; Flags: ignoreversion
+
+[Icons]
+Name: "{autoprograms}\{#AppName}"; Filename: "{app}\{#TrayExe}"
+
+[Registry]
+; Same value the tray's "Start at login" writes (core::autostart::enable(tray exe, &[])):
+; the quoted exe path, no arguments. Removed on uninstall by the [Code] below.
+Root: HKCU; Subkey: "{#RunKey}"; ValueType: string; ValueName: "{#RunValue}"; ValueData: """{app}\{#TrayExe}"""; Tasks: autostart
+
+[Run]
+Filename: "{app}\{#TrayExe}"; Description: "Launch {#AppName}"; Flags: nowait postinstall skipifsilent
+
+[Code]
 // True if the start-at-login value starts a program from Dir (written by the task
 // above, the tray's checkbox or `autostart enable`, with or without arguments).
 // A value pointing at another copy doesn't count.
