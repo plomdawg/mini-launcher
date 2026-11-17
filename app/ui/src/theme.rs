@@ -260,6 +260,49 @@ pub fn field(ui: &mut Ui, value: &mut String, width: f32, enabled: bool, label: 
     .labelled_by(label)
 }
 
+/// A left-aligned form label in a fixed-width column; pass its id to the
+/// field's `labelled_by`.
+pub fn form_label(ui: &mut Ui, width: f32, text: &str) -> Response {
+    let layout = egui::Layout::left_to_right(egui::Align::Center);
+    ui.allocate_ui_with_layout(vec2(width, ROW), layout, |ui| {
+        ui.set_min_width(width);
+        ui.add(egui::Label::new(text).selectable(false))
+    })
+    .inner
+}
+
+/// Raised column headers across `row`; column `i` spans `cols[i]..cols[i + 1]`
+/// (the last one runs to the row's end).
+pub fn column_headers(ui: &Ui, row: Rect, cols: &[f32], labels: &[&str]) {
+    for (i, label) in labels.iter().enumerate() {
+        let end = cols.get(i + 1).copied().unwrap_or(row.max.x);
+        let cell = Rect::from_min_max(pos2(cols[i], row.min.y), pos2(end, row.max.y));
+        raised(ui.painter(), cell);
+        label_at(ui, cell, cell.min.x + 2.0 * U, label, INK);
+    }
+}
+
+/// A selectable list row: senses clicks, reports itself to screen readers
+/// and paints the selection. Returns the response and the text colours to
+/// draw its cells with (normal, weak).
+pub fn list_row(
+    ui: &Ui,
+    row: Rect,
+    id: impl egui::AsIdSalt,
+    selected: bool,
+    label: &str,
+) -> (Response, Color32, Color32) {
+    let row = snap(row);
+    let resp = ui.interact(row, ui.scope_id().with(id), Sense::click());
+    resp.widget_info(|| WidgetInfo::selected(Role::ListItem, true, selected, label));
+    if selected {
+        ui.painter().rect_filled(row, 0.0, BLUE);
+        (resp, PAPER, PAPER)
+    } else {
+        (resp, INK, SHADE)
+    }
+}
+
 /// A square radio choice (round marks don't survive a pixel grid).
 pub fn choice(ui: &mut Ui, selected: bool, label: &str) -> Response {
     let g = galley(ui, label, TEXT, INK);

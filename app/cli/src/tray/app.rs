@@ -137,7 +137,9 @@ fn run(log_dir: Option<PathBuf>) -> Result<()> {
     };
     refresh(None);
 
-    if std::env::args_os().skip(1).any(|a| a == "--settings") {
+    // Each `--settings` opens the window once more after the previous one
+    // closes (CI repeats it to check re-opening on eframe's kept event loop).
+    for _ in std::env::args_os().skip(1).filter(|a| a == "--settings") {
         settings_window();
     }
 

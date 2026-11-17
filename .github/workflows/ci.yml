@@ -131,17 +131,24 @@ jobs:
               Write-Host "tray idle (no window): $(Mem $idle)"
               Stop-Process $idle; $idle.WaitForExit()
 
-              $p = Start-Process $exe -ArgumentList '--settings' -PassThru
-              for ($i = 0; $i -lt 60 -and $p.MainWindowHandle -eq 0; $i++) {
-                  Start-Sleep -Milliseconds 500; $p.Refresh()
+              # Two opens: the second checks eframe's kept event loop can reopen
+              # the window and that memory doesn't climb across cycles. The tray
+              # reopens at once, so "after close" is only measurable after the last.
+              $p = Start-Process $exe -ArgumentList '--settings', '--settings' -PassThru
+              foreach ($cycle in 1, 2) {
+                  for ($i = 0; $i -lt 60 -and $p.MainWindowHandle -eq 0; $i++) {
+                      Start-Sleep -Milliseconds 500; $p.Refresh()
+                  }
+                  if ($p.MainWindowHandle -eq 0) { throw "the settings window did not open (cycle $cycle)" }
+                  Start-Sleep 3
+                  Write-Host "cycle ${cycle}: window open:  $(Mem $p)"
+                  $null = $p.CloseMainWindow()
+                  Start-Sleep 5
+                  if ($p.HasExited) { throw "the tray exited (code $($p.ExitCode)) when the window closed" }
+                  $p.Refresh()
               }
-              if ($p.MainWindowHandle -eq 0) { throw 'the settings window did not open' }
-              Start-Sleep 3
-              Write-Host "settings window open:   $(Mem $p)"
-              $null = $p.CloseMainWindow()
-              Start-Sleep 5
-              if ($p.HasExited) { throw "the tray exited (code $($p.ExitCode)) when the window closed" }
-              Write-Host "after window closed:    $(Mem $p)"
+              Write-Host "after both closed:      $(Mem $p)"
+              if ($p.MainWindowHandle -ne 0) { throw 'a settings window is still open' }
               Stop-Process $p
           } finally {
               Get-ChildItem $env:MINI_LAUNCHER_LOG_DIR -File -ErrorAction SilentlyContinue | Get-Content

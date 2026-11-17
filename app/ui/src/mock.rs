@@ -156,6 +156,9 @@ fn masthead(ui: &mut Ui, title: &str) {
     );
 }
 
+/// Bottom-right corner of every screen.
+const CREDIT: &str = "<3 plomdawg";
+
 fn status_bar(ui: &mut Ui) {
     let bound = GAMES.iter().filter(|g| g.2.is_some()).count();
     let cells = [
@@ -176,6 +179,11 @@ fn status_bar(ui: &mut Ui) {
                 x = theme::mark(ui.painter(), rect, x, true, INK);
             }
             theme::label_at(ui, rect, x, cell, INK);
+            if last {
+                let credit = theme::galley(ui, CREDIT, TEXT, SHADE);
+                let x = rect.max.x - 2.0 * U - credit.size().x;
+                theme::label_at(ui, rect, x, CREDIT, SHADE);
+            }
         }
     });
 }
@@ -200,52 +208,30 @@ fn library(ui: &mut Ui, s: &mut Settings) {
     let rect = theme::snap(ui.available_rect_before_wrap());
     theme::sunken(ui.painter(), rect, PAPER);
     let inner = rect.shrink(2.0);
-    // Columns: name | launch | tag. Widths are in characters of the mono font.
-    let cols = [
-        inner.min.x,
-        inner.min.x + inner.width() * 0.40,
-        inner.min.x + inner.width() * 0.66,
-    ];
+    // Columns: name | launch | tag, as fractions of the list width.
+    let cols = [0.0, 0.40, 0.66].map(|f| inner.min.x + inner.width() * f);
     let header = Rect::from_min_size(inner.min, vec2(inner.width(), ROW));
-    for (i, label) in ["NAME", "LAUNCH", "TAG"].iter().enumerate() {
-        let end = cols.get(i + 1).copied().unwrap_or(inner.max.x);
-        let cell = Rect::from_min_max(pos2(cols[i], header.min.y), pos2(end, header.max.y));
-        theme::raised(ui.painter(), cell);
-        theme::label_at(ui, cell, cell.min.x + 2.0 * U, label, INK);
-    }
+    theme::column_headers(ui, header, &cols, &["NAME", "LAUNCH", "TAG"]);
     for (i, &(name, app_id, tag)) in GAMES.iter().enumerate() {
         let top = header.max.y + i as f32 * ROW;
-        let row = theme::snap(Rect::from_min_size(
-            pos2(inner.min.x, top),
-            vec2(inner.width(), ROW),
-        ));
+        let row = Rect::from_min_size(pos2(inner.min.x, top), vec2(inner.width(), ROW));
         if row.max.y > inner.max.y {
             break;
         }
-        let resp = ui.interact(row, ui.scope_id().with(("game", i)), Sense::click());
         let on = s.selected == Some(i);
-        resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::ListItem, true, on, name));
+        let (resp, fg, weak) = theme::list_row(ui, row, ("game", i), on, name);
         if resp.clicked() {
             s.selected = Some(i);
         }
         if resp.double_clicked() {
             s.screen = Screen::Edit;
         }
-        let (fg, weak) = if on { (PAPER, PAPER) } else { (INK, SHADE) };
-        if on {
-            ui.painter().rect_filled(row, 0.0, BLUE);
-        }
         let launch = app_id.map_or("Program".into(), |id| format!("Steam {id}"));
         theme::label_at(ui, row, cols[0] + 2.0 * U, name, fg);
         theme::label_at(ui, row, cols[1] + 2.0 * U, &launch, fg);
         let x = theme::mark(ui.painter(), row, cols[2] + 2.0 * U, tag.is_some(), fg);
-        theme::label_at(
-            ui,
-            row,
-            x,
-            tag.unwrap_or("not bound"),
-            if tag.is_some() { fg } else { weak },
-        );
+        let tag_color = if tag.is_some() { fg } else { weak };
+        theme::label_at(ui, row, x, tag.unwrap_or("not bound"), tag_color);
     }
 }
 
@@ -258,7 +244,7 @@ fn edit(ui: &mut Ui, s: &mut Settings) {
     theme::group(ui, "Game", |ui| {
         let row = |ui: &mut Ui, label: &str, add: &mut dyn FnMut(&mut Ui, egui::Id)| {
             ui.horizontal(|ui| {
-                let l = label_cell(ui, label_w, label);
+                let l = theme::form_label(ui, label_w, label);
                 add(ui, l.id);
             });
         };
@@ -293,7 +279,7 @@ fn edit(ui: &mut Ui, s: &mut Settings) {
     ui.add_space(U);
     theme::group(ui, "Tag", |ui| {
         ui.horizontal(|ui| {
-            label_cell(ui, label_w, "Bound to");
+            theme::form_label(ui, label_w, "Bound to");
             let (well, _) = ui.allocate_exact_size(vec2(field_w(ui, true), ROW), Sense::hover());
             theme::sunken(ui.painter(), well, FACE);
             let x = theme::mark(ui.painter(), well, well.min.x + 2.0 * U, true, INK);
@@ -318,14 +304,4 @@ fn edit(ui: &mut Ui, s: &mut Settings) {
             });
         });
     });
-}
-
-/// A left-aligned form label in a fixed-width column.
-fn label_cell(ui: &mut Ui, width: f32, text: &str) -> egui::Response {
-    let layout = Layout::left_to_right(Align::Center);
-    ui.allocate_ui_with_layout(vec2(width, ROW), layout, |ui| {
-        ui.set_min_width(width);
-        ui.add(egui::Label::new(text).selectable(false))
-    })
-    .inner
 }
