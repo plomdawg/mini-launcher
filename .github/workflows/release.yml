@@ -3,11 +3,13 @@ name: Release
 # Tag `app-vX.Y.Z` (X.Y.Z must equal `[workspace.package] version` in app/Cargo.toml)
 # → Windows build → GitHub Release with the renamed .exe + SHA256SUMS.
 # Manual runs (workflow_dispatch) default to a dry run: build + checksum, upload as a
-# workflow artifact, publish nothing.
+# workflow artifact, publish nothing. PRs that touch this file get the same dry run.
 
 on:
   push:
     tags: ["app-v*"]
+  pull_request:
+    paths: [".github/workflows/release.yml"]
   workflow_dispatch:
     inputs:
       dry-run:

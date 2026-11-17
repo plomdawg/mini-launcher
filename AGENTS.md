@@ -84,7 +84,8 @@ Tag contents are untrusted input.
    follows), merge that PR to `main`.
 2. Optional dry run: Actions → Release → "Run workflow" on `main` with `dry-run` checked (the
    default). It builds and uploads `mini-launcher-<version>-windows-x86_64.exe` + `SHA256SUMS`
-   as a workflow artifact and publishes nothing.
+   as a workflow artifact and publishes nothing. PRs that change `release.yml` run the same
+   dry run automatically.
 3. Tag the merged commit and push the tag:
    `git tag app-vX.Y.Z <sha> && git push origin app-vX.Y.Z`.
    The workflow fails if `X.Y.Z` doesn't equal the Cargo version; otherwise it creates the
