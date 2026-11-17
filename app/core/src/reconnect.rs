@@ -189,6 +189,11 @@ where
         &self.state
     }
 
+    /// The open reader, if connected (e.g. to write a tag between ticks).
+    pub fn reader_mut(&mut self) -> Option<&mut R> {
+        self.reader.as_mut()
+    }
+
     /// Polls the reader, or tries to reopen it once the backoff delay has
     /// passed. Call once per poll interval.
     pub fn tick(&mut self, now: Instant) -> Tick<R::Error> {

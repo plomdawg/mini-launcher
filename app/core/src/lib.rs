@@ -18,6 +18,7 @@ pub mod ports;
 pub mod reader;
 pub mod reconnect;
 pub mod runner;
+pub mod session;
 pub mod steam;
 
 /// Version of the core library, taken from `Cargo.toml`.

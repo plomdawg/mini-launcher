@@ -80,6 +80,9 @@ impl Host for TestHost {
     fn saved(&self) {
         self.saves.fetch_add(1, Ordering::SeqCst);
     }
+    fn tag_session(&self) -> Option<mini_launcher_core::session::SessionClient> {
+        None
+    }
 }
 
 impl TestHost {
