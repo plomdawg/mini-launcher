@@ -20,6 +20,8 @@ pub const MAX_NACK_RETRIES: u32 = 3;
 pub const MAX_PASSIVE_RETRIES: u8 = 0xFE;
 /// Longest NFCID1 allowed by ISO/IEC 14443-3 (triple-size UID).
 pub const MAX_UID_LEN: usize = 10;
+/// Upper bound for [`Pn532::set_timeout`], so deadline math cannot overflow.
+pub const MAX_TIMEOUT: Duration = Duration::from_secs(3600);
 /// Receive buffer cap: one maximal normal frame plus slack for line noise.
 const MAX_BUF: usize = 512;
 
@@ -78,6 +80,15 @@ pub struct Target {
     pub sak: u8,
 }
 
+/// Byte stream to a PN532, plus a way to drop unread input.
+pub trait Transport: Read + Write {
+    /// Discards bytes received but not yet read, so a late frame from an
+    /// earlier command cannot be taken as the reply to the next one.
+    fn clear_input(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
 /// PN532 driver over an HSU byte stream.
 ///
 /// Reads may return data, `0` bytes, `TimedOut` or `WouldBlock`; the driver
@@ -88,7 +99,7 @@ pub struct Pn532<T> {
     timeout: Duration,
 }
 
-impl<T: Read + Write> Pn532<T> {
+impl<T: Transport> Pn532<T> {
     pub fn new(io: T) -> Self {
         Self {
             io,
@@ -97,9 +108,9 @@ impl<T: Read + Write> Pn532<T> {
         }
     }
 
-    /// Sets the overall per-command timeout.
+    /// Sets the overall per-command timeout (capped at [`MAX_TIMEOUT`]).
     pub fn set_timeout(&mut self, timeout: Duration) {
-        self.timeout = timeout;
+        self.timeout = timeout.min(MAX_TIMEOUT);
     }
 
     /// Returns the underlying transport.
@@ -137,6 +148,12 @@ impl<T: Read + Write> Pn532<T> {
     /// RFConfiguration item `MaxRetries`: how many times `InListPassiveTarget`
     /// retries activation. Clamped to [`MAX_PASSIVE_RETRIES`] so a poll can
     /// never block forever.
+    ///
+    /// Activation retries run inside one `InListPassiveTarget`, so a large
+    /// value (e.g. 0xFE) can outlast the command timeout; the caller then
+    /// gets [`Pn532Error::Timeout`] (and the command is aborted), not "no
+    /// tag". Pollers should use a small count, or a command timeout longer
+    /// than the retry budget.
     pub fn rf_configuration_max_retries(&mut self, passive: u8) -> Result<(), Pn532Error> {
         let passive = passive.min(MAX_PASSIVE_RETRIES);
         // CfgItem 0x05: MxRtyATR, MxRtyPSL, MxRtyPassiveActivation.
@@ -168,6 +185,10 @@ impl<T: Read + Write> Pn532<T> {
     }
 
     /// NTAG `READ` of 4 pages (16 bytes) starting at `page`, on target 1.
+    ///
+    /// Reads wrap around past the last page (0x2C on NTAG213) back to page 0.
+    /// A start page beyond the last page makes the tag NAK, which surfaces as
+    /// [`Pn532Error::Status`] or [`Pn532Error::Malformed`].
     pub fn ntag_read(&mut self, page: u8) -> Result<[u8; 16], Pn532Error> {
         let d = self.command(&[CMD_IN_DATA_EXCHANGE, TG, NTAG_READ, page])?;
         let (&status, data) = d
@@ -192,30 +213,42 @@ impl<T: Read + Write> Pn532<T> {
         let expected = data[0].wrapping_add(1);
         let request = frame::encode(data)?;
         self.buf.clear();
+        self.io.clear_input()?;
         self.io.write_all(&request)?;
         self.io.flush()?;
         let deadline = Instant::now() + self.timeout;
 
-        match self.read_frame(deadline) {
-            Ok(Frame::Ack) => {}
-            Ok(_) | Err(Pn532Error::Timeout) => return Err(Pn532Error::NoAck),
-            Err(e) => return Err(e),
+        // Nothing but our ACK can legitimately come first: anything else is a
+        // stale frame from an earlier command, so drop it and keep waiting.
+        // Checksum errors here are not NACKed (undefined before the ACK).
+        loop {
+            match self.read_frame(deadline, false) {
+                Ok(Frame::Ack) => break,
+                Ok(_) => {}
+                Err(Pn532Error::Timeout) => {
+                    self.abort();
+                    return Err(Pn532Error::NoAck);
+                }
+                Err(e) => return Err(e),
+            }
         }
-        let resp = match self.read_frame(deadline) {
-            Ok(Frame::Response(resp)) => resp,
-            Ok(Frame::Error) => return Err(Pn532Error::ErrorFrame),
-            Ok(Frame::Ack | Frame::Nack) => {
-                return Err(Pn532Error::UnexpectedResponse {
-                    expected,
-                    got: None,
-                })
+        let resp = loop {
+            match self.read_frame(deadline, true) {
+                Ok(Frame::Response(resp)) => break resp,
+                Ok(Frame::Ack) => {} // stray duplicate
+                Ok(Frame::Error) => return Err(Pn532Error::ErrorFrame),
+                Ok(Frame::Nack) => {
+                    return Err(Pn532Error::UnexpectedResponse {
+                        expected,
+                        got: None,
+                    })
+                }
+                Err(Pn532Error::Timeout) => {
+                    self.abort();
+                    return Err(Pn532Error::Timeout);
+                }
+                Err(e) => return Err(e),
             }
-            Err(Pn532Error::Timeout) => {
-                // An ACK from the host aborts the command in progress.
-                let _ = self.io.write_all(&ACK).and_then(|()| self.io.flush());
-                return Err(Pn532Error::Timeout);
-            }
-            Err(e) => return Err(e),
         };
         match resp.split_first() {
             Some((&code, rest)) if code == expected => Ok(rest.to_vec()),
@@ -226,8 +259,14 @@ impl<T: Read + Write> Pn532<T> {
         }
     }
 
-    /// Reads the next frame, NACKing checksum failures (bounded retries).
-    fn read_frame(&mut self, deadline: Instant) -> Result<Frame, Pn532Error> {
+    /// Best effort: an ACK from the host aborts the command in progress.
+    fn abort(&mut self) {
+        let _ = self.io.write_all(&ACK).and_then(|()| self.io.flush());
+    }
+
+    /// Reads the next frame. Checksum failures are NACKed (bounded retries)
+    /// if `nack` is set, otherwise just skipped.
+    fn read_frame(&mut self, deadline: Instant, nack: bool) -> Result<Frame, Pn532Error> {
         let mut nacks = 0;
         loop {
             match frame::decode(&self.buf) {
@@ -239,7 +278,9 @@ impl<T: Read + Write> Pn532<T> {
                     self.buf.drain(..e.skip);
                     match e.kind {
                         FrameError::Incomplete => self.fill(deadline)?,
-                        FrameError::BadDataChecksum | FrameError::BadLengthChecksum { .. } => {
+                        FrameError::BadDataChecksum | FrameError::BadLengthChecksum { .. }
+                            if nack =>
+                        {
                             nacks += 1;
                             if nacks > MAX_NACK_RETRIES {
                                 return Err(Pn532Error::Checksum);
@@ -368,6 +409,8 @@ mod tests {
         }
     }
 
+    impl Transport for Mock {}
+
     impl Write for Mock {
         fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
             self.written.extend_from_slice(buf);
@@ -456,10 +499,45 @@ mod tests {
     }
 
     #[test]
+    fn stale_and_stray_frames_do_not_desync() {
+        let mut bad = GFV_RESP.to_vec();
+        bad[7] ^= 0x01;
+        // Stale SAM reply + corrupted frame + error frame before the ACK,
+        // a duplicate ACK before the response, then normal traffic.
+        let chunks: &[&[u8]] = &[
+            SAM_RESP,
+            &bad,
+            &frame::ERROR_FRAME,
+            &ACK,
+            GFV_RESP,
+            &ACK,
+            &ACK,
+            GFV_RESP,
+            &ACK,
+            REL_RESP,
+        ];
+        for mut p in drivers(chunks) {
+            assert_eq!(p.get_firmware_version().unwrap().ic, 0x32);
+            assert_eq!(p.get_firmware_version().unwrap().ic, 0x32);
+            p.in_release().unwrap();
+            // No NACK was sent for the pre-ACK corruption.
+            assert_eq!(written(p), [GFV_REQ, GFV_REQ, REL_REQ].concat());
+        }
+    }
+
+    #[test]
+    fn huge_timeout_does_not_overflow() {
+        let [mut p, _] = drivers(&[&ACK, GFV_RESP]);
+        p.set_timeout(Duration::MAX);
+        assert!(p.get_firmware_version().is_ok());
+    }
+
+    #[test]
     fn missing_ack() {
         for chunks in [&[GFV_RESP][..], &[]] {
             for mut p in drivers(chunks) {
                 assert!(matches!(p.get_firmware_version(), Err(Pn532Error::NoAck)));
+                assert_eq!(written(p), [GFV_REQ, &ACK].concat()); // abort sent
             }
         }
     }

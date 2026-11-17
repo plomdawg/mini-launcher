@@ -2,9 +2,11 @@
 
 use std::time::Duration;
 
-use serialport::{DataBits, FlowControl, Parity, SerialPort, StopBits};
+use std::io;
 
-use super::driver::Pn532;
+use serialport::{ClearBuffer, DataBits, FlowControl, Parity, SerialPort, StopBits};
+
+use super::driver::{Pn532, Transport};
 
 /// PN532 HSU default baud rate.
 pub const BAUD_RATE: u32 = 115_200;
@@ -23,4 +25,10 @@ pub fn open(path: &str) -> serialport::Result<Pn532<Box<dyn SerialPort>>> {
         .timeout(READ_TIMEOUT)
         .open()?;
     Ok(Pn532::new(port))
+}
+
+impl Transport for Box<dyn SerialPort> {
+    fn clear_input(&mut self) -> io::Result<()> {
+        self.clear(ClearBuffer::Input).map_err(io::Error::from)
+    }
 }
