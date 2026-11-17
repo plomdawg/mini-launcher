@@ -5,6 +5,7 @@ use anyhow::{anyhow, Context, Result};
 use mini_launcher_core::pn532::{serial, FirmwareVersion, Pn532, Pn532Error, Pn532Hsu};
 use mini_launcher_core::ports::{self, PortInfo};
 use serialport::SerialPort;
+use std::time::Duration;
 
 /// The open reader.
 pub type Reader = Pn532<Box<dyn SerialPort>>;
@@ -33,13 +34,29 @@ pub fn resolve(explicit: Option<&str>) -> Result<String> {
     choose(None, &ports)
 }
 
+/// Firmware-reply timeout when reopening a lost reader. With two tries a
+/// silent PN532 costs ~0.8 s, so Ctrl-C is honoured within about a second
+/// while reconnecting (the first open keeps the default, longer timeout).
+pub const REOPEN_TIMEOUT: Duration = Duration::from_millis(400);
+
 /// Picks and opens the reader port and configures the PN532 for polling.
 pub fn open_poller(explicit: Option<&str>) -> Result<(String, Poller)> {
+    open_poller_with(explicit, None)
+}
+
+/// [`open_poller`] for reconnecting: gives up on a silent PN532 sooner.
+pub fn reopen_poller(explicit: Option<&str>) -> Result<(String, Poller)> {
+    open_poller_with(explicit, Some(REOPEN_TIMEOUT))
+}
+
+fn open_poller_with(explicit: Option<&str>, timeout: Option<Duration>) -> Result<(String, Poller)> {
     let name = resolve(explicit)?;
-    let (reader, fw) = open(&name, false)?;
+    let (reader, fw) = open_with(&name, false, timeout)?;
     tracing::info!(port = %name, "PN532 firmware {}.{}", fw.ver, fw.rev);
     let poller = Pn532Hsu::init(reader).map_err(|e| match e {
-        Pn532Error::Io(_) => lost(&name, e),
+        Pn532Error::Io(io) => {
+            anyhow!("I/O error configuring the PN532 on {name}: {io}; was the adapter unplugged?")
+        }
         e => anyhow!("cannot configure the PN532 on {name} ({e}); {NO_REPLY_HINT}"),
     })?;
     Ok((name, poller))
@@ -53,7 +70,19 @@ pub fn lost(name: &str, e: Pn532Error) -> anyhow::Error {
 /// Opens `name`, wakes the PN532 and checks it answers `GetFirmwareVersion`.
 /// `in_diagnose` drops hints that would just say "run diagnose".
 pub fn open(name: &str, in_diagnose: bool) -> Result<(Reader, FirmwareVersion)> {
+    open_with(name, in_diagnose, None)
+}
+
+/// [`open`] with a firmware-reply timeout other than the driver default.
+fn open_with(
+    name: &str,
+    in_diagnose: bool,
+    timeout: Option<Duration>,
+) -> Result<(Reader, FirmwareVersion)> {
     let mut reader = serial::open(name).map_err(|e| open_error(name, &e, in_diagnose))?;
+    if let Some(t) = timeout {
+        reader.set_timeout(t);
+    }
     tracing::debug!(port = name, "port open, waking PN532");
     let mut last = Pn532Error::Timeout;
     // The first command after power-up is sometimes lost; try twice.

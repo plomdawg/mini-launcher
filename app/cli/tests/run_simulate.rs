@@ -44,11 +44,13 @@ fn simulate_dry_run_logs_launches() {
     std::fs::create_dir_all(&dir).unwrap();
     let config = dir.join("config.toml");
     std::fs::write(&config, CONFIG).unwrap();
+    let log_dir = dir.join("logs");
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_mini-launcher"))
         .args(["run", "--simulate", "--dry-run", "--config"])
         .arg(&config)
         .env_remove("RUST_LOG")
+        .env(LOG_DIR_ENV, &log_dir)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -61,6 +63,7 @@ fn simulate_dry_run_logs_launches() {
         .write_all(SCRIPT.as_bytes())
         .unwrap();
     let output = child.wait_with_output().unwrap();
+    let log = read_logs(&log_dir);
     std::fs::remove_dir_all(&dir).ok();
     let stdout = String::from_utf8(output.stdout).unwrap();
     let stderr = String::from_utf8(output.stderr).unwrap();
@@ -96,6 +99,22 @@ fn simulate_dry_run_logs_launches() {
     // The hint is a ready-to-paste config entry for that UID.
     assert!(stdout.contains("    uid = \"11223344\"\n"), "{stdout}");
     assert!(stderr.contains(r#"unknown command "bogus""#), "{stderr}");
+    // The file log records launches without -v.
+    assert!(
+        log.contains("launch DEADBEEF: open steam://rungameid/440 (tag steam:) [dry run]"),
+        "log:\n{log}"
+    );
+}
+
+const LOG_DIR_ENV: &str = "MINI_LAUNCHER_LOG_DIR";
+
+/// All log files in `dir`, concatenated.
+fn read_logs(dir: &std::path::Path) -> String {
+    let mut out = String::new();
+    for entry in std::fs::read_dir(dir).unwrap() {
+        out += &std::fs::read_to_string(entry.unwrap().path()).unwrap();
+    }
+    out
 }
 
 #[test]
@@ -108,9 +127,11 @@ fn explicit_missing_config_is_an_error() {
         .args(["run", "--simulate", "--dry-run", "--config"])
         .arg(&missing)
         .env_remove("RUST_LOG")
+        .env(LOG_DIR_ENV, missing.parent().unwrap().join("logs"))
         .stdin(Stdio::null())
         .output()
         .unwrap();
+    std::fs::remove_dir_all(missing.parent().unwrap()).ok();
     let stderr = String::from_utf8(output.stderr).unwrap();
     assert!(!output.status.success(), "{stderr}");
     assert!(stderr.contains("cannot load"), "{stderr}");

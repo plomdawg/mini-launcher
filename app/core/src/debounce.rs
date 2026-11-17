@@ -14,7 +14,8 @@ use crate::reader::{Reading, Uid};
 pub enum Event {
     /// A tag arrived. This is the only event that should trigger a launch.
     Inserted { uid: Uid, payload: Payload },
-    /// The tag that was just removed came back within the re-seat window.
+    /// The tag that was just removed came back within the re-seat window,
+    /// or was still on the reader when it came back after a disconnect.
     /// Not a new launch, even if the tag was rewritten meanwhile. Consumers
     /// that close the game on `Removed` (opt-in) may relaunch from `payload`.
     Reseated { uid: Uid, payload: Payload },
@@ -55,6 +56,11 @@ pub struct Debouncer {
     misses: u32,
     /// The most recently seen tag and when; drives the re-seat window.
     last_seen: Option<(Uid, Instant)>,
+    /// The tag seated when the reader went away. Found again on the first
+    /// sighting after the reader is back, it is re-seated however long the
+    /// outage was; cleared once a tag is seen or after a removal's worth of
+    /// misses (the tag was lifted).
+    held: Option<Uid>,
 }
 
 impl Debouncer {
@@ -64,6 +70,7 @@ impl Debouncer {
             seated: None,
             misses: 0,
             last_seen: None,
+            held: None,
         }
     }
 
@@ -77,9 +84,12 @@ impl Debouncer {
                     if let Some(old) = self.seated.replace(uid) {
                         events.push(Event::Removed { uid: old });
                     }
-                    let reseat = matches!(self.last_seen, Some((prev, seen))
-                        if prev == uid
-                            && now.saturating_duration_since(seen) <= self.config.reseat_window);
+                    let held = self.held == Some(uid);
+                    let reseat = held
+                        || matches!(self.last_seen, Some((prev, seen))
+                            if prev == uid
+                                && now.saturating_duration_since(seen)
+                                    <= self.config.reseat_window);
                     events.push(if reseat {
                         Event::Reseated { uid, payload }
                     } else {
@@ -88,6 +98,14 @@ impl Debouncer {
                 }
                 self.misses = 0;
                 self.last_seen = Some((uid, now));
+                self.held = None;
+            }
+            None if self.held.is_some() => {
+                self.misses += 1;
+                if self.misses >= self.config.miss_threshold.max(1) {
+                    self.held = None;
+                    self.misses = 0;
+                }
             }
             None => {
                 if let Some(uid) = self.seated {
@@ -103,11 +121,16 @@ impl Debouncer {
     }
 
     /// The reader went away: the seated tag (if any) is removed now, without
-    /// waiting for missed polls. The last sighting is kept, so the same tag
-    /// found again within the re-seat window (e.g. after a quick replug) is
-    /// [`Event::Reseated`], not a new launch.
+    /// waiting for missed polls. If that same tag is on the reader when it
+    /// comes back, it is [`Event::Reseated`], not a new launch, however long
+    /// the reader was gone: the tag was never lifted (re-enumerating a
+    /// replugged adapter can take several seconds). Otherwise the usual
+    /// re-seat window applies.
     pub fn disconnect(&mut self) -> Option<Event> {
         self.misses = 0;
+        if let Some(uid) = self.seated {
+            self.held = Some(uid);
+        }
         self.seated.take().map(|uid| Event::Removed { uid })
     }
 }
@@ -248,5 +271,60 @@ mod tests {
         h.debouncer.config.miss_threshold = 0;
         h.poll(tag(A));
         assert_eq!(h.poll(None), vec![removed(A)]);
+    }
+
+    fn reseated(hex: &str) -> Event {
+        Event::Reseated {
+            uid: Uid::from_hex(hex).unwrap(),
+            payload: Payload::Steam(440),
+        }
+    }
+
+    #[test]
+    fn same_tag_after_a_long_disconnect_is_reseated() {
+        let mut h = Harness::new();
+        h.poll(tag(A));
+        assert_eq!(h.debouncer.disconnect(), Some(removed(A)));
+        h.now += Duration::from_secs(60); // reader gone, no polls
+                                          // A couple of misses while the reader settles do not drop the hold.
+        assert_eq!(h.polls(2, None), []);
+        assert_eq!(h.poll(tag(A)), [reseated(A)]);
+        // The hold is used up: a real removal and slow re-insert launches.
+        assert_eq!(h.polls(5, None), [removed(A)]);
+        h.now += Duration::from_secs(10);
+        assert_eq!(h.poll(tag(A)), [inserted(A)]);
+    }
+
+    #[test]
+    fn different_tag_after_a_disconnect_launches() {
+        let mut h = Harness::new();
+        h.poll(tag(A));
+        h.debouncer.disconnect();
+        h.now += Duration::from_secs(60);
+        assert_eq!(h.poll(tag(B)), [inserted(B)]);
+        // A is no longer held either.
+        assert_eq!(h.polls(5, None), [removed(B)]);
+        h.now += Duration::from_secs(10);
+        assert_eq!(h.poll(tag(A)), [inserted(A)]);
+    }
+
+    #[test]
+    fn tag_lifted_after_reconnect_then_replaced_launches() {
+        let mut h = Harness::new();
+        h.poll(tag(A));
+        h.debouncer.disconnect();
+        h.now += Duration::from_secs(60);
+        assert_eq!(h.polls(5, None), []); // lifted: hold dropped
+        assert_eq!(h.poll(tag(A)), [inserted(A)]);
+    }
+
+    #[test]
+    fn disconnect_without_a_tag_holds_nothing() {
+        let mut h = Harness::new();
+        h.poll(tag(A));
+        h.polls(5, None);
+        h.debouncer.disconnect();
+        h.now += Duration::from_secs(60);
+        assert_eq!(h.poll(tag(A)), [inserted(A)]);
     }
 }
