@@ -14,7 +14,7 @@ for diagnostics); Linux support is planned later. Kits are sold (shop.plom.one).
 app/        Rust workspace — core (reader, NDEF, payload, config, launch, debounce) + cli
 web/        Box-art generator ("Plomcase" prototype): vanilla JS + Python stdlib server
 hardware/   STL/3MF/STEP, BOM.md, wiring diagrams
-docs/       tag-format.md, reader protocol notes, assembly.md, compliance.md
+docs/       tag-format.md, reader protocol notes, assembly.md, compliance.md, adr/ (decision records)
 .github/    ci.yml (windows + ubuntu matrix), release.yml (tag → GitHub Releases)
 ```
 
