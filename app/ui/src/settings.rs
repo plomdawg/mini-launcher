@@ -3,6 +3,7 @@
 //! tested headlessly; the native window is in `window`.
 
 pub mod backup;
+pub mod emulators;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -56,6 +57,9 @@ pub enum Screen {
     Edit,
     /// The add-game wizard (see [`crate::wizard`]).
     Wizard,
+    /// The `[[emulators]]` list, and its edit form.
+    Emulators,
+    EditEmulator,
 }
 
 /// Which path a Browse button fills in.
@@ -63,6 +67,8 @@ pub enum Screen {
 pub enum Pick {
     Exe,
     Cwd,
+    /// The emulator form's exe.
+    EmulatorExe,
 }
 
 pub struct Settings {
@@ -83,6 +89,7 @@ pub struct Settings {
     pub(crate) browse: Option<Pick>,
     /// Export / import / config folder dialogs.
     pub transfer: backup::Transfer,
+    pub emulators: emulators::Emulators,
 }
 
 impl Settings {
@@ -100,12 +107,14 @@ impl Settings {
             wizard: None,
             browse: None,
             transfer: backup::Transfer::default(),
+            emulators: emulators::Emulators::default(),
         }
     }
 
     /// Opens the form on game `i`. Emulator games are read-only here for
     /// now: they are edited in `config.toml`.
     pub fn edit(&mut self, i: usize) {
+        self.problem = None;
         if let Some(game) = self.library.games().get(i) {
             self.selected = Some(i);
             if matches!(game.plan, LaunchPlan::Emulator { .. }) {
@@ -258,6 +267,9 @@ impl Settings {
         let current = match pick {
             Pick::Exe => PathBuf::from(&self.form.exe).parent().map(PathBuf::from),
             Pick::Cwd => Some(PathBuf::from(&self.form.cwd)),
+            Pick::EmulatorExe => PathBuf::from(&self.emulators.form.exe)
+                .parent()
+                .map(PathBuf::from),
         };
         Some((pick, current.filter(|p| p.is_dir())))
     }
@@ -275,6 +287,7 @@ impl Settings {
                 self.form.exe = text;
             }
             Pick::Cwd => self.form.cwd = text,
+            Pick::EmulatorExe => self.emulators.form.exe = text,
         }
     }
 
@@ -285,13 +298,15 @@ impl Settings {
             self.library = Library::load(location);
             let n = self.library.games().len();
             self.selected = self.selected.filter(|&i| i < n).or((n > 0).then_some(0));
+            let (m, e) = (self.library.emulators().len(), &mut self.emulators);
+            e.selected = e.selected.filter(|&i| i < m).or((m > 0).then_some(0));
         }
     }
 }
 
 /// The whole window: masthead, screen, status bar.
 pub fn show(ui: &mut Ui, s: &mut Settings) {
-    if s.screen == Screen::Library {
+    if matches!(s.screen, Screen::Library | Screen::Emulators) {
         s.refresh();
     }
     if s.screen == Screen::Wizard {
@@ -308,6 +323,9 @@ pub fn show(ui: &mut Ui, s: &mut Settings) {
         (Screen::Edit, None) => "ADD GAME",
         (Screen::Wizard, _) if s.wizard.as_ref().is_some_and(|w| w.from_edit) => "WRITE TAG",
         (Screen::Wizard, _) => "ADD GAME",
+        (Screen::Emulators, _) => "EMULATORS",
+        (Screen::EditEmulator, _) if s.emulators.form.id.is_some() => "EDIT EMULATOR",
+        (Screen::EditEmulator, _) => "ADD EMULATOR",
     };
     egui::Panel::top("masthead")
         .frame(egui::Frame::NONE.fill(BLUE))
@@ -332,6 +350,8 @@ pub fn show(ui: &mut Ui, s: &mut Settings) {
             Screen::Library => library(ui, s),
             Screen::Edit => edit(ui, s),
             Screen::Wizard => crate::wizard_view::show(ui, s),
+            Screen::Emulators => emulators::list(ui, s),
+            Screen::EditEmulator => emulators::edit(ui, s),
         });
 }
 
@@ -442,6 +462,9 @@ fn library(ui: &mut Ui, s: &mut Settings) {
         if theme::button(ui, "Remove", has, false).clicked() {
             s.ask_remove(s.selected.unwrap_or_default());
         }
+        if theme::button(ui, "Emulators", editable, false).clicked() {
+            s.open_emulators();
+        }
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             backup::toolbar(ui, s);
         });
@@ -474,13 +497,8 @@ fn library(ui: &mut Ui, s: &mut Settings) {
             if resp.double_clicked() {
                 open = Some(i);
             }
-            let launch = match &game.plan {
-                LaunchPlan::Steam { appid } => format!("Steam {appid}"),
-                LaunchPlan::Exe { .. } => "Program".to_owned(),
-                LaunchPlan::Emulator { .. } => "Emulator".to_owned(),
-            };
             theme::label_at(ui, row, cols[0] + 2.0 * U, &game.name, fg);
-            theme::label_at(ui, row, cols[1] + 2.0 * U, &launch, fg);
+            theme::label_at(ui, row, cols[1] + 2.0 * U, &launch_label(&game.plan), fg);
             let uid = game.uid.as_deref().map(format_uid);
             let x = theme::mark(ui.painter(), row, cols[2] + 2.0 * U, uid.is_some(), fg);
             let color = if uid.is_some() { fg } else { weak };
@@ -508,7 +526,9 @@ fn library(ui: &mut Ui, s: &mut Settings) {
             None => {}
         }
     }
-    if let Some(i) = clicked {
+    if let Some(i) = clicked.filter(|&i| s.selected != Some(i)) {
+        // Another game: what went wrong with the last one is old news.
+        s.problem = None;
         s.selected = Some(i);
     }
     if let Some(i) = open {
@@ -516,7 +536,28 @@ fn library(ui: &mut Ui, s: &mut Settings) {
     }
 }
 
+/// The library's LAUNCH column.
+pub fn launch_label(plan: &LaunchPlan) -> String {
+    match plan {
+        LaunchPlan::Steam { appid } => format!("Steam {appid}"),
+        LaunchPlan::Exe { .. } => "Program".to_owned(),
+        LaunchPlan::Emulator { .. } => "Emulator".to_owned(),
+    }
+}
+
 fn edit(ui: &mut Ui, s: &mut Settings) {
+    let problem = s.form.problem.clone();
+    let (save, cancel) = form_screen(ui, problem.as_deref(), |ui| form(ui, s));
+    if cancel {
+        s.screen = Screen::Library;
+    } else if save {
+        s.save();
+    }
+}
+
+/// A form screen: `form` scrolls above the problem line and Save / Cancel.
+/// Returns (save, cancel) clicked.
+fn form_screen(ui: &mut Ui, problem: Option<&str>, form: impl FnOnce(&mut Ui)) -> (bool, bool) {
     // Buttons first, from the bottom up, so inline errors never push them
     // out of the window: the form scrolls instead.
     let (mut save, mut cancel) = (false, false);
@@ -527,49 +568,53 @@ fn edit(ui: &mut Ui, s: &mut Settings) {
                 save = theme::button(ui, "Save", true, true).clicked();
             });
         });
-        if let Some(problem) = &s.form.problem {
+        if let Some(problem) = problem {
             theme::warning(ui, 0.0, problem);
         }
         ui.with_layout(Layout::top_down(Align::Min), |ui| {
             egui::ScrollArea::vertical()
                 .auto_shrink(false)
-                .show(ui, |ui| form(ui, s));
+                .show(ui, form);
         });
     });
-    if cancel {
-        s.screen = Screen::Library;
-    } else if save {
-        s.save();
+    (save, cancel)
+}
+
+const LABEL_W: f32 = 22.0 * U;
+
+/// A form row: a label, then what `add` adds (given the label's id).
+fn row(ui: &mut Ui, label: &str, add: impl FnOnce(&mut Ui, egui::Id)) {
+    ui.horizontal(|ui| {
+        let l = theme::form_label(ui, LABEL_W, label);
+        add(ui, l.id);
+    });
+}
+
+/// The error for `field`, if any, under its row.
+fn note(ui: &mut Ui, errors: &[(Field, String)], field: Field) {
+    if let Some((_, e)) = errors.iter().find(|(f, _)| *f == field) {
+        theme::warning(ui, LABEL_W + ui.spacing().item_spacing.x, e);
     }
 }
 
+/// A field's width, leaving room for a Browse button if it has one.
+fn field_w(ui: &Ui, button: bool) -> f32 {
+    (ui.available_width() - if button { 20.0 * U } else { 0.0 }).floor()
+}
+
 fn form(ui: &mut Ui, s: &mut Settings) {
-    let label_w = 22.0 * U;
-    let indent = label_w + ui.spacing().item_spacing.x;
-    let field_w = |ui: &Ui, button: bool| {
-        (ui.available_width() - if button { 20.0 * U } else { 0.0 }).floor()
-    };
+    let indent = LABEL_W + ui.spacing().item_spacing.x;
     let f = &mut s.form;
     let mut browse = None;
     let mut write = false;
     theme::group(ui, "Game", |ui| {
-        let row = |ui: &mut Ui, label: &str, add: &mut dyn FnMut(&mut Ui, egui::Id)| {
-            ui.horizontal(|ui| {
-                let l = theme::form_label(ui, label_w, label);
-                add(ui, l.id);
-            });
-        };
         let errors = f.errors.clone();
-        let note = |ui: &mut Ui, field| {
-            if let Some((_, e)) = errors.iter().find(|(f, _)| *f == field) {
-                theme::warning(ui, indent, e);
-            }
-        };
-        row(ui, "Name", &mut |ui, id| {
+        let note = |ui: &mut Ui, field| note(ui, &errors, field);
+        row(ui, "Name", |ui, id| {
             theme::field(ui, &mut f.name, field_w(ui, false), true, id);
         });
         note(ui, Field::Name);
-        row(ui, "Launch with", &mut |ui, _| {
+        row(ui, "Launch with", |ui, _| {
             if theme::choice(ui, f.steam, "Steam").clicked() {
                 f.steam = true;
             }
@@ -579,22 +624,22 @@ fn form(ui: &mut Ui, s: &mut Settings) {
             }
         });
         let steam = f.steam;
-        row(ui, "Steam app ID", &mut |ui, id| {
+        row(ui, "Steam app ID", |ui, id| {
             theme::field(ui, &mut f.app_id, 24.0 * U, steam, id);
         });
         note(ui, Field::AppId);
-        row(ui, "Exe path", &mut |ui, id| {
+        row(ui, "Exe path", |ui, id| {
             theme::field(ui, &mut f.exe, field_w(ui, true), !steam, id);
             if theme::button(ui, "Browse", !steam, false).clicked() {
                 browse = Some(Pick::Exe);
             }
         });
         note(ui, Field::Exe);
-        row(ui, "Arguments", &mut |ui, id| {
+        row(ui, "Arguments", |ui, id| {
             theme::field(ui, &mut f.args, field_w(ui, false), !steam, id);
         });
         note(ui, Field::Args);
-        row(ui, "Working dir", &mut |ui, id| {
+        row(ui, "Working dir", |ui, id| {
             theme::field(ui, &mut f.cwd, field_w(ui, true), !steam, id);
             if theme::button(ui, "Browse", !steam, false).clicked() {
                 browse = Some(Pick::Cwd);
@@ -605,7 +650,7 @@ fn form(ui: &mut Ui, s: &mut Settings) {
     ui.add_space(U);
     theme::group(ui, "Tag", |ui| {
         ui.horizontal(|ui| {
-            theme::form_label(ui, label_w, "Bound to");
+            theme::form_label(ui, LABEL_W, "Bound to");
             let (well, _) = ui.allocate_exact_size(vec2(field_w(ui, true), ROW), Sense::hover());
             theme::sunken(ui.painter(), well, FACE);
             let uid = f.uid.as_deref().map(format_uid);
