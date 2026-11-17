@@ -25,9 +25,10 @@ fn acquire_named(name: &str) -> io::Result<Option<InstanceGuard>> {
 }
 
 /// Whether another process (or this one) currently holds the instance.
-/// Probing never blocks a later [`acquire`].
+/// Only opens the name, never creates it, so it cannot make a concurrent
+/// [`acquire`] fail.
 pub fn is_running() -> bool {
-    matches!(acquire(), Ok(None))
+    NamedMutex::exists(NAME).unwrap_or(false)
 }
 
 #[cfg(test)]
@@ -45,6 +46,15 @@ mod tests {
                 assert!(second.is_none(), "second acquire must fail on Windows");
             }
         }
+        assert!(!NamedMutex::exists(name).unwrap());
         assert!(acquire_named(name).unwrap().is_some());
+    }
+
+    #[test]
+    fn exists_sees_a_held_name_without_taking_it() {
+        let name = r"Local\mini-launcher-test-exists";
+        assert!(!NamedMutex::exists(name).unwrap());
+        let _held = acquire_named(name).unwrap().expect("acquire");
+        assert_eq!(NamedMutex::exists(name).unwrap(), cfg!(windows));
     }
 }
