@@ -16,7 +16,8 @@ mod scan;
 #[command(name = "mini-launcher", version, about)]
 #[command(subcommand_required = true, arg_required_else_help = true)]
 struct Cli {
-    /// More log output (-v info, -vv debug, -vvv trace). `RUST_LOG` overrides.
+    /// More log output (-v info, -vv debug, -vvv trace). `RUST_LOG` overrides
+    /// this, for the log file too.
     #[arg(short, long, global = true, action = clap::ArgAction::Count)]
     verbose: u8,
 
@@ -111,7 +112,7 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
     // Only `run` is long-lived (and, as a tray app, has no console to read).
     let is_run = matches!(cli.command, Command::Run { .. });
-    let log_dir = is_run.then(mini_launcher_core::logs::default_dir).flatten();
+    let log_dir = is_run.then(mini_launcher_core::logs::dir).flatten();
     // Held until exit so buffered file lines get flushed.
     let _log_guard = logging::init(cli.verbose, log_dir.as_deref());
     if is_run && log_dir.is_none() {

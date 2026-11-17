@@ -93,7 +93,7 @@ pub fn run(out: &mut impl Write, opts: Options, stop: &AtomicBool) -> Result<()>
         writeln!(out, "watching {name} for tags (Ctrl-C to stop)")?;
         // Without --port, auto-detection runs again on every attempt: the
         // adapter may come back under another name.
-        let reopen = || port::open_poller(explicit);
+        let reopen = || port::reopen_poller(explicit);
         let mut reader = Reconnector::new(name, reader, reopen, Backoff::default());
         poll_loop(out, &ctx, stop, &mut SystemClock, |now| {
             Some(reader.tick(now))
@@ -126,6 +126,22 @@ fn poll_loop<E: Display>(
             Tick::Reconnected { port } => {
                 tracing::info!(%port, "reader reconnected");
                 writeln!(out, "reader reconnected on {port}")?;
+                out.flush()?;
+                Vec::new()
+            }
+            Tick::Stuck {
+                port,
+                attempts,
+                error,
+            } => {
+                tracing::warn!(
+                    "the reader on {port} is still not back after {attempts} attempts: {error}; \
+                     still retrying"
+                );
+                writeln!(
+                    out,
+                    "reader still not back after {attempts} attempts: {error}"
+                )?;
                 out.flush()?;
                 Vec::new()
             }
@@ -267,9 +283,13 @@ mod tests {
     }
 
     /// The tag sits on the reader, the reader is unplugged, the first
-    /// `failed_opens` reopens fail and then it comes back with the tag still
-    /// on it. Returns the output of `ticks` polls.
-    fn unplug_and_replug(failed_opens: u32, ticks: u32) -> String {
+    /// `failed_opens` reopens fail and then it comes back, first polling
+    /// `after` and then the tag. Returns the output of `ticks` polls.
+    fn unplug_and_replug(
+        failed_opens: u32,
+        ticks: u32,
+        after: Vec<io::Result<Option<(Uid, Payload)>>>,
+    ) -> String {
         let ctx = Ctx {
             config: Config::default(),
             path: None,
@@ -282,12 +302,13 @@ mod tests {
             stop: &stop,
         };
         let mut opens = 0;
+        let mut after = after;
         let open = || {
             opens += 1;
             if opens <= failed_opens {
                 return Err("adapter not found");
             }
-            Ok(("COM9".to_owned(), Fake(VecDeque::new())))
+            Ok(("COM9".to_owned(), Fake(after.drain(..).collect())))
         };
         let first = Fake([tag(), tag(), Err(io::ErrorKind::BrokenPipe.into())].into());
         let mut reader = Reconnector::new("COM7".into(), first, open, Backoff::default());
@@ -303,7 +324,7 @@ mod tests {
     fn quick_replug_keeps_running_without_relaunching() {
         // Lost at 400 ms; reopens at 1 s (fails), then ~2 s: inside the 5 s
         // re-seat window.
-        let out = unplug_and_replug(1, 50);
+        let out = unplug_and_replug(1, 50, Vec::new());
         let lines: Vec<_> = out.lines().collect();
         assert_eq!(
             lines,
@@ -317,11 +338,37 @@ mod tests {
     }
 
     #[test]
-    fn long_outage_relaunches_the_tag_like_a_fresh_insert() {
-        // Five failed reopens: 0.5+1+2+4+5+5 s of backoff, past the window.
-        let out = unplug_and_replug(5, 150);
+    fn long_outage_with_the_tag_left_on_does_not_relaunch() {
+        // Six failed reopens: 0.5+1+2+4+5+5+5 s of backoff, past the window.
+        let out = unplug_and_replug(6, 150, Vec::new());
+        let lines: Vec<_> = out.lines().collect();
+        assert_eq!(
+            lines,
+            [
+                "launch 04A1B2C3: open steam://rungameid/440 (tag steam:) [dry run]",
+                "removed 04A1B2C3",
+                "reader still not back after 5 attempts: adapter not found",
+                "reader reconnected on COM9",
+                "reseated 04A1B2C3: not relaunching",
+            ]
+        );
+    }
+
+    #[test]
+    fn tag_lifted_after_a_long_outage_relaunches_when_put_back() {
+        let lifted = (0..5).map(|_| Ok(None)).collect();
+        let out = unplug_and_replug(6, 150, lifted);
         assert_eq!(out.matches("launch 04A1B2C3").count(), 2, "{out}");
-        assert!(out.contains("reader reconnected on COM9"), "{out}");
         assert!(!out.contains("reseated"), "{out}");
+    }
+
+    #[test]
+    fn different_tag_after_a_long_outage_launches() {
+        let other = Ok(Some((
+            Uid::from_hex("deadbeef").unwrap(),
+            Payload::Steam(70),
+        )));
+        let out = unplug_and_replug(6, 150, vec![other, Ok(None), Ok(None)]);
+        assert!(out.contains("launch DEADBEEF"), "{out}");
     }
 }

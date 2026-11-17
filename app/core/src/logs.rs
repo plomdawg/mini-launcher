@@ -2,6 +2,18 @@
 
 use std::path::{Path, PathBuf};
 
+/// Environment variable that overrides the log directory (used by tests).
+pub const DIR_ENV: &str = "MINI_LAUNCHER_LOG_DIR";
+
+/// The log directory: `$MINI_LAUNCHER_LOG_DIR` if set and non-empty, else
+/// [`default_dir`].
+pub fn dir() -> Option<PathBuf> {
+    match std::env::var_os(DIR_ENV) {
+        Some(d) if !d.is_empty() => Some(PathBuf::from(d)),
+        _ => default_dir(),
+    }
+}
+
 /// The per-user log directory, if the OS has a local data dir: on Windows
 /// `%LOCALAPPDATA%\mini-launcher\logs`, on Linux
 /// `$XDG_DATA_HOME/mini-launcher/logs` (usually `~/.local/share/...`).

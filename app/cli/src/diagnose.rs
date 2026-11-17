@@ -43,7 +43,7 @@ pub fn run(out: &mut impl Write, explicit: Option<&str>, all: bool) -> Result<()
         }
         None => writeln!(out, "Config: no config directory available on this system")?,
     }
-    match logs::default_dir() {
+    match logs::dir() {
         Some(dir) => writeln!(out, "Logs: {} (written by `run`)", dir.display())?,
         None => writeln!(out, "Logs: no data directory available on this system")?,
     }
