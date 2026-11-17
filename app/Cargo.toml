@@ -8,3 +8,12 @@ edition = "2021"
 publish = false
 license = "MIT OR Apache-2.0"
 rust-version = "1.100.0"
+
+# Release builds (release.yml): `cargo build --profile dist` → target/dist/.
+# Sizes measured in docs/adr/0001-desktop-stack.md (CLI 2.10 → 1.45 MiB).
+[profile.dist]
+inherits = "release"
+lto = "fat"
+codegen-units = 1
+strip = true
+opt-level = "s"

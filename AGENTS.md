@@ -15,6 +15,7 @@ app/        Rust workspace — core (reader, NDEF, payload, config, launch, debo
             + cli (the `mini-launcher` console exe and the windowless `mini-launcher-tray`)
 web/        Box-art generator ("Plomcase" prototype): vanilla JS + Python stdlib server
 hardware/   STL/3MF/STEP, BOM.md, wiring diagrams
+installer/  Inno Setup script (per-user setup.exe) + its silent install/uninstall test
 docs/       tag-format.md, reader protocol notes, assembly.md, compliance.md, adr/ (decision records)
 .github/    ci.yml (windows + ubuntu matrix), release.yml (tag → GitHub Releases)
 ```
@@ -70,8 +71,10 @@ Tag contents are untrusted input.
 - The Rust toolchain is pinned in `app/rust-toolchain.toml` (rustup and CI both read it; MSRV =
   `rust-version` in `app/Cargo.toml`). To bump: update both to the new stable version in one PR
   and fix any new fmt/clippy findings there.
-- Releases are Windows-only for now: tags `app-v*` → GitHub Release with the `.exe` +
-  `SHA256SUMS`. Windows code signing via SignPath (free for OSS) is planned later; until then
+- Releases are Windows-only for now: tags `app-v*` → GitHub Release with a per-user
+  Inno Setup `setup.exe`, a portable `.zip` (both exes) and `SHA256SUMS`, built with
+  `--profile dist`. Inno Setup is downloaded at a pinned version and SHA-256 in `release.yml`
+  (bump `INNO_*` there). Windows code signing via SignPath (free for OSS) is planned later; until then
   document SmartScreen "More info → Run anyway". Keep ubuntu-latest in the CI matrix.
 - Workflows: `.github/workflows/ci.yml` (PRs/main) and `.github/workflows/release.yml` (tags).
   Every third-party action is pinned to a full commit SHA with a `# vX.Y.Z` comment;
@@ -84,13 +87,16 @@ Tag contents are untrusted input.
 1. Bump `[workspace.package] version` in `app/Cargo.toml` (run `cargo check` so `Cargo.lock`
    follows), merge that PR to `main`.
 2. Optional dry run: Actions → Release → "Run workflow" on `main` with `dry-run` checked (the
-   default). It builds and uploads `mini-launcher-<version>-windows-x86_64.exe` + `SHA256SUMS`
-   as a workflow artifact and publishes nothing. PRs that change `release.yml` run the same
-   dry run automatically.
+   default). It builds `mini-launcher-<version>-windows-x86_64-setup.exe` and
+   `mini-launcher-<version>-windows-x86_64.zip`, runs `installer/test-install.ps1` (silent
+   install, checks, silent uninstall), and uploads both + `SHA256SUMS` as a workflow artifact;
+   it publishes nothing. PRs that change `release.yml` or `installer/` run the same dry run
+   automatically.
 3. Tag the merged commit and push the tag:
    `git tag app-vX.Y.Z <sha> && git push origin app-vX.Y.Z`.
    The workflow fails if `X.Y.Z` doesn't equal the Cargo version; otherwise it creates the
-   GitHub Release `app-vX.Y.Z` with auto-generated notes and the `.exe` + `SHA256SUMS` assets.
+   GitHub Release `app-vX.Y.Z` with auto-generated notes and the setup `.exe`, `.zip` and
+   `SHA256SUMS` assets.
 4. A failed tag run can be retried with "Re-run jobs"; if the tag itself was wrong, delete it
    (and the release, if one was published) and push a corrected one.
 

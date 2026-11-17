@@ -10,46 +10,63 @@ You need:
 - an Android or iPhone with the free **NFC Tools** app (to write tags)
 - Steam, if you want to launch Steam games
 
-## 1. Download the launcher
+## 1. Install the launcher
 
-Download the launcher from the repository's
-[**Releases** page](https://github.com/plomdawg/mini-launcher/releases) on GitHub (the first
-release is `app-v0.1.0`):
+Download it from the repository's
+[**Releases** page](https://github.com/plomdawg/mini-launcher/releases) on GitHub. Open the
+newest release and, under **Assets**, download
+`mini-launcher-<version>-windows-x86_64-setup.exe` (for example
+`mini-launcher-0.1.0-windows-x86_64-setup.exe`) and `SHA256SUMS`.
 
-1. Open the newest release and, under **Assets**, download
-   `mini-launcher-<version>-windows-x86_64.exe` (for example
-   `mini-launcher-0.1.0-windows-x86_64.exe`) and `SHA256SUMS`.
-2. Move the `.exe` somewhere permanent, for example `C:\Tools\mini-launcher\`, and rename it to
-   `mini-launcher.exe` so the commands in this guide work as written.
-3. Optional but recommended: check that the download isn't damaged or tampered with. In
-   PowerShell, in the folder where you downloaded both files (before renaming the `.exe`), run:
+Optional but recommended: check that the download isn't damaged or tampered with. In
+PowerShell, in the folder where you downloaded both files, run:
 
-   ```powershell
-   Get-FileHash .\mini-launcher-0.1.0-windows-x86_64.exe -Algorithm SHA256
-   Get-Content .\SHA256SUMS
-   ```
+```powershell
+Get-FileHash .\mini-launcher-0.1.0-windows-x86_64-setup.exe -Algorithm SHA256
+Get-Content .\SHA256SUMS
+```
 
-   The `Hash` from the first command must match the long hex string next to the same file name
-   in `SHA256SUMS` (upper/lower case doesn't matter). If they differ, delete the file and
-   download it again.
+The `Hash` from the first command must match the long hex string next to the same file name
+in `SHA256SUMS` (upper/lower case doesn't matter). If they differ, delete the file and
+download it again.
 
-Testers who want an unreleased build can also download the `mini-launcher-windows-x86_64`
-artifact from any green **CI** run in the repository's **Actions** tab (signed-in GitHub users
-only). It's a zip with `mini-launcher.exe` and `mini-launcher-tray.exe` inside. The tray app
-runs in the background without a console window: double-click it, then use its notification-area
-icon to pause, open the config or logs, turn on **Start at login**, or quit. It works like
+Run the setup. It installs for your user only and never asks for admin rights:
+
+- Files go to `%LOCALAPPDATA%\Programs\Mini Launcher` (`mini-launcher-tray.exe`, the tray
+  app, and `mini-launcher.exe`, the command-line tool used below).
+- It adds **Mini Launcher** to the Start menu.
+- **Start Mini Launcher when I sign in** (ticked by default) starts the tray app at login.
+  You can change this later with **Start at login** in the tray menu.
+- **Launch Mini Launcher** on the last page starts the tray app right away.
+
+The setup isn't code-signed yet, so Windows SmartScreen may say "Windows protected your PC":
+click **More info**, then **Run anyway**. If Windows still blocks it, right-click the file →
+**Properties** → tick **Unblock** → **OK**, or run `Unblock-File` on it in PowerShell.
+
+The tray app runs in the background without a console window: use its notification-area icon
+to pause, open the config or logs, turn **Start at login** on or off, or quit. It works like
 `mini-launcher run`, and only one of the two can use the reader at a time.
 
-The `.exe` isn't code-signed yet. If you start it from File Explorer, Windows SmartScreen may
-say "Windows protected your PC": click **More info**, then **Run anyway**. Starting it from
-PowerShell (below) usually skips that prompt. If Windows still blocks it, right-click the
-`.exe` → **Properties** → tick **Unblock** → **OK**, or run `Unblock-File .\mini-launcher.exe`
-in PowerShell.
+**Updating:** run the newer setup; it replaces the installed version and keeps your settings.
+If Mini Launcher is running, setup asks you to quit it first (tray icon → **Quit**).
+
+**Uninstalling:** Windows **Settings → Apps → Installed apps → Mini Launcher → Uninstall**
+(quit the tray app first). This removes the program, the Start menu entry and the start-at-login
+entry. Your config (`%APPDATA%\mini-launcher`) and logs (`%LOCALAPPDATA%\mini-launcher`) are
+kept; delete those folders by hand if you want them gone.
+
+**Portable alternative:** the release also has `mini-launcher-<version>-windows-x86_64.zip`
+with the same two programs and no installer. Unzip it somewhere permanent (for example
+`C:\Tools\mini-launcher\`); nothing is added to the Start menu or the uninstall list. SmartScreen
+applies the same way. Testers who want an unreleased build can download the
+`mini-launcher-windows-x86_64` artifact from any green **CI** run in the repository's
+**Actions** tab (signed-in GitHub users only); it holds the same two programs.
 
 `mini-launcher.exe` is a **console program**: double-clicking it just flashes a window. Run it
 from PowerShell or Windows Terminal instead:
 
-1. Open the folder with `mini-launcher.exe` in File Explorer.
+1. Open the folder with `mini-launcher.exe` in File Explorer. For an installed copy, paste
+   `%LOCALAPPDATA%\Programs\Mini Launcher` into File Explorer's address bar.
 2. Right-click an empty spot in the folder and choose **Open in Terminal** (on older Windows:
    hold Shift, right-click, **Open PowerShell window here**).
 3. Check that it works:
@@ -198,6 +215,10 @@ Keep the window open while you play; the launcher only works while `run` is runn
 
 ### Start at login
 
+If you installed with the setup, the tray app already handles this (the setup task or the
+tray's **Start at login**). The commands below are for the console `run` instead; they use the
+same single start-at-login entry, so enabling one replaces the other.
+
 To start `run` automatically when you sign in (per user, no admin rights needed):
 
 ```powershell
@@ -300,7 +321,7 @@ gets a similar message with that `id` filled in.
 | `no reply from the PN532` or `cannot configure the PN532` | DIP switches both OFF, TX/RX crossed, board VCC on the adapter's **5V** pin (not 3V3), GND connected. |
 | `COM port not found or in use by another program` | Check the COM number in Device Manager. Close any other program using the port, including a second `mini-launcher` window. |
 | `no CH340 reader adapter found` | Your adapter is a different chip. Pass `--port COM3` (your number). |
-| `mini-launcher is already running` | Another `run` (maybe the one started at login) has the reader. Close it, or use `autostart disable`. |
+| `mini-launcher is already running` | The tray app or another `run` (maybe the one started at login) has the reader. Quit it (tray icon → **Quit**), or use `autostart disable`. |
 | `lost the reader on COM3` | The adapter was unplugged or dropped off USB. Plug it back in: `run` keeps going and prints `reader reconnected on COM3` (`scan` exits; start it again). |
 | Tag isn't detected | Center it on the reader's antenna. Keep metal (foil, real CDs/DVDs) away from it. Check with `scan`. |
 | Tag is detected but nothing launches | Run `.\mini-launcher.exe run -v` (or `-vv` for more detail) and read the line printed for the tag. `unknown tag` means map it in the config or rewrite it. For an `exe` game, check the path. |
