@@ -13,7 +13,7 @@ use std::sync::Mutex;
 use toml_edit::{ArrayOfTables, DocumentMut, Item, Table, Value};
 
 use super::location::{ConfigLocation, LocationError};
-use super::{format_uid, read_text_or_empty, Config, ConfigError, Game};
+use super::{format_uid, read_text_or_empty, Config, ConfigError, Emulator, Game};
 use crate::launch::LaunchPlan;
 use crate::payload::Slug;
 
@@ -32,6 +32,10 @@ pub enum EditError {
     Location(#[from] LocationError),
     #[error("no game with id \"{0}\"")]
     NoSuchGame(Slug),
+    #[error("no emulator with id \"{0}\"")]
+    NoSuchEmulator(Slug),
+    #[error("emulator \"{id}\" is still used by {}", quoted(games))]
+    EmulatorInUse { id: Slug, games: Vec<Slug> },
     #[error("{0}")]
     Unsupported(String),
     #[error("not a Mini Launcher export: {0}")]
@@ -73,25 +77,57 @@ impl ConfigDocument {
     /// Adds `game`, or updates the entry with the same id in place (keeping
     /// its comments and key order).
     pub fn upsert_game(&mut self, game: &Game) -> Result<(), EditError> {
-        self.edit(|doc| {
-            let games = games_mut(doc)?;
-            let table = match find(games, &game.id) {
-                Some(i) => games.get_mut(i).expect("index from find"),
-                None => {
-                    games.push(Table::new());
-                    games.get_mut(games.len() - 1).expect("just pushed")
-                }
-            };
-            write_game(table, game)
-        })
+        self.edit(|doc| write_game(entry_mut(doc, GAMES, &game.id)?, game))
     }
 
     /// Removes the entry with this id (and the comments above it).
     pub fn remove_game(&mut self, id: &Slug) -> Result<(), EditError> {
         self.edit(|doc| {
-            let games = games_mut(doc)?;
+            let games = section_mut(doc, GAMES)?;
             let i = find(games, id).ok_or_else(|| EditError::NoSuchGame(id.clone()))?;
             games.remove(i);
+            Ok(())
+        })
+    }
+
+    /// Adds `emulator`, or updates the `[[emulators]]` entry with the same
+    /// id in place. Games using it pick up the new exe, args and cwd.
+    pub fn upsert_emulator(&mut self, emulator: &Emulator) -> Result<(), EditError> {
+        self.edit(|doc| {
+            let above_games = (!doc.contains_key(EMULATORS))
+                .then(|| games_after_emulators(doc))
+                .flatten();
+            let table = entry_mut(doc, EMULATORS, &emulator.id)?;
+            if let Some((position, header)) = above_games {
+                table.set_position(position);
+                table.decor_mut().set_prefix(header);
+            }
+            write_emulator(table, emulator)
+        })
+    }
+
+    /// Removes the `[[emulators]]` entry with this id (and the comments above
+    /// it, so removing the first entry also drops a section header comment
+    /// written above it); fails with [`EditError::EmulatorInUse`] while any
+    /// game still uses it.
+    pub fn remove_emulator(&mut self, id: &Slug) -> Result<(), EditError> {
+        let games: Vec<Slug> = self
+            .config
+            .games
+            .iter()
+            .filter(|g| matches!(&g.plan, LaunchPlan::Emulator { emulator, .. } if emulator == id))
+            .map(|g| g.id.clone())
+            .collect();
+        if !games.is_empty() {
+            return Err(EditError::EmulatorInUse {
+                id: id.clone(),
+                games,
+            });
+        }
+        self.edit(|doc| {
+            let emulators = section_mut(doc, EMULATORS)?;
+            let i = find(emulators, id).ok_or_else(|| EditError::NoSuchEmulator(id.clone()))?;
+            emulators.remove(i);
             Ok(())
         })
     }
@@ -99,7 +135,7 @@ impl ConfigDocument {
     /// Binds a tag UID to the entry with this id, or unbinds it (`None`).
     pub fn set_uid(&mut self, id: &Slug, uid: Option<&[u8]>) -> Result<(), EditError> {
         self.edit(|doc| {
-            let games = games_mut(doc)?;
+            let games = section_mut(doc, GAMES)?;
             let i = find(games, id).ok_or_else(|| EditError::NoSuchGame(id.clone()))?;
             let table = games.get_mut(i).expect("index from find");
             set(table, "uid", uid.map(|u| format_uid(u).into()));
@@ -216,15 +252,84 @@ impl std::fmt::Display for ConfigDocument {
     }
 }
 
-fn games_mut(doc: &mut DocumentMut) -> Result<&mut ArrayOfTables, EditError> {
-    doc.entry("games")
+const GAMES: &str = "games";
+const EMULATORS: &str = "emulators";
+
+/// `"a", "b"` for error messages.
+fn quoted(ids: &[Slug]) -> String {
+    let ids: Vec<String> = ids.iter().map(|id| format!("\"{id}\"")).collect();
+    ids.join(", ")
+}
+
+/// The `[[name]]` array, created if missing.
+fn section_mut<'a>(
+    doc: &'a mut DocumentMut,
+    name: &str,
+) -> Result<&'a mut ArrayOfTables, EditError> {
+    doc.entry(name)
         .or_insert_with(|| Item::ArrayOfTables(ArrayOfTables::new()))
         .as_array_of_tables_mut()
         .ok_or_else(|| {
-            EditError::Unsupported(
-                "`games` must be written as [[games]] blocks to be edited by the app".into(),
-            )
+            EditError::Unsupported(format!(
+                "`{name}` must be written as [[{name}]] blocks to be edited by the app"
+            ))
         })
+}
+
+/// Moves `games` after a new `emulators` key, so a new first
+/// `[[emulators]]` entry is written above the games. Returns the position
+/// of the first `[[games]]` table and the file-header part of its comments
+/// (up to the last blank line), both for the new entry to take.
+fn games_after_emulators(doc: &mut DocumentMut) -> Option<(Option<isize>, String)> {
+    let (key, mut games) = doc.as_table_mut().remove_entry(GAMES)?;
+    let first = games.as_array_of_tables_mut().and_then(|g| g.get_mut(0));
+    let mut above = (None, String::new());
+    if let Some(first) = first {
+        let prefix = first.decor().prefix().and_then(|p| p.as_str());
+        let prefix = prefix.unwrap_or_default().to_owned();
+        let (header, own) = match prefix.rfind("\n\n") {
+            Some(i) => prefix.split_at(i + 2),
+            None => ("", prefix.as_str()),
+        };
+        above = (first.position(), header.to_owned());
+        first.decor_mut().set_prefix(format!("\n{own}"));
+    }
+    doc.insert(EMULATORS, Item::ArrayOfTables(ArrayOfTables::new()));
+    doc.as_table_mut().insert_formatted(&key, games);
+    Some(above)
+}
+
+/// The `[[name]]` entry with this id, appended if there is none.
+fn entry_mut<'a>(
+    doc: &'a mut DocumentMut,
+    name: &str,
+    id: &Slug,
+) -> Result<&'a mut Table, EditError> {
+    let tables = section_mut(doc, name)?;
+    let i = match find(tables, id) {
+        Some(i) => i,
+        None => {
+            tables.push(Table::new());
+            tables.len() - 1
+        }
+    };
+    Ok(tables.get_mut(i).expect("index in range"))
+}
+
+fn path_value(p: &Path) -> Result<Value, EditError> {
+    p.to_str()
+        .map(Value::from)
+        .ok_or_else(|| EditError::Unsupported(format!("path {} is not valid Unicode", p.display())))
+}
+
+fn write_emulator(table: &mut Table, emulator: &Emulator) -> Result<(), EditError> {
+    set(table, "id", Some(emulator.id.as_str().into()));
+    set(table, "name", Some(emulator.name.as_str().into()));
+    set(table, "exe", Some(path_value(&emulator.exe)?));
+    set(table, "args", Some(emulator.args.iter().collect()));
+    let cwd = emulator.cwd.as_deref().map(path_value).transpose()?;
+    set(table, "cwd", cwd);
+    Ok(())
 }
 
 fn find(games: &ArrayOfTables, id: &Slug) -> Option<usize> {
@@ -241,29 +346,35 @@ fn write_game(table: &mut Table, game: &Game) -> Result<(), EditError> {
         "uid",
         game.uid.as_deref().map(|u| format_uid(u).into()),
     );
-    let path_value = |p: &Path| {
-        p.to_str().map(Value::from).ok_or_else(|| {
-            EditError::Unsupported(format!("path {} is not valid Unicode", p.display()))
-        })
-    };
-    let (appid, exe, args, cwd) = match &game.plan {
-        LaunchPlan::Steam { appid } => (Some(i64::from(*appid).into()), None, None, None),
-        LaunchPlan::Exe { path, args, cwd } => (
-            None,
-            Some(path_value(path)?),
-            (!args.is_empty()).then(|| Value::Array(args.iter().collect())),
-            cwd.as_deref().map(path_value).transpose()?,
-        ),
-        LaunchPlan::Emulator { .. } => {
-            return Err(EditError::Unsupported(
-                "emulator games can't be saved by the app yet; edit config.toml".into(),
-            ))
+    let (mut appid, mut exe, mut args, mut cwd, mut emulator, mut rom) =
+        (None, None, None, None, None, None);
+    match &game.plan {
+        LaunchPlan::Steam { appid: n } => appid = Some(i64::from(*n).into()),
+        LaunchPlan::Exe {
+            path,
+            args: a,
+            cwd: c,
+        } => {
+            exe = Some(path_value(path)?);
+            args = (!a.is_empty()).then(|| Value::Array(a.iter().collect()));
+            cwd = c.as_deref().map(path_value).transpose()?;
         }
-    };
+        // Exe, args and cwd come from the [[emulators]] entry.
+        LaunchPlan::Emulator {
+            emulator: id,
+            rom: r,
+            ..
+        } => {
+            emulator = Some(id.as_str().into());
+            rom = Some(path_value(r)?);
+        }
+    }
     set(table, "steam_appid", appid);
     set(table, "exe", exe);
     set(table, "args", args);
     set(table, "cwd", cwd);
+    set(table, "emulator", emulator);
+    set(table, "rom", rom);
     Ok(())
 }
 
@@ -274,12 +385,26 @@ fn set(table: &mut Table, key: &str, value: Option<Value>) {
         return;
     };
     if let Some(old) = table.get(key).and_then(Item::as_value) {
-        if old.to_string().trim() == value.to_string().trim() {
+        if same_value(old, &value) {
             return;
         }
         *value.decor_mut() = old.decor().clone();
     }
     table.insert(key, Item::Value(value));
+}
+
+/// Whether `a` and `b` hold the same data, ignoring quoting, layout and
+/// comments, so a no-op edit leaves the user's formatting alone.
+fn same_value(a: &Value, b: &Value) -> bool {
+    match (a, b) {
+        (Value::String(a), Value::String(b)) => a.value() == b.value(),
+        (Value::Integer(a), Value::Integer(b)) => a.value() == b.value(),
+        (Value::Boolean(a), Value::Boolean(b)) => a.value() == b.value(),
+        (Value::Array(a), Value::Array(b)) => {
+            a.len() == b.len() && a.iter().zip(b.iter()).all(|(a, b)| same_value(a, b))
+        }
+        _ => a.to_string().trim() == b.to_string().trim(),
+    }
 }
 
 /// Makes temp file names unique within this process.
@@ -488,21 +613,243 @@ args = ["--fullscreen"]
         ));
     }
 
+    const EMULATED: &str = r#"# Emulators
+[[emulators]] # mine
+id = "eden"
+name = "Eden" # Switch
+exe = 'C:\Emulators\Eden\eden.exe'
+args = ["-f", "-g", "{rom}"]
+
+# Games
+[[games]]
+id = "mk8"
+name = "MK8"
+emulator = "eden" # the emulator
+rom = 'D:\Switch\mk8.nsp'
+
+[[games]]
+id = "botw"
+name = "BotW"
+emulator = "eden"
+rom = 'D:\Switch\botw.nsp'
+"#;
+
+    fn emulator(id: &str, args: &[&str]) -> Emulator {
+        Emulator {
+            id: slug(id),
+            name: id.to_uppercase(),
+            exe: format!(r"C:\Emulators\{id}.exe").into(),
+            args: args.iter().map(|a| a.to_string()).collect(),
+            cwd: None,
+        }
+    }
+
+    fn emulator_game(id: &str, emulator: &str, rom: &str) -> Game {
+        Game {
+            id: slug(id),
+            name: id.into(),
+            uid: None,
+            plan: LaunchPlan::Emulator {
+                emulator: slug(emulator),
+                rom: rom.into(),
+                // Derived from the emulator entry; never written.
+                path: "ignored".into(),
+                args: vec![],
+                cwd: None,
+            },
+        }
+    }
+
     #[test]
-    fn emulator_entries_survive_edits_but_are_not_written_yet() {
-        let text = "[[emulators]] # mine\nid = \"eden\"\nname = \"Eden\"\nexe = \"e\"\n\
-                    args = [\"{rom}\"]\n\n[[games]]\nid = \"mk8\"\nname = \"MK8\"\n\
-                    emulator = \"eden\"\nrom = \"r\"\n";
-        let mut doc = ConfigDocument::parse(text).unwrap();
+    fn emulator_edits_keep_comments() {
+        let mut doc = ConfigDocument::parse(EMULATED).unwrap();
         doc.set_uid(&slug("mk8"), Some(&[1, 2, 3, 4])).unwrap();
         doc.set_uid(&slug("mk8"), None).unwrap();
+        assert_eq!(doc.to_string(), EMULATED);
+        // Saving an unchanged emulator game or emulator is a no-op.
+        doc.upsert_game(&doc.config().games[0].clone()).unwrap();
+        doc.upsert_emulator(&doc.config().emulators[0].clone())
+            .unwrap();
+        assert_eq!(doc.to_string(), EMULATED);
+
+        let mut eden = doc.config().emulators[0].clone();
+        eden.args = vec!["{rom}".into()];
+        eden.cwd = Some(r"C:\Emulators\Eden".into());
+        doc.upsert_emulator(&eden).unwrap();
+        doc.upsert_emulator(&emulator("ryu", &["--fullscreen", "{rom}"]))
+            .unwrap();
+        doc.upsert_game(&emulator_game("mk8", "ryu", r"E:\mk8.xci"))
+            .unwrap();
+        doc.upsert_game(&emulator_game("smo", "eden", r"D:\smo.nsp"))
+            .unwrap();
+        let text = doc.to_string();
+        for kept in [
+            "# Emulators\n",
+            "[[emulators]] # mine",
+            "# Switch",
+            "# the emulator",
+        ] {
+            assert!(text.contains(kept), "{kept:?} lost:\n{text}");
+        }
+        assert!(text.contains("emulator = \"ryu\" # the emulator"), "{text}");
+        let cfg = Config::parse(&text).unwrap();
+        assert_eq!(&cfg, doc.config());
+        assert_eq!(cfg.emulators.len(), 2);
+        assert_eq!(cfg.emulators[0], eden);
+        assert_eq!(cfg.games.len(), 3);
+        // Resolved against the edited emulator, not the plan that was passed.
+        let LaunchPlan::Emulator { path, args, .. } = &cfg.games[2].plan else {
+            panic!("{:?}", cfg.games[2].plan)
+        };
+        assert_eq!(
+            (path.to_str().unwrap(), &args[..]),
+            (
+                r"C:\Emulators\Eden\eden.exe",
+                &[r"D:\smo.nsp".to_owned()][..]
+            )
+        );
+    }
+
+    /// The keys of `[[games]]` entry `i` in `doc`'s text.
+    fn game_keys(doc: &ConfigDocument, i: usize) -> Vec<String> {
+        let parsed: DocumentMut = doc.to_string().parse().unwrap();
+        let games = parsed["games"].as_array_of_tables().unwrap();
+        games
+            .get(i)
+            .unwrap()
+            .iter()
+            .map(|(k, _)| k.to_owned())
+            .collect()
+    }
+
+    #[test]
+    fn switching_launch_type_drops_the_old_keys() {
+        let mut doc = ConfigDocument::parse(EMULATED).unwrap();
+        let mut mk8 = doc.config().games[0].clone();
+        mk8.plan = LaunchPlan::Steam { appid: 70 };
+        doc.upsert_game(&mk8).unwrap();
+        assert_eq!(game_keys(&doc, 0), ["id", "name", "steam_appid"]);
+
+        let mut botw = doc.config().games[1].clone();
+        botw.plan = LaunchPlan::Exe {
+            path: "b.exe".into(),
+            args: vec!["-x".into()],
+            cwd: Some("c".into()),
+        };
+        doc.upsert_game(&botw).unwrap();
+        assert_eq!(game_keys(&doc, 1), ["id", "name", "exe", "args", "cwd"]);
+
+        doc.upsert_game(&emulator_game("botw", "eden", "botw.xci"))
+            .unwrap();
+        assert_eq!(game_keys(&doc, 1), ["id", "name", "emulator", "rom"]);
+        assert_eq!(&Config::parse(&doc.to_string()).unwrap(), doc.config());
+    }
+
+    #[test]
+    fn unchanged_values_keep_their_formatting() {
+        let text = r#"[[emulators]]
+id = "eden"
+name = "Eden"
+exe = 'C:\Eden\eden.exe'
+args = [
+  "-f", # fullscreen
+  "{rom}", # the game
+]
+
+[[games]]
+id = "mk8"
+name = "MK8"
+emulator = "eden"
+rom = 'D:\mk8.nsp'
+
+[[games]]
+id = "tool"
+name = 'Tool'
+exe = 'C:\Tool\tool.exe'
+args = [
+  "--big", # bigger window
+]
+"#;
+        let mut doc = ConfigDocument::parse(text).unwrap();
+        let cfg = doc.config().clone();
+        doc.upsert_emulator(&cfg.emulators[0]).unwrap();
+        for game in &cfg.games {
+            doc.upsert_game(game).unwrap();
+        }
         assert_eq!(doc.to_string(), text);
-        let game = doc.config().games[0].clone();
+
+        // Changing one key leaves the others alone.
+        let mut eden = cfg.emulators[0].clone();
+        eden.name = "Eden 2".into();
+        doc.upsert_emulator(&eden).unwrap();
+        let mut tool = cfg.games[1].clone();
+        tool.name = "Tool 2".into();
+        doc.upsert_game(&tool).unwrap();
+        let want = text
+            .replace("name = \"Eden\"", "name = \"Eden 2\"")
+            .replace("name = 'Tool'", "name = \"Tool 2\"");
+        assert_eq!(doc.to_string(), want);
+    }
+
+    #[test]
+    fn a_new_emulators_section_goes_above_the_games() {
+        let mut doc = ConfigDocument::parse(COMMENTED).unwrap();
+        doc.upsert_emulator(&emulator("eden", &["{rom}"])).unwrap();
+        doc.upsert_emulator(&emulator("ryu", &["{rom}"])).unwrap();
+        let text = doc.to_string();
+        let first_game = text.find("[[games]]").unwrap();
+        assert!(text.rfind("[[emulators]]").unwrap() < first_game, "{text}");
+        assert!(
+            text.starts_with("# My library\n# (hand-written)\n\n[[emulators]]"),
+            "{text}"
+        );
+        assert!(
+            text.contains("args = [\"{rom}\"]\n\n# Steam\n[[games]]"),
+            "{text}"
+        );
+        let cfg = Config::parse(&text).unwrap();
+        assert_eq!(&cfg, doc.config());
+        assert_eq!((cfg.emulators.len(), cfg.games.len()), (2, 2));
+    }
+
+    #[test]
+    fn removing_an_emulator_in_use_names_its_games() {
+        let mut doc = ConfigDocument::parse(EMULATED).unwrap();
+        let err = doc.remove_emulator(&slug("eden")).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "emulator \"eden\" is still used by \"mk8\", \"botw\""
+        );
         assert!(matches!(
-            doc.upsert_game(&game),
+            doc.remove_emulator(&slug("nope")),
+            Err(EditError::NoSuchEmulator(_))
+        ));
+        // Unknown emulators and invalid args fail validation.
+        let err = doc
+            .upsert_game(&emulator_game("x", "nope", "r"))
+            .unwrap_err();
+        assert!(err.to_string().contains("\"nope\" is not defined"), "{err}");
+        let err = doc.upsert_emulator(&emulator("eden", &["-f"])).unwrap_err();
+        assert!(err.to_string().contains("exactly once"), "{err}");
+        assert_eq!(doc.to_string(), EMULATED);
+
+        doc.remove_game(&slug("mk8")).unwrap();
+        doc.remove_game(&slug("botw")).unwrap();
+        doc.remove_emulator(&slug("eden")).unwrap();
+        assert!(doc.config().emulators.is_empty());
+        assert!(!doc.to_string().contains("# mine"), "{doc}");
+
+        // Into an empty file.
+        let mut doc = ConfigDocument::parse("").unwrap();
+        doc.upsert_emulator(&emulator("eden", &["{rom}"])).unwrap();
+        doc.upsert_game(&emulator_game("mk8", "eden", "mk8.nsp"))
+            .unwrap();
+        assert_eq!(&Config::parse(&doc.to_string()).unwrap(), doc.config());
+        let mut inline = ConfigDocument::parse("emulators = []").unwrap();
+        assert!(matches!(
+            inline.upsert_emulator(&emulator("eden", &["{rom}"])),
             Err(EditError::Unsupported(_))
         ));
-        assert_eq!(doc.to_string(), text);
     }
 
     #[test]
