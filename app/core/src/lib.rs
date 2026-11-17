@@ -5,6 +5,7 @@
 //! to be testable without hardware.
 
 pub mod ndef;
+pub mod payload;
 
 /// Version of the core library, taken from `Cargo.toml`.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
