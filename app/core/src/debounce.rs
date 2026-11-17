@@ -15,8 +15,9 @@ pub enum Event {
     /// A tag arrived. This is the only event that should trigger a launch.
     Inserted { uid: Uid, payload: Payload },
     /// The tag that was just removed came back within the re-seat window.
-    /// Not a new launch.
-    Reseated { uid: Uid },
+    /// Not a new launch, even if the tag was rewritten meanwhile. Consumers
+    /// that close the game on `Removed` (opt-in) may relaunch from `payload`.
+    Reseated { uid: Uid, payload: Payload },
     /// The tag has been gone for the configured number of polls.
     Removed { uid: Uid },
 }
@@ -77,7 +78,7 @@ impl Debouncer {
                         if prev == uid
                             && now.saturating_duration_since(seen) <= self.config.reseat_window);
                     events.push(if reseat {
-                        Event::Reseated { uid }
+                        Event::Reseated { uid, payload }
                     } else {
                         Event::Inserted { uid, payload }
                     });
@@ -187,7 +188,8 @@ mod tests {
         h.poll(tag(A));
         h.polls(5, None); // removed, 1 s after last sighting
         let uid = Uid::from_hex(A).unwrap();
-        assert_eq!(h.poll(tag(A)), vec![Event::Reseated { uid }]);
+        let payload = Payload::Steam(440);
+        assert_eq!(h.poll(tag(A)), vec![Event::Reseated { uid, payload }]);
         assert_eq!(h.polls(3, tag(A)), vec![]);
         // Removing again still reports removal.
         assert_eq!(h.polls(5, None), vec![removed(A)]);

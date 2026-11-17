@@ -5,8 +5,8 @@
 //! the job of [`crate::debounce`].
 
 use std::fmt;
-use std::io::BufRead;
-use std::sync::mpsc::{self, Receiver};
+use std::io::{BufRead, Read};
+use std::sync::mpsc::{self, Receiver, TryRecvError};
 
 use crate::payload::Payload;
 
@@ -42,12 +42,15 @@ impl Uid {
         if !hex.len().is_multiple_of(2) {
             return Err(UidError::OddLength);
         }
+        if !matches!(hex.len(), 8 | 14 | 20) {
+            return Err(UidError::BadLength(hex.len() / 2));
+        }
         // All ASCII hex digits, so byte-slicing on pairs is safe.
-        let bytes: Vec<u8> = (0..hex.len())
-            .step_by(2)
-            .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).expect("validated hex"))
-            .collect();
-        Uid::new(&bytes)
+        let mut bytes = [0; Uid::MAX_LEN];
+        for (i, b) in bytes.iter_mut().take(hex.len() / 2).enumerate() {
+            *b = u8::from_str_radix(&hex[2 * i..2 * i + 2], 16).expect("validated hex");
+        }
+        Uid::new(&bytes[..hex.len() / 2])
     }
 
     /// The UID bytes.
@@ -94,10 +97,16 @@ pub type Reading = (Uid, Payload);
 /// A source of raw tag readings, polled at a fixed interval by the caller.
 pub trait Reader {
     /// Error type for a failed poll (I/O, framing, bad input).
-    type Error: std::error::Error;
+    type Error: std::error::Error + Send + Sync + 'static;
 
     /// Reports what is on the reader right now. Must not block for long.
     fn poll(&mut self) -> Result<Option<Reading>, Self::Error>;
+
+    /// True once the reader can never report anything new (e.g. simulated
+    /// input reached EOF and every line was applied). Hardware never closes.
+    fn is_closed(&self) -> bool {
+        false
+    }
 }
 
 /// A command for the [`Simulated`] reader.
@@ -120,6 +129,8 @@ pub enum ParseError {
     BadUid(UidError),
     /// `remove` followed by more text.
     TrailingInput,
+    /// Longer than [`MAX_LINE`] bytes.
+    LineTooLong,
 }
 
 impl fmt::Display for ParseError {
@@ -130,17 +141,24 @@ impl fmt::Display for ParseError {
             ParseError::MissingUid => f.write_str("usage: insert <uid-hex> [payload]"),
             ParseError::BadUid(e) => write!(f, "bad UID: {e}"),
             ParseError::TrailingInput => f.write_str("usage: remove"),
+            ParseError::LineTooLong => write!(f, "line longer than {MAX_LINE} bytes"),
         }
     }
 }
 
 impl std::error::Error for ParseError {}
 
+/// Longest accepted simulated input line, in bytes.
+pub const MAX_LINE: usize = 1024;
+
 /// Parses one input line. Blank lines and `#` comments yield `Ok(None)`.
 ///
 /// The payload is everything after the UID and goes through
 /// [`Payload::parse`], exactly like text read from a real tag.
 pub fn parse_line(line: &str) -> Result<Option<Command>, ParseError> {
+    if line.len() > MAX_LINE {
+        return Err(ParseError::LineTooLong);
+    }
     let line = line.trim();
     if line.is_empty() || line.starts_with('#') {
         return Ok(None);
@@ -164,21 +182,45 @@ pub fn parse_line(line: &str) -> Result<Option<Command>, ParseError> {
 
 /// A reader driven by text commands (see [`parse_line`]) instead of hardware.
 ///
-/// Lines arrive over a channel so [`Reader::poll`] never blocks; the tag stays
-/// "present" between polls until a `remove` line arrives.
+/// Lines arrive over a channel so [`Reader::poll`] never blocks. Each poll
+/// applies at most one command (blank lines and comments are skipped), so a
+/// script plays out one tick per line. The tag stays "present" until `remove`.
 pub struct Simulated {
     lines: Receiver<String>,
     current: Option<Reading>,
+    closed: bool,
 }
 
 impl Simulated {
-    /// Reads lines from `input` (e.g. stdin) on a background thread.
-    pub fn spawn<R: BufRead + Send + 'static>(input: R) -> Simulated {
-        let (tx, rx) = mpsc::channel();
+    /// Reads lines from `input` (e.g. stdin) on a background thread. Invalid
+    /// UTF-8 and overlong lines become parse errors; only EOF or an I/O error
+    /// ends the input.
+    pub fn spawn<R: BufRead + Send + 'static>(mut input: R) -> Simulated {
+        let (tx, rx) = mpsc::sync_channel(64);
         std::thread::spawn(move || {
-            for line in input.lines() {
-                let Ok(line) = line else { break };
-                if tx.send(line).is_err() {
+            let mut buf = Vec::new();
+            loop {
+                buf.clear();
+                // Keep at most MAX_LINE + 1 bytes so parse_line can reject it.
+                let cap = (MAX_LINE + 1) as u64;
+                match input.by_ref().take(cap).read_until(b'\n', &mut buf) {
+                    Ok(0) | Err(_) => break,
+                    Ok(_) => {}
+                }
+                if buf.len() > MAX_LINE && buf.last() != Some(&b'\n') {
+                    // Discard the rest of the overlong line.
+                    let mut rest = Vec::new();
+                    while input
+                        .by_ref()
+                        .take(4096)
+                        .read_until(b'\n', &mut rest)
+                        .is_ok_and(|n| n > 0)
+                        && rest.last() != Some(&b'\n')
+                    {
+                        rest.clear();
+                    }
+                }
+                if tx.send(String::from_utf8_lossy(&buf).into_owned()).is_err() {
                     break;
                 }
             }
@@ -191,6 +233,7 @@ impl Simulated {
         Simulated {
             lines,
             current: None,
+            closed: false,
         }
     }
 }
@@ -198,19 +241,25 @@ impl Simulated {
 impl Reader for Simulated {
     type Error = ParseError;
 
-    /// Applies every queued line, then reports the current tag. A malformed
-    /// line is returned as an error and skipped; later lines apply next poll.
+    /// Applies the next command, if any, then reports the current tag. A
+    /// malformed line is returned once as an error and skipped.
     fn poll(&mut self) -> Result<Option<Reading>, ParseError> {
-        // A closed channel just stops new lines; the last state stays, like a
-        // tag left in place.
-        while let Ok(line) = self.lines.try_recv() {
-            match parse_line(&line)? {
-                Some(Command::Insert(uid, payload)) => self.current = Some((uid, payload)),
-                Some(Command::Remove) => self.current = None,
-                None => {}
+        loop {
+            match self.lines.try_recv() {
+                Ok(line) => match parse_line(&line)? {
+                    Some(Command::Insert(uid, payload)) => self.current = Some((uid, payload)),
+                    Some(Command::Remove) => self.current = None,
+                    None => continue,
+                },
+                Err(TryRecvError::Disconnected) => self.closed = true,
+                Err(TryRecvError::Empty) => {}
             }
+            return Ok(self.current.clone());
         }
-        Ok(self.current.clone())
+    }
+
+    fn is_closed(&self) -> bool {
+        self.closed
     }
 }
 
@@ -297,32 +346,53 @@ mod tests {
     }
 
     #[test]
-    fn simulated_applies_lines_and_skips_bad_ones() {
-        let (tx, rx) = mpsc::channel();
+    fn simulated_applies_one_command_per_poll() {
+        let (tx, rx) = mpsc::sync_channel(16);
         let mut sim = Simulated::from_channel(rx);
         assert_eq!(sim.poll(), Ok(None));
-        tx.send("insert deadbeef steam:440".into()).unwrap();
-        let present = Some((uid("deadbeef"), Payload::Steam(440)));
-        assert_eq!(sim.poll(), Ok(present.clone()));
-        assert_eq!(sim.poll(), Ok(present.clone()), "tag stays until removed");
-        tx.send("bogus".into()).unwrap();
-        tx.send("remove".into()).unwrap();
-        assert!(sim.poll().is_err());
-        assert_eq!(sim.poll(), Ok(None), "line after the bad one still applies");
+        for line in ["insert deadbeef steam:440", "", "# c", "remove", "bogus"] {
+            tx.send(line.into()).unwrap();
+        }
+        tx.send("insert 04a1b2c3d4e5f6".into()).unwrap();
         drop(tx);
-        assert_eq!(sim.poll(), Ok(None));
+        let a = Some((uid("deadbeef"), Payload::Steam(440)));
+        let b = Some((uid("04a1b2c3d4e5f6"), Payload::parse("")));
+        assert_eq!(sim.poll(), Ok(a));
+        assert_eq!(sim.poll(), Ok(None), "blank + comment skipped, then remove");
+        assert_eq!(sim.poll(), Err(ParseError::UnknownCommand("bogus".into())));
+        assert_eq!(sim.poll(), Ok(b.clone()), "line after the bad one applies");
+        assert!(!sim.is_closed());
+        assert_eq!(sim.poll(), Ok(b), "state kept after EOF");
+        assert!(sim.is_closed());
     }
 
     #[test]
-    fn simulated_spawn_reads_bufread() {
-        let input = std::io::Cursor::new(b"insert 04a1b2c3d4e5f6 id:x\n".to_vec());
-        let mut sim = Simulated::spawn(input);
+    fn simulated_spawn_survives_bad_input() {
+        let mut input = b"insert deadbeef steam:440\n\xff\xfe\nremove\n".to_vec();
+        input.extend(vec![b'x'; 5000]);
+        input.extend(b"\ninsert 04a1b2c3d4e5f6 id:x".as_slice()); // no final newline
+        let mut sim = Simulated::spawn(std::io::Cursor::new(input));
         let deadline = Instant::now() + Duration::from_secs(5);
-        let mut got = None;
-        while got.is_none() && Instant::now() < deadline {
-            got = sim.poll().unwrap();
-            std::thread::sleep(Duration::from_millis(5));
+        let mut seen = Vec::new();
+        while !sim.is_closed() && Instant::now() < deadline {
+            let r = sim.poll();
+            if seen.last() != Some(&r) {
+                seen.push(r);
+            }
+            std::thread::sleep(Duration::from_millis(1));
         }
-        assert_eq!(got, Some((uid("04a1b2c3d4e5f6"), Payload::parse("id:x"))));
+        let a = Some((uid("deadbeef"), Payload::Steam(440)));
+        let b = Some((uid("04a1b2c3d4e5f6"), Payload::parse("id:x")));
+        let bad_utf8 = ParseError::UnknownCommand("\u{fffd}\u{fffd}".into());
+        let want = [
+            Ok(a),
+            Err(bad_utf8),
+            Ok(None),
+            Err(ParseError::LineTooLong),
+            Ok(b),
+        ];
+        // A leading Ok(None) only shows up if a poll beat the thread.
+        let seen: Vec<_> = seen.into_iter().skip_while(|r| r == &Ok(None)).collect();
+        assert_eq!(seen, want);
     }
 }
