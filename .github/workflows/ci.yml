@@ -35,10 +35,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Installs the toolchain pinned in app/rust-toolchain.toml (no floating `stable`).
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
+        run: |
+          rustup toolchain install
+          rustc --version
+          cargo --version
 
       - name: Install libudev (Linux)
         if: runner.os == 'Linux'
