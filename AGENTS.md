@@ -91,7 +91,7 @@ Tag contents are untrusted input.
    The workflow fails if `X.Y.Z` doesn't equal the Cargo version; otherwise it creates the
    GitHub Release `app-vX.Y.Z` with auto-generated notes and the `.exe` + `SHA256SUMS` assets.
 4. A failed tag run can be retried with "Re-run jobs"; if the tag itself was wrong, delete it
-   (and any draft release) and push a corrected one.
+   (and the release, if one was published) and push a corrected one.
 
 ## Web (box-art generator)
 
