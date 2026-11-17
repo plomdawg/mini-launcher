@@ -22,7 +22,13 @@ struct Cli {
 #[derive(Debug, Subcommand)]
 enum Command {
     /// List serial ports, talk to the reader and show where the config lives.
-    Diagnose(PortArgs),
+    Diagnose {
+        #[command(flatten)]
+        port: PortArgs,
+        /// Also list non-USB serial ports.
+        #[arg(long)]
+        all: bool,
+    },
 }
 
 /// Reader port selection, shared by every command that opens the reader.
@@ -48,16 +54,27 @@ fn init_logging(verbose: u8) {
         .init();
 }
 
+/// Whether `e` came from writing to a closed stdout pipe.
+fn is_broken_pipe(e: &anyhow::Error) -> bool {
+    e.chain().any(|c| {
+        c.downcast_ref::<std::io::Error>()
+            .is_some_and(|io| io.kind() == std::io::ErrorKind::BrokenPipe)
+    })
+}
+
 fn main() -> ExitCode {
     let cli = Cli::parse();
     init_logging(cli.verbose);
     tracing::debug!("nfc-launcher {}", nfc_launcher_core::version());
 
+    let mut out = std::io::stdout().lock();
     let result = match cli.command {
-        Command::Diagnose(args) => diagnose::run(args.port.as_deref()),
+        Command::Diagnose { port, all } => diagnose::run(&mut out, port.port.as_deref(), all),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
+        // Output piped into something that quit early (`| head`): not an error.
+        Err(e) if is_broken_pipe(&e) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("error: {e:#}");
             ExitCode::FAILURE
@@ -80,12 +97,21 @@ mod tests {
         let cli =
             Cli::try_parse_from(["nfc-launcher", "diagnose", "-vv", "--port", "COM7"]).unwrap();
         assert_eq!(cli.verbose, 2);
-        let Command::Diagnose(args) = cli.command;
-        assert_eq!(args.port.as_deref(), Some("COM7"));
+        let Command::Diagnose { port, all } = cli.command;
+        assert_eq!(port.port.as_deref(), Some("COM7"));
+        assert!(!all);
 
-        let cli = Cli::try_parse_from(["nfc-launcher", "diagnose"]).unwrap();
-        let Command::Diagnose(args) = cli.command;
-        assert_eq!(args.port, None);
+        let cli = Cli::try_parse_from(["nfc-launcher", "diagnose", "--all"]).unwrap();
+        let Command::Diagnose { port, all } = cli.command;
+        assert_eq!(port.port, None);
+        assert!(all);
+    }
+
+    #[test]
+    fn broken_pipe_is_detected_through_context() {
+        let e: anyhow::Error = std::io::Error::from(std::io::ErrorKind::BrokenPipe).into();
+        assert!(is_broken_pipe(&e.context("writing report")));
+        assert!(!is_broken_pipe(&anyhow::anyhow!("no reply")));
     }
 
     #[test]

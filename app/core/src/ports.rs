@@ -69,22 +69,38 @@ pub enum SelectError {
 
 impl fmt::Display for SelectError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let (msg, ports) = match self {
-            SelectError::NoReader(p) if p.is_empty() => {
-                return write!(
+        match self {
+            SelectError::NoReader(ports) => {
+                let (shown, hidden) = visible(ports, false);
+                if shown.is_empty() {
+                    write!(f, "no USB serial ports found")?;
+                } else {
+                    writeln!(f, "no CH340 reader adapter found among these ports:")?;
+                    for p in shown {
+                        writeln!(f, "  {p}")?;
+                    }
+                }
+                if hidden > 0 {
+                    write!(
+                        f,
+                        "\n{}",
+                        hidden_note(hidden, "`nfc-launcher diagnose --all`")
+                    )?;
+                }
+                write!(
                     f,
-                    "no serial ports found; is the reader plugged in and its \
-                     USB-serial driver installed?"
-                );
+                    "\nis the reader plugged in and its USB-serial driver installed? \
+                     If your adapter is not a CH340 (e.g. a CP2102), pass --port <name>"
+                )
             }
-            SelectError::NoReader(p) => ("no CH340 reader adapter found among these ports", p),
-            SelectError::Ambiguous(p) => ("more than one CH340 adapter found", p),
-        };
-        writeln!(f, "{msg}:")?;
-        for p in ports {
-            writeln!(f, "  {p}")?;
+            SelectError::Ambiguous(ports) => {
+                writeln!(f, "more than one CH340 adapter found:")?;
+                for p in ports {
+                    writeln!(f, "  {p}")?;
+                }
+                write!(f, "pick one with --port <name>")
+            }
         }
-        write!(f, "pick one with --port <name>")
     }
 }
 
@@ -106,7 +122,33 @@ pub fn select_port(explicit: Option<&str>, ports: &[PortInfo]) -> Result<String,
     }
 }
 
-/// Lists the serial ports the OS knows about, sorted by name.
+/// Ports worth showing: USB ones only, unless `all`. Also returns how many
+/// non-USB ports (legacy `/dev/ttyS*`, motherboard `COM1`, ...) were hidden.
+pub fn visible(ports: &[PortInfo], all: bool) -> (Vec<&PortInfo>, usize) {
+    let shown: Vec<&PortInfo> = ports.iter().filter(|p| all || p.usb.is_some()).collect();
+    let hidden = ports.len() - shown.len();
+    (shown, hidden)
+}
+
+/// "(N non-USB port(s) hidden; `how` shows them)".
+pub fn hidden_note(hidden: usize, how: &str) -> String {
+    let s = if hidden == 1 { "" } else { "s" };
+    format!("({hidden} non-USB port{s} hidden; {how} shows them)")
+}
+
+/// Sort key so `COM3 < COM10` and `ttyS2 < ttyS10`: the name with its
+/// trailing digits split off as a number.
+fn natural_key(name: &str) -> (&str, Option<u64>, &str) {
+    let prefix = name.trim_end_matches(|c: char| c.is_ascii_digit());
+    (prefix, name[prefix.len()..].parse().ok(), name)
+}
+
+/// Sorts ports by name, numerically on any trailing number.
+pub fn sort_ports(ports: &mut [PortInfo]) {
+    ports.sort_by(|a, b| natural_key(&a.name).cmp(&natural_key(&b.name)));
+}
+
+/// Lists the serial ports the OS knows about, naturally sorted by name.
 pub fn available() -> serialport::Result<Vec<PortInfo>> {
     let mut ports: Vec<PortInfo> = serialport::available_ports()?
         .into_iter()
@@ -123,7 +165,7 @@ pub fn available() -> serialport::Result<Vec<PortInfo>> {
             },
         })
         .collect();
-    ports.sort_by(|a, b| a.name.cmp(&b.name));
+    sort_ports(&mut ports);
     Ok(ports)
 }
 
@@ -183,15 +225,18 @@ mod tests {
         assert_eq!(err, SelectError::NoReader(others()));
         let msg = err.to_string();
         assert!(msg.contains("COM3  USB 10C4:EA60"), "{msg}");
-        assert!(msg.contains("COM1  (not USB)"), "{msg}");
-        assert!(msg.contains("--port"), "{msg}");
+        assert!(!msg.contains("COM1"), "non-USB ports are hidden: {msg}");
+        assert!(msg.contains("(1 non-USB port hidden;"), "{msg}");
+        assert!(msg.contains("CP2102), pass --port"), "{msg}");
     }
 
     #[test]
     fn no_ports_at_all() {
         let err = select_port(None, &[]).unwrap_err();
         assert_eq!(err, SelectError::NoReader(vec![]));
-        assert!(err.to_string().contains("no serial ports found"));
+        let msg = err.to_string();
+        assert!(msg.contains("no USB serial ports found"), "{msg}");
+        assert!(!msg.contains("hidden"), "{msg}");
     }
 
     #[test]
@@ -214,6 +259,49 @@ mod tests {
         assert_eq!(
             p.to_string(),
             "COM7  USB 1A86:7523  wch.cn / USB-SERIAL CH340  <- likely reader (CH340)"
+        );
+    }
+
+    #[test]
+    fn visible_hides_non_usb_unless_all() {
+        let ports = others();
+        let (shown, hidden) = visible(&ports, false);
+        assert_eq!(shown, vec![&ports[1], &ports[2]]);
+        assert_eq!(hidden, 1);
+        let (shown, hidden) = visible(&ports, true);
+        assert_eq!(shown.len(), 3);
+        assert_eq!(hidden, 0);
+        assert_eq!(
+            hidden_note(32, "--all"),
+            "(32 non-USB ports hidden; --all shows them)"
+        );
+    }
+
+    #[test]
+    fn natural_sort() {
+        let mut ports: Vec<PortInfo> = [
+            "COM10",
+            "COM3",
+            "/dev/ttyS10",
+            "/dev/ttyS2",
+            "/dev/ttyACM0",
+            "COM",
+        ]
+        .into_iter()
+        .map(plain)
+        .collect();
+        sort_ports(&mut ports);
+        let names: Vec<&str> = ports.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(
+            names,
+            [
+                "/dev/ttyACM0",
+                "/dev/ttyS2",
+                "/dev/ttyS10",
+                "COM",
+                "COM3",
+                "COM10"
+            ]
         );
     }
 }

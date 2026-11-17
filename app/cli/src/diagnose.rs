@@ -1,5 +1,7 @@
 //! `nfc-launcher diagnose`: ports, config location and a reader self-test.
 
+use std::io::Write;
+
 use anyhow::Result;
 use nfc_launcher_core::config::Config;
 use nfc_launcher_core::pn532::FirmwareVersion;
@@ -7,26 +9,28 @@ use nfc_launcher_core::ports;
 
 use crate::port;
 
-pub fn run(explicit: Option<&str>) -> Result<()> {
-    println!("Serial ports:");
+/// Runs the diagnosis, writing the report to `out`. `all` also lists non-USB ports.
+pub fn run(out: &mut impl Write, explicit: Option<&str>, all: bool) -> Result<()> {
+    writeln!(out, "Serial ports:")?;
     let ports = match ports::available() {
-        Ok(p) if p.is_empty() => {
-            println!("  (none)");
-            p
-        }
-        Ok(p) => {
-            for info in &p {
-                println!("  {info}");
-            }
-            p
-        }
+        Ok(p) => p,
         Err(e) => {
-            println!("  cannot list serial ports: {e}");
+            writeln!(out, "  cannot list serial ports: {e}")?;
             Vec::new()
         }
     };
+    let (shown, hidden) = ports::visible(&ports, all);
+    if shown.is_empty() {
+        writeln!(out, "  (none)")?;
+    }
+    for info in shown {
+        writeln!(out, "  {info}")?;
+    }
+    if hidden > 0 {
+        writeln!(out, "  {}", ports::hidden_note(hidden, "--all"))?;
+    }
 
-    println!();
+    writeln!(out)?;
     match Config::default_path() {
         Some(path) => {
             let state = if path.exists() {
@@ -34,18 +38,19 @@ pub fn run(explicit: Option<&str>) -> Result<()> {
             } else {
                 "not created yet; steam:// tags work without it"
             };
-            println!("Config: {} ({state})", path.display());
+            writeln!(out, "Config: {} ({state})", path.display())?;
         }
-        None => println!("Config: no config directory available on this system"),
+        None => writeln!(out, "Config: no config directory available on this system")?,
     }
 
-    println!();
+    writeln!(out)?;
     let name = port::choose(explicit, &ports)?;
-    println!("Reader on {name}:");
+    writeln!(out, "Reader on {name}:")?;
+    out.flush()?;
     let (_reader, fw) = port::open(&name)?;
-    println!("  {}", describe(&fw));
-    println!("  supports: {}", supported(fw.support));
-    println!("OK: the reader is answering.");
+    writeln!(out, "  {}", describe(&fw))?;
+    writeln!(out, "  supports: {}", supported(fw.support))?;
+    writeln!(out, "OK: the reader is answering.")?;
     Ok(())
 }
 
