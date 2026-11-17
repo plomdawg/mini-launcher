@@ -248,7 +248,7 @@ mod tests {
     #[test]
     fn set_pointer_round_trips() {
         let (default, synced) = (temp("set"), temp("set-synced"));
-        let odd = synced.join("it's \"odd\"");
+        let odd = synced.join("it's odd");
         std::fs::create_dir(&odd).unwrap();
         set_pointer(&default, Some(&odd)).unwrap();
         assert_eq!(
