@@ -13,7 +13,7 @@ $tray = Join-Path $dir 'mini-launcher-tray.exe'
 $shortcut = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Mini Launcher.lnk'
 $runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
 $uninstallKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\{2CF94C44-B086-4260-A67B-B6EEFF027C09}_is1'
-$files = 'mini-launcher-tray.exe', 'mini-launcher.exe', 'LICENSE-MIT', 'LICENSE-APACHE'
+$files = 'mini-launcher-tray.exe', 'mini-launcher.exe', 'LICENSE-MIT', 'LICENSE-APACHE', 'DepartureMono-OFL.txt'
 # User data lives outside the install dir and must survive uninstall.
 $userFiles = @(
     (Join-Path $env:APPDATA 'mini-launcher\config\config.toml'),
