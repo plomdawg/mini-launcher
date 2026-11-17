@@ -335,7 +335,7 @@ fn browse(
         dialog = dialog.set_directory(dir);
     }
     match pick {
-        settings::Pick::Exe => dialog
+        settings::Pick::Exe | settings::Pick::EmulatorExe => dialog
             .set_title("Choose the program")
             .add_filter("Programs", &["exe", "bat", "cmd"])
             .add_filter("All files", &["*"])
