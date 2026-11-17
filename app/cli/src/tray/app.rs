@@ -80,18 +80,18 @@ pub fn main() -> ExitCode {
 }
 
 fn run(log_dir: Option<PathBuf>) -> Result<()> {
-    // Both follow `Update::Location`.
-    let mut config_location: Option<ConfigLocation> = None;
-    let mut config_problem: Option<String> = None;
+    let mut config = model::ConfigStatus::default();
     let exe = std::env::current_exe().context("cannot find this program's path")?;
     let stop = Arc::new(AtomicBool::new(false));
     let paused = Arc::new(AtomicBool::new(false));
+    // Set when "Open config" finds the folder gone: the worker checks again.
+    let recheck = Arc::new(AtomicBool::new(false));
     let (tx, rx) = mpsc::channel();
     let worker = thread::Builder::new()
         .name("run-loop".into())
         .spawn({
-            let (stop, paused) = (stop.clone(), paused.clone());
-            move || work(&stop, &paused, &tx)
+            let (stop, paused, recheck) = (stop.clone(), paused.clone(), recheck.clone());
+            move || work(&stop, &paused, &recheck, &tx)
         })
         .context("cannot start the run loop")?;
 
@@ -160,24 +160,32 @@ fn run(log_dir: Option<PathBuf>) -> Result<()> {
                 let now_paused = !paused.load(Ordering::Relaxed);
                 paused.store(now_paused, Ordering::Relaxed);
                 tracing::info!(paused = now_paused, "pause toggled from the tray");
-                refresh(reader.as_ref(), config_problem.as_deref());
+                refresh(reader.as_ref(), config.problem());
             } else if id == open_config.id() {
-                if let Some(problem) = &config_problem {
-                    balloon(Level::Warning, model::CONFIG_UNAVAILABLE, problem);
-                } else if let Some(location) = &config_location {
-                    match edit_config(location) {
-                        // The folder went away before the worker noticed:
-                        // show it now (the worker's update says the same).
-                        Ok(Some(problem)) => {
-                            balloon(Level::Warning, model::CONFIG_UNAVAILABLE, &problem);
-                            config_problem = Some(problem);
-                            refresh(reader.as_ref(), config_problem.as_deref());
+                let Some(location) = config.to_open() else {
+                    if let Some(problem) = config.problem() {
+                        let (level, title, text) = model::unavailable_balloon(problem);
+                        balloon(level, title, &text);
+                    }
+                    continue;
+                };
+                match edit_config(location) {
+                    // The folder went away before the worker noticed: show
+                    // it now and have the worker check (its answer wins).
+                    Ok(Some(problem)) => {
+                        let (level, title, text) = config.open_config_unavailable(problem);
+                        balloon(level, title, &text);
+                        recheck.store(true, Ordering::Relaxed);
+                        refresh(reader.as_ref(), config.problem());
+                    }
+                    Ok(None) => {
+                        if config.open_config_ready() {
+                            refresh(reader.as_ref(), config.problem());
                         }
-                        Ok(None) => {}
-                        Err(e) => {
-                            tracing::warn!("cannot open the config: {e:#}");
-                            balloon(Level::Warning, "Cannot open the config", &format!("{e:#}"));
-                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!("cannot open the config: {e:#}");
+                        balloon(Level::Warning, "Cannot open the config", &format!("{e:#}"));
                     }
                 }
             } else if id == open_logs.id() {
@@ -197,10 +205,10 @@ fn run(log_dir: Option<PathBuf>) -> Result<()> {
             match rx.try_recv() {
                 Ok(Update::Reader(state)) => {
                     reader = Some(state);
-                    refresh(reader.as_ref(), config_problem.as_deref());
+                    refresh(reader.as_ref(), config.problem());
                 }
                 Ok(Update::Notice(notice)) => {
-                    let problem = config_problem.as_deref();
+                    let problem = config.problem();
                     if let Some((level, title, text)) = model::notification(&notice, problem) {
                         if limiter.allow(Instant::now()) {
                             balloon(level, title, &text);
@@ -209,22 +217,10 @@ fn run(log_dir: Option<PathBuf>) -> Result<()> {
                 }
                 Ok(Update::ConfigError(e)) => balloon(Level::Warning, "Config not loaded", &e),
                 Ok(Update::Location(location)) => {
-                    let problem = location.config_file().err().map(|e| e.to_string());
-                    match (&problem, config_problem.is_some()) {
-                        (None, true) => {
-                            let path = location.config_file().unwrap_or_default();
-                            let text = format!("Loaded {}", path.display());
-                            balloon(Level::Info, "Config folder available", &text);
-                        }
-                        (Some(p), _) if config_problem.as_ref() != Some(p) => {
-                            let text = format!("{p}. Only steam:// tags work until it is.");
-                            balloon(Level::Warning, model::CONFIG_UNAVAILABLE, &text);
-                        }
-                        _ => {}
+                    if let Some((level, title, text)) = config.set_location(location) {
+                        balloon(level, title, &text);
                     }
-                    config_location = Some(location);
-                    config_problem = problem;
-                    refresh(reader.as_ref(), config_problem.as_deref());
+                    refresh(reader.as_ref(), config.problem());
                 }
                 Err(mpsc::TryRecvError::Empty) => break,
                 Err(mpsc::TryRecvError::Disconnected) => {
@@ -257,7 +253,7 @@ fn settings_window() {
 
 /// The worker: the shared run loop, with the reader opened (and reopened)
 /// in the background so a missing reader never stops the app.
-fn work(stop: &AtomicBool, paused: &AtomicBool, tx: &mpsc::Sender<Update>) {
+fn work(stop: &AtomicBool, paused: &AtomicBool, recheck: &AtomicBool, tx: &mpsc::Sender<Update>) {
     let mut runner = Runner::new(Config::default(), false);
     let mut watch = ConfigWatch::default();
     if watch.switch(Config::location(), &mut runner, tx).is_none() {
@@ -277,7 +273,7 @@ fn work(stop: &AtomicBool, paused: &AtomicBool, tx: &mpsc::Sender<Update>) {
         reader.set_paused(is_paused);
         polls = polls.wrapping_add(1);
         if polls.is_multiple_of(CONFIG_CHECK_POLLS) {
-            watch.check(runner, tx)?;
+            watch.check(runner, recheck.swap(false, Ordering::Relaxed), tx)?;
         }
         let tick = reader.tick(now);
         if last_state.as_ref() != Some(reader.state()) {
@@ -340,16 +336,29 @@ impl ConfigWatch {
         Some(())
     }
 
-    fn check(&mut self, runner: &mut Runner, tx: &mpsc::Sender<Update>) -> Option<()> {
+    /// `recheck`: the UI saw the folder gone; always tell it the outcome.
+    fn check(
+        &mut self,
+        runner: &mut Runner,
+        recheck: bool,
+        tx: &mpsc::Sender<Update>,
+    ) -> Option<()> {
         if let Some(retry) = &self.retry {
-            return match retry.try_recv() {
-                Ok(location) => {
+            // Unavailable here too: the UI already has that location.
+            return match model::Retry::from(retry.try_recv()) {
+                model::Retry::Wait => Some(()),
+                model::Retry::Switch(location) => {
                     if location.as_ref().is_some_and(ConfigLocation::is_available) {
                         tracing::info!("config folder available again");
                     }
                     self.switch(location, runner, tx)
                 }
-                Err(_) => Some(()),
+                model::Retry::Respawn => {
+                    tracing::error!(
+                        "the config retry thread ended without a result; restarting it"
+                    );
+                    self.switch(self.location.clone(), runner, tx)
+                }
             };
         }
         let (Some(location), Some(dir)) = (&self.location, Config::default_dir()) else {
@@ -359,6 +368,9 @@ impl ConfigWatch {
         // config.toml was ever created in it.
         if let Some(gone) = model::vanished(location, &dir) {
             return self.switch(Some(gone), runner, tx);
+        }
+        if recheck {
+            tx.send(Update::Location(location.clone())).ok()?;
         }
         match location.config_file() {
             Ok(path) => self.check_file(&path, runner, tx),
