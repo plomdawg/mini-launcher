@@ -16,13 +16,13 @@ Download it from the repository's
 [**Releases** page](https://github.com/plomdawg/mini-launcher/releases) on GitHub. Open the
 newest release and, under **Assets**, download
 `mini-launcher-<version>-windows-x86_64-setup.exe` (for example
-`mini-launcher-0.1.0-windows-x86_64-setup.exe`) and `SHA256SUMS`.
+`mini-launcher-0.2.0-windows-x86_64-setup.exe`) and `SHA256SUMS`.
 
 Optional but recommended: check that the download isn't damaged or tampered with. In
 PowerShell, in the folder where you downloaded both files, run:
 
 ```powershell
-Get-FileHash .\mini-launcher-0.1.0-windows-x86_64-setup.exe -Algorithm SHA256
+Get-FileHash .\mini-launcher-0.2.0-windows-x86_64-setup.exe -Algorithm SHA256
 Get-Content .\SHA256SUMS
 ```
 
