@@ -122,6 +122,33 @@ pub fn select_port(explicit: Option<&str>, ports: &[PortInfo]) -> Result<String,
     }
 }
 
+/// Whether `name` looks like a serial port this OS can open: `COM1`..`COM999`
+/// (any case, optionally `\\.\COMn`) on Windows, an absolute `/dev/...` path
+/// elsewhere. Catches typos before they are stored for later (e.g. autostart).
+pub fn is_valid_port_name(name: &str) -> bool {
+    is_valid_port_name_for(name, cfg!(windows))
+}
+
+fn is_valid_port_name_for(name: &str, windows: bool) -> bool {
+    if windows {
+        let com = name.strip_prefix(r"\\.\").unwrap_or(name);
+        let digits = match com.get(..3) {
+            Some(p) if p.eq_ignore_ascii_case("COM") => &com[3..],
+            _ => return false,
+        };
+        (1..=3).contains(&digits.len())
+            && !digits.starts_with('0')
+            && digits.bytes().all(|b| b.is_ascii_digit())
+    } else {
+        name.strip_prefix("/dev/").is_some_and(|rest| {
+            !rest.is_empty()
+                && !rest.ends_with('/')
+                && !rest.chars().any(|c| c.is_control() || c.is_whitespace())
+                && rest.split('/').all(|part| !part.is_empty() && part != "..")
+        })
+    }
+}
+
 /// Ports worth showing: USB ones only, unless `all`. Also returns how many
 /// non-USB ports (legacy `/dev/ttyS*`, motherboard `COM1`, ...) were hidden.
 pub fn visible(ports: &[PortInfo], all: bool) -> (Vec<&PortInfo>, usize) {
@@ -203,6 +230,54 @@ mod tests {
             usb("COM3", 0x10C4, 0xEA60),
             usb("/dev/ttyUSB1", 0x0403, 0x6001),
         ]
+    }
+
+    #[test]
+    fn port_names_are_validated_per_os() {
+        for ok in ["COM1", "COM7", "com12", "Com999", r"\\.\COM10", r"\\.\com3"] {
+            assert!(is_valid_port_name_for(ok, true), "{ok:?}");
+        }
+        for bad in [
+            "",
+            "COM",
+            "COM0",
+            "COM07",
+            "COM1000",
+            "COM7 ",
+            " COM7",
+            "COM-1",
+            "-x",
+            "COM7x",
+            "LPT1",
+            "/dev/ttyUSB0",
+            r"\\.\",
+            r"\\?\COM7",
+            "ÇOM7",
+        ] {
+            assert!(!is_valid_port_name_for(bad, true), "{bad:?}");
+        }
+        for ok in [
+            "/dev/ttyUSB0",
+            "/dev/ttyACM1",
+            "/dev/serial/by-id/usb-1a86_USB_Serial-if00",
+        ] {
+            assert!(is_valid_port_name_for(ok, false), "{ok:?}");
+        }
+        for bad in [
+            "",
+            "COM7",
+            "ttyUSB0",
+            "/dev/",
+            "/dev",
+            "/dev/tty USB0",
+            "/dev/../etc/passwd",
+            "/dev//ttyUSB0",
+            "/dev/ttyUSB0/",
+            "/dev/tty\nUSB0",
+            "/tmp/ttyUSB0",
+        ] {
+            assert!(!is_valid_port_name_for(bad, false), "{bad:?}");
+        }
     }
 
     #[test]

@@ -21,6 +21,11 @@ mod other {
         pub(crate) fn acquire(_name: &str) -> io::Result<Option<Self>> {
             Ok(Some(Self))
         }
+
+        /// Never held, since nothing is ever locked.
+        pub(crate) fn exists(_name: &str) -> io::Result<bool> {
+            Ok(false)
+        }
     }
 
     /// `None`: start at login is not available on this OS.

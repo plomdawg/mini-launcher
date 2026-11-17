@@ -5,13 +5,16 @@ use std::io;
 use std::ptr;
 
 use windows_sys::Win32::Foundation::{
-    CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, ERROR_FILE_NOT_FOUND, ERROR_MORE_DATA,
-    ERROR_SUCCESS, HANDLE,
+    CloseHandle, GetLastError, ERROR_ACCESS_DENIED, ERROR_ALREADY_EXISTS, ERROR_FILE_NOT_FOUND,
+    ERROR_MORE_DATA, ERROR_SUCCESS, HANDLE,
 };
 use windows_sys::Win32::System::Registry::{
-    RegDeleteKeyValueW, RegGetValueW, RegSetKeyValueW, HKEY_CURRENT_USER, REG_SZ, RRF_RT_REG_SZ,
+    RegDeleteKeyValueW, RegGetValueW, RegSetKeyValueW, HKEY_CURRENT_USER, REG_EXPAND_SZ, REG_SZ,
+    RRF_NOEXPAND, RRF_RT_ANY,
 };
-use windows_sys::Win32::System::Threading::CreateMutexW;
+use windows_sys::Win32::System::Threading::{
+    CreateMutexW, OpenMutexW, SYNCHRONIZATION_SYNCHRONIZE,
+};
 
 const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
 
@@ -42,13 +45,37 @@ impl NamedMutex {
         // SAFETY: `name` is NUL-terminated and outlives the call; null
         // attributes = default security.
         let handle = unsafe { CreateMutexW(ptr::null(), 0, name.as_ptr()) };
-        // Read before any other call can overwrite it.
+        // SAFETY: no preconditions; read before any other call can overwrite it.
         let err = unsafe { GetLastError() };
         if handle.is_null() {
-            return Err(io::Error::from_raw_os_error(err as i32));
+            // Access denied: the mutex exists but its owner restricts it, so
+            // someone else holds the name.
+            return match err {
+                ERROR_ACCESS_DENIED => Ok(None),
+                _ => Err(io::Error::from_raw_os_error(err as i32)),
+            };
         }
         let mutex = Self(handle);
         Ok((err != ERROR_ALREADY_EXISTS).then_some(mutex))
+    }
+
+    /// Whether `name` exists, without creating it (so a concurrent
+    /// [`acquire`](Self::acquire) never sees this probe as the owner).
+    pub(crate) fn exists(name: &str) -> io::Result<bool> {
+        let name = wide(name);
+        // SAFETY: `name` is NUL-terminated and outlives the call.
+        let handle = unsafe { OpenMutexW(SYNCHRONIZATION_SYNCHRONIZE, 0, name.as_ptr()) };
+        if !handle.is_null() {
+            // SAFETY: we own the handle just opened and close it once.
+            unsafe { CloseHandle(handle) };
+            return Ok(true);
+        }
+        // SAFETY: no preconditions; read right after the failing call.
+        match unsafe { GetLastError() } {
+            ERROR_FILE_NOT_FOUND => Ok(false),
+            ERROR_ACCESS_DENIED => Ok(true),
+            err => Err(io::Error::from_raw_os_error(err as i32)),
+        }
     }
 }
 
@@ -60,19 +87,23 @@ impl Drop for NamedMutex {
 }
 
 /// `HKCU\...\Run\<name>`, or `Ok(None)` if the value does not exist.
+/// A `REG_EXPAND_SZ` value is returned raw (unexpanded); any other non-string
+/// type is an `InvalidData` error naming the type.
 pub(crate) fn run_value(name: &str) -> Option<io::Result<Option<String>>> {
     let (key, name) = (wide(RUN_KEY), wide(name));
     let mut buf = vec![0u16; 1024];
     loop {
         let mut len = (buf.len() * 2) as u32;
-        // SAFETY: strings are NUL-terminated; `buf` holds `len` bytes.
+        let mut kind = 0u32;
+        // SAFETY: strings are NUL-terminated; `buf` holds `len` bytes; `kind`
+        // is a valid out pointer.
         let code = unsafe {
             RegGetValueW(
                 HKEY_CURRENT_USER,
                 key.as_ptr(),
                 name.as_ptr(),
-                RRF_RT_REG_SZ,
-                ptr::null_mut(),
+                RRF_RT_ANY | RRF_NOEXPAND,
+                &mut kind,
                 buf.as_mut_ptr().cast(),
                 &mut len,
             )
@@ -80,8 +111,18 @@ pub(crate) fn run_value(name: &str) -> Option<io::Result<Option<String>>> {
         match code {
             ERROR_MORE_DATA => buf.resize(len as usize / 2 + 1, 0),
             ERROR_FILE_NOT_FOUND => return Some(Ok(None)),
+            ERROR_SUCCESS if kind != REG_SZ && kind != REG_EXPAND_SZ => {
+                return Some(Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "the value is not a string (registry type {kind}); \
+                         `autostart enable` replaces it"
+                    ),
+                )));
+            }
             ERROR_SUCCESS => {
-                // `len` includes the terminating NUL.
+                // String types are NUL-terminated by RegGetValueW; `len`
+                // includes the NUL.
                 let chars = &buf[..(len as usize / 2).saturating_sub(1)];
                 return Some(Ok(Some(String::from_utf16_lossy(chars))));
             }
