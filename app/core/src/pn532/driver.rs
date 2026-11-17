@@ -232,30 +232,29 @@ impl<T: Transport> Pn532<T> {
                 Err(e) => return Err(e),
             }
         }
-        let resp = loop {
+        // Skip stray ACKs/NACKs and responses to other commands (e.g. a late
+        // reply to an aborted one). A response with the right code from an
+        // earlier identical command cannot be told apart from ours; the
+        // `clear_input` above makes that a one-off, not a lasting desync.
+        let mut wrong = None;
+        loop {
             match self.read_frame(deadline, true) {
-                Ok(Frame::Response(resp)) => break resp,
-                Ok(Frame::Ack) => {} // stray duplicate
+                Ok(Frame::Response(resp)) => match resp.split_first() {
+                    Some((&code, rest)) if code == expected => return Ok(rest.to_vec()),
+                    got => wrong = Some(got.map(|(&c, _)| c)),
+                },
+                Ok(Frame::Ack | Frame::Nack) => {}
                 Ok(Frame::Error) => return Err(Pn532Error::ErrorFrame),
-                Ok(Frame::Nack) => {
-                    return Err(Pn532Error::UnexpectedResponse {
-                        expected,
-                        got: None,
-                    })
-                }
                 Err(Pn532Error::Timeout) => {
                     self.abort();
-                    return Err(Pn532Error::Timeout);
+                    // Report the wrong reply rather than a bare timeout.
+                    return Err(match wrong {
+                        Some(got) => Pn532Error::UnexpectedResponse { expected, got },
+                        None => Pn532Error::Timeout,
+                    });
                 }
                 Err(e) => return Err(e),
             }
-        };
-        match resp.split_first() {
-            Some((&code, rest)) if code == expected => Ok(rest.to_vec()),
-            got => Err(Pn532Error::UnexpectedResponse {
-                expected,
-                got: got.map(|(&c, _)| c),
-            }),
         }
     }
 
@@ -526,6 +525,77 @@ mod tests {
     }
 
     #[test]
+    fn skips_foreign_responses_and_nacks_after_ack() {
+        // A late reply to an aborted SAMConfiguration and an empty response
+        // arrive after our ACK, with NACKs mixed in, before the real reply.
+        let chunks: &[&[u8]] = &[
+            &ACK, &NACK, SAM_RESP, EMPTY_RESP, &NACK, GFV_RESP, &ACK, REL_RESP,
+        ];
+        for mut p in drivers(chunks) {
+            assert_eq!(p.get_firmware_version().unwrap().ic, 0x32);
+            p.in_release().unwrap();
+            assert_eq!(written(p), [GFV_REQ, REL_REQ].concat());
+        }
+    }
+
+    #[test]
+    fn stale_identical_reply_is_a_known_limit() {
+        // A late ACK + "tag present" from an aborted poll arrive after the
+        // next poll's `clear_input`. HSU frames carry no sequence number, so
+        // the stale reply is indistinguishable from ours and is accepted.
+        // The leftover real ACK + reply are then dropped by the next
+        // command's `clear_input` on real hardware (the mock's is a no-op,
+        // so here the next command sees them and skips the foreign code).
+        let chunks: &[&[u8]] = &[&ACK, LIST_NTAG, &ACK, LIST_NONE, &ACK, REL_RESP];
+        for mut p in drivers(chunks) {
+            assert!(p.in_list_passive_target_106a().unwrap().is_some());
+            p.in_release().unwrap();
+        }
+    }
+
+    #[test]
+    fn wrong_replies_cannot_outlast_the_deadline() {
+        /// ACK once, then an endless stream of NACKs and wrong-code replies.
+        struct Babbler(bool);
+        impl Read for Babbler {
+            fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+                let frame = if std::mem::replace(&mut self.0, true) {
+                    [&NACK[..], SAM_RESP].concat()
+                } else {
+                    ACK.to_vec()
+                };
+                buf[..frame.len()].copy_from_slice(&frame);
+                Ok(frame.len())
+            }
+        }
+        impl Write for Babbler {
+            fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        impl Transport for Babbler {}
+
+        let mut p = Pn532::new(Babbler(false));
+        p.set_timeout(Duration::from_millis(30));
+        let start = Instant::now();
+        let err = p.get_firmware_version().unwrap_err();
+        assert!(
+            matches!(
+                err,
+                Pn532Error::UnexpectedResponse {
+                    expected: 0x03,
+                    got: Some(0x15)
+                }
+            ),
+            "{err:?}"
+        );
+        assert!(start.elapsed() < Duration::from_secs(5));
+    }
+
+    #[test]
     fn huge_timeout_does_not_overflow() {
         let [mut p, _] = drivers(&[&ACK, GFV_RESP]);
         p.set_timeout(Duration::MAX);
@@ -551,6 +621,8 @@ mod tests {
                     matches!(err, Pn532Error::UnexpectedResponse { expected: 0x03, got: g } if g == got),
                     "{err:?}"
                 );
+                // Kept waiting until the deadline, then aborted.
+                assert_eq!(written(p), [GFV_REQ, &ACK].concat());
             }
         }
     }
