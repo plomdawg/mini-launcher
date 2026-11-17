@@ -286,6 +286,9 @@ fn invalid_form_shows_errors_and_saves_nothing() {
     h.get_by_label("Choose the program to start.");
     assert_eq!(h.state().screen, Screen::Wizard);
     assert_eq!(h.state().wizard.as_ref().unwrap().step, Step::Program);
+    h.get_by_label("Back").click();
+    h.run();
+    assert_eq!(h.state().wizard.as_ref().unwrap().step, Step::Pick);
     assert_eq!(host.config(), before);
     assert_eq!(host.saves.load(Ordering::SeqCst), 0);
 }

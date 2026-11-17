@@ -110,6 +110,11 @@ pub struct Wizard {
     link: Option<Box<dyn Link>>,
     /// The tag an Overwrite question is about, with what it holds.
     pending: Option<(Uid, Payload)>,
+    /// The other games the user agreed to take this tag from.
+    unbind: Vec<Slug>,
+    /// Asked again at save time (see [`Wizard::finish`]): the outcome to
+    /// save on "yes".
+    resume: Option<Outcome>,
     /// Set when the config was saved; see [`Wizard::take_saved`].
     saved: bool,
 }
@@ -132,6 +137,8 @@ impl Wizard {
             launched: None,
             link: None,
             pending: None,
+            unbind: Vec::new(),
+            resume: None,
             saved: false,
         }
     }
@@ -324,6 +331,7 @@ impl Wizard {
             .games()
             .iter()
             .find(|g| g.id != game.id && g.uid.as_deref() == Some(uid.as_bytes()));
+        self.unbind = bound_to.map(|g| g.id.clone()).into_iter().collect();
         let holds_other = payload != Payload::Unusable && payload != want;
         if !holds_other && bound_to.is_none() {
             return self.bind(uid, payload, library);
@@ -369,11 +377,34 @@ impl Wizard {
         let Some((uid, payload)) = self.pending.take() else {
             return;
         };
-        if yes {
-            self.bind(uid, payload, library);
-        } else {
-            self.step = Step::Tap;
-            self.watch(Some(uid));
+        match (yes, self.resume.take()) {
+            (true, Some(outcome)) => self.finish(outcome, library),
+            (true, None) => self.bind(uid, payload, library),
+            (false, resumed) => {
+                if resumed.is_some() {
+                    self.problem =
+                        Some("Not saved. Put a cart on the reader to try again, or Skip.".into());
+                }
+                self.step = Step::Tap;
+                self.watch(Some(uid));
+            }
+        }
+    }
+
+    /// Back from the program form to the list.
+    pub fn back(&mut self, form: &mut Form) {
+        if self.step == Step::Program {
+            form.errors.clear();
+            self.slug_error = None;
+            self.step = Step::Pick;
+        }
+    }
+
+    /// The test step's "Save again", after saving failed.
+    pub fn retry_save(&mut self, library: &mut Library) {
+        if let (Step::Test { outcome }, Some(_)) = (&self.step, &self.problem) {
+            let outcome = outcome.clone();
+            self.finish(outcome, library);
         }
     }
 
@@ -395,6 +426,36 @@ impl Wizard {
         let Some(mut game) = self.game.clone() else {
             return;
         };
+        // The tag is taken from other games as the file is now: if that
+        // set grew since the user confirmed (an outside edit bound this tag
+        // to another game meanwhile), ask again rather than unbind it
+        // silently.
+        if let Outcome::Bound { uid, .. }
+        | Outcome::Written { uid }
+        | Outcome::AlreadyThere { uid } = &outcome
+        {
+            let fresh = Library::load(library.location().cloned());
+            let now: Vec<&Game> = fresh
+                .games()
+                .iter()
+                .filter(|g| g.id != game.id && g.uid.as_deref() == Some(uid.as_bytes()))
+                .collect();
+            if let Some(other) = now.iter().find(|g| !self.unbind.contains(&g.id)) {
+                self.unbind = now.iter().map(|g| g.id.clone()).collect();
+                let question = format!(
+                    "The library changed meanwhile: this tag is now bound to \"{}\"; \
+                     that game loses this tag. Use it for \"{}\"?",
+                    other.name, game.name
+                );
+                self.pending = Some((*uid, Payload::Unusable));
+                self.resume = Some(outcome.clone());
+                self.step = Step::Overwrite {
+                    uid: *uid,
+                    question,
+                };
+                return;
+            }
+        }
         let result = match &outcome {
             Outcome::Bound { uid, .. } => {
                 game.uid = Some(uid.as_bytes().to_vec());
@@ -502,7 +563,7 @@ pub fn outcome_text(outcome: &Outcome, payload: Option<&Payload>) -> String {
             failure_text(failure),
             format_uid(uid.as_bytes())
         ),
-        Outcome::Skipped => "Saved without a tag. Use Write tag... in Edit to add one.".into(),
+        Outcome::Skipped => "Saved without a tag.".into(),
     }
 }
 
@@ -847,6 +908,98 @@ mod tests {
         );
         r.tag(A, Payload::Unusable);
         assert_eq!(r.wizard.step, Step::Writing { uid: uid(A) });
+    }
+
+    #[test]
+    fn a_binding_added_outside_meanwhile_is_asked_about_again_at_save() {
+        let mut r = rig("rebound");
+        r.tag(A, Payload::Unusable);
+        // Edited by hand while the tag was being written: Hades gets it.
+        let path = r.location.config_file().unwrap();
+        let text = LIBRARY.replace(
+            "name = \"Hades\"\n",
+            "name = \"Hades\"\nuid = \"04:A1:B2:C3:D4:E5:F6\"\n",
+        );
+        std::fs::write(&path, text).unwrap();
+        r.written(A, Ok(()));
+        let Step::Overwrite { question, .. } = &r.wizard.step else {
+            panic!("{:?}", r.wizard.step);
+        };
+        assert!(question.contains("now bound to \"Hades\""), "{question}");
+        assert!(
+            r.config().by_uid(uid(A).as_bytes()).is_some(),
+            "nothing saved yet"
+        );
+        r.wizard.answer(true, &mut r.library);
+        assert_eq!(
+            r.wizard.step,
+            Step::Test {
+                outcome: Outcome::Written { uid: uid(A) }
+            }
+        );
+        let config = r.config();
+        assert_eq!(config.by_uid(uid(A).as_bytes()), None);
+        assert!(config.games.iter().any(|g| g.name == "Celeste"));
+
+        // "No" saves nothing and waits for another tag.
+        let mut r = rig("rebound-no");
+        r.tag(A, Payload::Unusable);
+        std::fs::write(
+            r.location.config_file().unwrap(),
+            LIBRARY.replace(
+                "name = \"Hades\"\n",
+                "name = \"Hades\"\nuid = \"04:A1:B2:C3:D4:E5:F6\"\n",
+            ),
+        )
+        .unwrap();
+        r.written(A, Ok(()));
+        r.sent();
+        r.wizard.answer(false, &mut r.library);
+        assert_eq!(r.wizard.step, Step::Tap);
+        assert!(r
+            .wizard
+            .problem
+            .as_deref()
+            .unwrap()
+            .starts_with("Not saved."));
+        assert_eq!(r.sent(), [Sent::Watch(Some(uid(A)))]);
+        assert!(!r.config().games.iter().any(|g| g.name == "Celeste"));
+    }
+
+    #[test]
+    fn a_failed_save_can_be_retried_and_the_program_form_goes_back() {
+        let mut r = rig("retry-save");
+        r.tag(A, Payload::Unusable);
+        // The folder is gone when saving.
+        let dir = r.location.config_file().unwrap();
+        let dir = dir.parent().unwrap().to_owned();
+        std::fs::remove_dir_all(&dir).unwrap();
+        let blocked = dir.clone();
+        std::fs::write(&blocked, "a file where the folder was").unwrap();
+        r.written(A, Ok(()));
+        assert!(r
+            .wizard
+            .problem
+            .as_deref()
+            .unwrap()
+            .starts_with("Not saved"));
+        assert!(!r.wizard.take_saved());
+        std::fs::remove_file(&blocked).unwrap();
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("config.toml"), LIBRARY).unwrap();
+        r.wizard.retry_save(&mut r.library);
+        assert_eq!(r.wizard.problem, None);
+        assert!(r.wizard.take_saved());
+        assert!(r.config().games.iter().any(|g| g.name == "Celeste"));
+
+        let config = r.library.config().unwrap().clone();
+        let mut w = Wizard::new(Ok(steam_games()));
+        let mut form = Form::new();
+        w.program(&mut form, &config);
+        assert!(!w.program_next(&mut form, &config));
+        w.back(&mut form);
+        assert_eq!(w.step, Step::Pick);
+        assert!(form.errors.is_empty() && w.slug_error.is_none());
     }
 
     #[test]

@@ -18,6 +18,8 @@ struct Clicks {
     cancel: bool,
     skip: bool,
     launch: bool,
+    back: bool,
+    save_again: bool,
     answer: Option<bool>,
 }
 
@@ -63,6 +65,11 @@ fn act(s: &mut Settings, c: Clicks) {
     if c.launch {
         s.launch_now();
     }
+    if c.back {
+        if let Some(w) = &mut s.wizard {
+            w.back(&mut s.form);
+        }
+    }
     let library = &mut s.library;
     if let Some(w) = &mut s.wizard {
         if let Some(yes) = c.answer {
@@ -70,6 +77,9 @@ fn act(s: &mut Settings, c: Clicks) {
         }
         if c.skip {
             w.skip(library);
+        }
+        if c.save_again {
+            w.retry_save(library);
         }
     }
     if let (Some(w), Some(config)) = (&mut s.wizard, s.library.config()) {
@@ -107,11 +117,17 @@ fn buttons(ui: &mut Ui, step: &Step, s: &Settings, c: &mut Clicks) {
         Step::Test { .. } => {
             c.cancel = theme::button(ui, "Done", true, true).clicked();
             c.launch = theme::button(ui, "Launch now", true, false).clicked();
+            if w.is_some_and(|w| w.problem.is_some()) {
+                c.save_again = theme::button(ui, "Save again", true, false).clicked();
+            }
         }
         Step::Pick | Step::Program => {
             c.cancel = theme::button(ui, "Cancel", true, false).clicked();
             let ready = step == &Step::Program || w.is_some_and(|w| w.selected.is_some());
             c.next = theme::button(ui, "Next", ready, true).clicked();
+            if step == &Step::Program {
+                c.back = theme::button(ui, "Back", true, false).clicked();
+            }
         }
         Step::Tap | Step::Overwrite { .. } | Step::Writing { .. } => {
             c.cancel = theme::button(ui, "Cancel", true, false).clicked();
@@ -342,6 +358,8 @@ fn test(ui: &mut Ui, s: &mut Settings, outcome: &Outcome) {
         ui.add_space(U);
         if !matches!(outcome, Outcome::Skipped) {
             ui.label("Take the cart off and put it back to try it, or use Launch now.");
+        } else if !w.from_edit {
+            ui.label("Use Write tag... in Edit to add a tag later.");
         }
     });
     if let Some(problem) = &w.problem {
