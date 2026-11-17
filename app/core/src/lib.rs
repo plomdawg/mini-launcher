@@ -4,6 +4,8 @@
 //! insert/remove debounce will live here. Everything above the reader is meant
 //! to be testable without hardware.
 
+pub mod config;
+pub mod launch;
 pub mod ndef;
 pub mod payload;
 pub mod pn532;
