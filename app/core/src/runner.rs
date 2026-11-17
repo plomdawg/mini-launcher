@@ -6,7 +6,7 @@
 
 use std::fmt::Display;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crate::config::Config;
 use crate::debounce::{DebounceConfig, Debouncer, Event, DEFAULT_POLL_INTERVAL};
@@ -68,14 +68,27 @@ pub enum Notice {
     },
 }
 
+/// How long after resuming tags on the reader are only recorded, not
+/// launched: two poll intervals, so one missed poll (a flaky first read of a
+/// cart that sat in the field while it was off) cannot end the window.
+pub const RESUME_SILENCE: Duration = Duration::from_millis(400);
+
+/// The silent window after a resume (see [`Runner::set_paused`]).
+#[derive(Debug, Clone, Copy, Default)]
+struct Resume {
+    /// The first tick after resuming; `set_paused` has no time.
+    since: Option<Instant>,
+    /// Whether a reading has arrived since resuming.
+    read: bool,
+}
+
 /// Debounce + resolve + launch state for one run.
 pub struct Runner {
     config: Config,
     dry_run: bool,
     paused: bool,
-    /// Resumed, but no reading has come in since: the first one only
-    /// records what is on the reader (see [`Self::set_paused`]).
-    resuming: bool,
+    /// Set while the post-resume silent window is open.
+    resuming: Option<Resume>,
     debouncer: Debouncer,
 }
 
@@ -85,7 +98,7 @@ impl Runner {
             config,
             dry_run,
             paused: false,
-            resuming: false,
+            resuming: None,
             debouncer: Debouncer::new(DebounceConfig::default()),
         }
     }
@@ -93,11 +106,13 @@ impl Runner {
     /// While paused nothing is launched. Readings taken while paused (a
     /// reader that keeps polling) are tracked; a reader that idles (see
     /// [`crate::reconnect::Reconnector::set_paused`]) sends none. Either way
-    /// the first reading after resuming only records the tags already on
-    /// the reader, so resuming never launches the cart left in it.
+    /// after resuming, readings only record the tags already on the reader
+    /// until [`RESUME_SILENCE`] has passed since the first tick and at least
+    /// one reading has come in, so resuming never launches the cart left in
+    /// it, even if the first read after switching the field on misses.
     pub fn set_paused(&mut self, paused: bool) {
         if self.paused && !paused {
-            self.resuming = true;
+            self.resuming = Some(Resume::default());
         }
         self.paused = paused;
     }
@@ -109,10 +124,18 @@ impl Runner {
 
     /// Handles one tick taken at `now`, launching as needed.
     pub fn step<E: Display>(&mut self, tick: Tick<E>, now: Instant) -> Vec<Notice> {
-        let silent = self.paused || self.resuming;
+        if let Some(resume) = &mut self.resuming {
+            let since = *resume.since.get_or_insert(now);
+            if resume.read && now.saturating_duration_since(since) >= RESUME_SILENCE {
+                self.resuming = None;
+            }
+        }
+        let silent = self.paused || self.resuming.is_some();
         let events = match tick {
             Tick::Reading(reading) => {
-                self.resuming = false;
+                if let Some(resume) = &mut self.resuming {
+                    resume.read = true;
+                }
                 self.debouncer.update(reading, now)
             }
             Tick::Lost { port, error } => {
@@ -297,41 +320,77 @@ mod tests {
         assert_eq!(runner.step(tag(), now), []);
     }
 
+    fn read(hex: &str, appid: u32) -> Tick<Infallible> {
+        let uid = Uid::from_hex(hex).unwrap();
+        Tick::Reading(Some((uid, Payload::Steam(appid))))
+    }
+
+    const POLL: Duration = DEFAULT_POLL_INTERVAL;
+
     #[test]
     fn resuming_an_idle_reader_skips_the_tags_on_it_then_launches_new_ones() {
         let mut runner = Runner::new(Config::default(), true);
-        let now = Instant::now();
-        let read = |hex: &str, appid| {
-            let uid = Uid::from_hex(hex).unwrap();
-            Tick::<Infallible>::Reading(Some((uid, Payload::Steam(appid))))
-        };
+        let t0 = Instant::now();
         runner.set_paused(true);
-        assert_eq!(runner.step(Tick::<Infallible>::Paused, now), []);
+        assert_eq!(runner.step(Tick::<Infallible>::Paused, t0), []);
         // A cart put in while paused is found by the first poll: no launch.
         runner.set_paused(false);
         assert_eq!(
-            runner.step(read("04a1b2c3", 440), now),
+            runner.step(read("04a1b2c3", 440), t0),
             [Notice::Paused { uid: uid() }]
         );
-        assert_eq!(runner.step(read("04a1b2c3", 440), now), []);
-        // A swap after resuming launches.
+        assert_eq!(runner.step(read("04a1b2c3", 440), t0 + POLL), []);
+        // A swap after the window launches.
         let other = Uid::from_hex("04d4e5f6").unwrap();
-        let notices = runner.step(read("04d4e5f6", 570), now);
+        let notices = runner.step(read("04d4e5f6", 570), t0 + RESUME_SILENCE);
         assert_eq!(notices[0], Notice::Removed { uid: uid() });
         assert!(matches!(&notices[1], Notice::Launched { uid, .. } if *uid == other));
         assert_eq!(notices.len(), 2);
     }
 
     #[test]
-    fn a_new_tag_after_resuming_with_an_empty_reader_launches() {
+    fn a_missed_first_read_after_resuming_does_not_launch_the_seated_cart() {
         let mut runner = Runner::new(Config::default(), true);
-        let now = Instant::now();
+        let t0 = Instant::now();
         runner.set_paused(true);
         runner.set_paused(false);
-        assert_eq!(runner.step(Tick::<Infallible>::Reading(None), now), []);
-        let tick = Tick::<Infallible>::Reading(Some((uid(), Payload::Steam(440))));
+        // The first read of the cart fails; the next one finds it.
+        assert_eq!(runner.step(Tick::<Infallible>::Reading(None), t0), []);
+        assert_eq!(
+            runner.step(read("04a1b2c3", 440), t0 + POLL),
+            [Notice::Paused { uid: uid() }]
+        );
+        assert_eq!(runner.step(read("04a1b2c3", 440), t0 + 2 * POLL), []);
+    }
+
+    #[test]
+    fn the_window_needs_a_reading_not_just_time() {
+        let mut runner = Runner::new(Config::default(), true);
+        let t0 = Instant::now();
+        runner.set_paused(true);
+        runner.set_paused(false);
+        // A slow reconnect: no reading until long after the resume.
+        assert_eq!(runner.step(Tick::<Infallible>::Waiting, t0), []);
+        let late = t0 + 10 * RESUME_SILENCE;
+        assert_eq!(
+            runner.step(read("04a1b2c3", 440), late),
+            [Notice::Paused { uid: uid() }]
+        );
+    }
+
+    #[test]
+    fn a_new_tag_after_the_window_launches() {
+        let mut runner = Runner::new(Config::default(), true);
+        let t0 = Instant::now();
+        runner.set_paused(true);
+        runner.set_paused(false);
+        assert_eq!(runner.step(Tick::<Infallible>::Reading(None), t0), []);
+        assert_eq!(
+            runner.step(Tick::<Infallible>::Reading(None), t0 + POLL),
+            []
+        );
         assert!(matches!(
-            &runner.step(tick, now)[..],
+            &runner.step(read("04a1b2c3", 440), t0 + RESUME_SILENCE)[..],
             [Notice::Launched { .. }]
         ));
     }
