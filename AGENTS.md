@@ -36,7 +36,7 @@ docs/       tag-format.md, reader protocol notes, assembly.md, compliance.md
   Removal = several consecutive missed polls (~1 s). Same UID re-seated within a few seconds is
   not a new launch. Close-game-on-remove is opt-in only (killing games loses saves).
 
-### Tag format (see `docs/tag-format.md` once written)
+### Tag format (see `docs/tag-format.md`)
 
 NDEF Text or URI record containing one of:
 - `steam://<appid>` (also accept `steam:<appid>`) — self-contained, works with zero config
