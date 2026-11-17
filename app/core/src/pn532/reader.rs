@@ -11,7 +11,8 @@
 //! failing ([`UNREADABLE_AFTER`] polls in a row) is reported as present with
 //! an unusable payload, so it can still be mapped by UID; that fallback is
 //! not cached, so reads keep being retried. Only port I/O errors (adapter
-//! unplugged) are returned, and those are fatal.
+//! unplugged) are returned; `run` then drops the reader and reopens it
+//! (see [`crate::reconnect`]).
 
 use std::time::Duration;
 

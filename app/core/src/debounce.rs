@@ -101,6 +101,15 @@ impl Debouncer {
         }
         events
     }
+
+    /// The reader went away: the seated tag (if any) is removed now, without
+    /// waiting for missed polls. The last sighting is kept, so the same tag
+    /// found again within the re-seat window (e.g. after a quick replug) is
+    /// [`Event::Reseated`], not a new launch.
+    pub fn disconnect(&mut self) -> Option<Event> {
+        self.misses = 0;
+        self.seated.take().map(|uid| Event::Removed { uid })
+    }
 }
 
 #[cfg(test)]
@@ -217,6 +226,20 @@ mod tests {
         // Re-seat only applies to the tag seen last, so swapping straight
         // back to B is a deliberate change and launches.
         assert_eq!(h.poll(tag(B)), vec![removed(A), inserted(B)]);
+    }
+
+    #[test]
+    fn disconnect_removes_now_and_keeps_the_reseat_window() {
+        let mut h = Harness::new();
+        assert_eq!(h.poll(tag("04a1b2c3")), [inserted("04a1b2c3")]);
+        assert_eq!(h.debouncer.disconnect(), Some(removed("04a1b2c3")));
+        assert_eq!(h.debouncer.disconnect(), None);
+        assert_eq!(h.polls(3, None), []);
+        let reseated = Event::Reseated {
+            uid: Uid::from_hex("04a1b2c3").unwrap(),
+            payload: Payload::Steam(440),
+        };
+        assert_eq!(h.poll(tag("04a1b2c3")), [reseated]);
     }
 
     #[test]
