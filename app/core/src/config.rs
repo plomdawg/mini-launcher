@@ -79,7 +79,9 @@ struct RawGame {
 }
 
 impl Config {
-    /// `<OS config dir>/mini-launcher/config.toml`, if the OS has a config dir.
+    /// The per-user config file, if the OS has a config dir: on Windows
+    /// `%APPDATA%\mini-launcher\config\config.toml`, on Linux
+    /// `$XDG_CONFIG_HOME/mini-launcher/config.toml` (usually `~/.config/...`).
     pub fn default_path() -> Option<PathBuf> {
         directories::ProjectDirs::from("", "", "mini-launcher")
             .map(|dirs| dirs.config_dir().join("config.toml"))

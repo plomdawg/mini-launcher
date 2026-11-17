@@ -103,7 +103,7 @@ fn report(out: &mut impl Write, t: &Target, mem: Result<Vec<u8>, Unread>) -> Res
     if last < usize::from(LAST_USER_PAGE) {
         writeln!(
             out,
-            "  (pages after {last} not read: the NDEF data ends here)"
+            "  (pages after {last} not read: nothing past here can change the result)"
         )?;
     }
     match decode(&mem) {
