@@ -8,6 +8,7 @@ pub mod driver;
 pub mod frame;
 pub mod reader;
 pub mod serial;
+pub mod write;
 
 pub use driver::{FirmwareVersion, Pn532, Pn532Error, Target, Transport};
 pub use reader::Pn532Hsu;
