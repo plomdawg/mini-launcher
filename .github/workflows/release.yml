@@ -1,0 +1,124 @@
+name: Release
+
+# Tag `app-vX.Y.Z` (X.Y.Z must equal `[workspace.package] version` in app/Cargo.toml)
+# → Windows build → GitHub Release with the renamed .exe + SHA256SUMS.
+# Manual runs (workflow_dispatch) default to a dry run: build + checksum, upload as a
+# workflow artifact, publish nothing. PRs that touch this file get the same dry run.
+
+on:
+  push:
+    tags: ["app-v*"]
+  pull_request:
+    paths: [".github/workflows/release.yml"]
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        description: "Build + checksum only; don't publish (publishing also requires running on an app-v* tag)"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: build (windows-x86_64)
+    runs-on: windows-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: app
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Resolve and check version
+        id: version
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          cargo_version=$(awk '
+            { sub(/\r$/, "") }
+            /^\[/ { in_pkg = ($0 == "[workspace.package]") }
+            in_pkg && /^version[[:space:]]*=/ { gsub(/.*=[[:space:]]*"|".*/, ""); print; exit }
+          ' Cargo.toml)
+          if [ -z "$cargo_version" ]; then
+            echo "::error::could not read [workspace.package] version from app/Cargo.toml"
+            exit 1
+          fi
+          if [ "$REF_TYPE" = tag ]; then
+            tag_version=${REF_NAME#app-v}
+            if [ "$tag_version" != "$cargo_version" ]; then
+              echo "::error::tag $REF_NAME does not match app/Cargo.toml version $cargo_version"
+              exit 1
+            fi
+          fi
+          echo "version=$cargo_version" >> "$GITHUB_OUTPUT"
+          echo "Release version: $cargo_version"
+
+      # Installs the toolchain pinned in app/rust-toolchain.toml (no floating `stable`).
+      # No build cache on purpose: release binaries are built from a clean slate.
+      - name: Install Rust toolchain
+        run: |
+          rustup toolchain install
+          rustc --version
+          cargo --version
+
+      - name: Release build
+        run: cargo build --workspace --release --locked
+
+      - name: Package and checksum
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p ../dist
+          asset="mini-launcher-${VERSION}-windows-x86_64.exe"
+          cp target/release/mini-launcher.exe "../dist/$asset"
+          cd ../dist
+          sha256sum --text "$asset" > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Upload release files
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-windows-x86_64
+          path: dist/
+          if-no-files-found: error
+
+  publish:
+    name: publish GitHub Release
+    needs: build
+    if: >-
+      github.ref_type == 'tag' && startsWith(github.ref_name, 'app-v') &&
+      !(github.event_name == 'workflow_dispatch' && inputs.dry-run)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-windows-x86_64
+          path: dist
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          (cd dist && sha256sum --check SHA256SUMS)
+          gh release create "$TAG" dist/* --verify-tag --generate-notes --title "Mini Launcher $TAG"
