@@ -7,6 +7,7 @@
 pub mod autostart;
 pub mod config;
 pub mod debounce;
+pub mod emulators;
 pub mod instance;
 pub mod launch;
 pub mod logs;
