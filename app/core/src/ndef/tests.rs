@@ -1,0 +1,207 @@
+use super::*;
+
+/// Pads a TLV area to NTAG213 user memory size (144 bytes), as a full read returns.
+fn tag(bytes: &[u8]) -> Vec<u8> {
+    let mut mem = bytes.to_vec();
+    mem.resize(144, 0x00);
+    mem
+}
+
+/// NFC Tools "Text" record, language `en`, text `steam://440`.
+const NFC_TOOLS_TEXT: &[u8] = &[
+    0x03, 0x12, 0xD1, 0x01, 0x0E, 0x54, 0x02, b'e', b'n', b's', b't', b'e', b'a', b'm', b':', b'/',
+    b'/', b'4', b'4', b'0', 0xFE,
+];
+
+/// NFC Tools "Custom URI" record, prefix code 0x00, URI `steam://440`.
+const NFC_TOOLS_URI: &[u8] = &[
+    0x03, 0x10, 0xD1, 0x01, 0x0C, 0x55, 0x00, b's', b't', b'e', b'a', b'm', b':', b'/', b'/', b'4',
+    b'4', b'0', 0xFE,
+];
+
+/// NFC Tools "URL" record, prefix code 0x04 (`https://`), URI `example.com`.
+const NFC_TOOLS_URL: &[u8] = &[
+    0x03, 0x10, 0xD1, 0x01, 0x0C, 0x55, 0x04, b'e', b'x', b'a', b'm', b'p', b'l', b'e', b'.', b'c',
+    b'o', b'm', 0xFE,
+];
+
+fn text(s: &str) -> Result<NdefRecord, NdefError> {
+    Ok(NdefRecord::Text(s.to_string()))
+}
+
+fn uri(s: &str) -> Result<NdefRecord, NdefError> {
+    Ok(NdefRecord::Uri(s.to_string()))
+}
+
+/// Wraps an NDEF message in a 1-byte-length NDEF TLV + terminator.
+fn wrap(msg: &[u8]) -> Vec<u8> {
+    let mut out = vec![0x03, u8::try_from(msg.len()).unwrap()];
+    out.extend_from_slice(msg);
+    out.push(0xFE);
+    out
+}
+
+#[test]
+fn phone_written_fixtures() {
+    let cases: &[(&[u8], Result<NdefRecord, NdefError>)] = &[
+        (NFC_TOOLS_TEXT, text("steam://440")),
+        (NFC_TOOLS_URI, uri("steam://440")),
+        (NFC_TOOLS_URL, uri("https://example.com")),
+    ];
+    for (bytes, want) in cases {
+        assert_eq!(&parse_user_memory(&tag(bytes)), want);
+        // Unpadded (exact-length) reads parse the same.
+        assert_eq!(&parse_user_memory(bytes), want);
+    }
+    assert_eq!(
+        parse_user_memory(NFC_TOOLS_TEXT).unwrap().as_str(),
+        "steam://440"
+    );
+}
+
+#[test]
+fn skips_null_lock_and_memory_control_tlvs() {
+    let mut mem = vec![
+        0x00, 0x00, 0x01, 0x03, 0xA0, 0x0C, 0x34, 0x02, 0x03, 0x00, 0x00, 0x00,
+    ];
+    mem.extend_from_slice(NFC_TOOLS_URI);
+    assert_eq!(parse_user_memory(&tag(&mem)), uri("steam://440"));
+}
+
+#[test]
+fn three_byte_tlv_length() {
+    let mut mem = vec![0x03, 0xFF, 0x00, 0x10];
+    mem.extend_from_slice(&NFC_TOOLS_URI[2..]);
+    assert_eq!(parse_user_memory(&tag(&mem)), uri("steam://440"));
+}
+
+#[test]
+fn normal_record_header_and_id_field() {
+    // MB|ME|IL, TNF 1, 4-byte payload length, 2-byte ID.
+    let msg = [
+        0xC9, 0x01, 0x00, 0x00, 0x00, 0x05, 0x02, 0x54, b'i', b'd', 0x00, b'i', b'd', b':', b'x',
+    ];
+    assert_eq!(parse_user_memory(&wrap(&msg)), text("id:x"));
+}
+
+#[test]
+fn every_uri_prefix_expands() {
+    for code in 0u8..=0x23 {
+        let msg = [0xD1, 0x01, 0x02, 0x55, code, b'x'];
+        let got = parse_user_memory(&wrap(&msg)).unwrap();
+        assert_eq!(
+            got.as_str(),
+            format!("{}x", URI_PREFIXES[usize::from(code)])
+        );
+    }
+    assert_eq!(URI_PREFIXES[0x23], "urn:nfc:");
+}
+
+#[test]
+fn first_usable_record_wins() {
+    let msg = [
+        0x91, 0x01, 0x02, 0x55, 0x24, b'x', // reserved URI prefix: skipped
+        0x11, 0x01, 0x03, 0x54, 0x80, b'a', b'b', // UTF-16 text: skipped
+        0x11, 0x01, 0x02, 0x54, 0x00, 0xFF, // invalid UTF-8 text: skipped
+        0x12, 0x01, 0x00, b'X', // media record: ignored
+        0x11, 0x01, 0x03, 0x54, 0x00, b'o', b'k', // usable
+        0x51, 0x01, 0x02, 0x54, 0x00, b'n', // ME, never reached
+    ];
+    assert_eq!(parse_user_memory(&wrap(&msg)), text("ok"));
+}
+
+#[test]
+fn unusable_records() {
+    let cases: &[&[u8]] = &[
+        &[0xD1, 0x01, 0x02, 0x55, 0x24, b'x'], // reserved URI prefix
+        &[0xD1, 0x01, 0x02, 0x55, 0xFF, b'x'], // reserved URI prefix
+        &[0xD1, 0x01, 0x03, 0x54, 0x80, b'a', 0x00], // UTF-16 text
+        &[0xD1, 0x01, 0x00, 0x55],             // URI without prefix byte
+        &[0xD1, 0x01, 0x02, 0x55, 0x00, 0xC3], // invalid UTF-8 URI
+        &[0xD1, 0x01, 0x02, 0x54, 0x05, b'e'], // language code past payload
+        &[0xD1, 0x01, 0x00, 0x54],             // empty text payload
+        &[0xF1, 0x01, 0x01, 0x54, 0x00],       // chunked
+        &[0xD0, 0x00, 0x00],                   // empty record (erased tag)
+        &[],                                   // empty message
+    ];
+    for msg in cases {
+        assert_eq!(
+            parse_user_memory(&wrap(msg)),
+            Err(NdefError::NoUsableRecord),
+            "{msg:02X?}"
+        );
+    }
+}
+
+#[test]
+fn hostile_inputs_are_errors() {
+    let cases: &[(&[u8], NdefError)] = &[
+        (&[], NdefError::NoNdefMessage),
+        (&[0x00; 144], NdefError::NoNdefMessage),
+        (&[0xFE, 0x03, 0x01, 0x00], NdefError::NoNdefMessage),
+        (&[0xFF; 144], NdefError::UnknownTlv(0xFF)),
+        (&[0x03], NdefError::TruncatedTlv),
+        (&[0x03, 0x20, 0xD1], NdefError::TruncatedTlv),
+        (&[0x03, 0xFF, 0x00], NdefError::TruncatedTlv),
+        (&[0x03, 0xFF, 0xFF, 0xFF, 0xD1], NdefError::TruncatedTlv),
+        (&[0x01, 0x10, 0x00], NdefError::TruncatedTlv),
+        (&[0x03, 0x01, 0xD1], NdefError::TruncatedRecord),
+        (&[0x03, 0x02, 0xD1, 0x01], NdefError::TruncatedRecord),
+        (
+            &[0x03, 0x04, 0xD1, 0x01, 0x09, 0x54],
+            NdefError::TruncatedRecord,
+        ),
+        (
+            &[0x03, 0x05, 0xC1, 0x01, 0xFF, 0xFF, 0xFF],
+            NdefError::TruncatedRecord,
+        ),
+        (
+            &[0x03, 0x07, 0xC1, 0x01, 0xFF, 0xFF, 0xFF, 0xFF, 0x54],
+            NdefError::TruncatedRecord,
+        ),
+        (&[0x03, 0x03, 0xD9, 0x01, 0x01], NdefError::TruncatedRecord),
+    ];
+    for (mem, want) in cases {
+        assert_eq!(parse_user_memory(mem), Err(*want), "{mem:02X?}");
+    }
+}
+
+#[test]
+fn every_truncation_and_byte_mutation_is_handled() {
+    for fixture in [NFC_TOOLS_TEXT, NFC_TOOLS_URI, NFC_TOOLS_URL] {
+        for len in 0..fixture.len() {
+            let _ = parse_user_memory(&fixture[..len]);
+        }
+        let mut mem = fixture.to_vec();
+        for i in 0..mem.len() {
+            let original = mem[i];
+            for b in 0..=u8::MAX {
+                mem[i] = b;
+                let _ = parse_user_memory(&mem);
+            }
+            mem[i] = original;
+        }
+    }
+}
+
+#[test]
+fn random_buffers_never_panic() {
+    // xorshift64: deterministic, no dependency.
+    let mut state = 0x9E37_79B9_7F4A_7C15u64;
+    let mut next = || {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        state
+    };
+    for _ in 0..50_000 {
+        let len = (next() % 160) as usize;
+        let mut mem: Vec<u8> = (0..len).map(|_| next() as u8).collect();
+        // Bias towards structure so the record parser gets exercised too.
+        if len > 2 && next() % 2 == 0 {
+            mem[0] = 0x03;
+            mem[1] = (len - 2) as u8;
+        }
+        let _ = parse_user_memory(&mem);
+    }
+}

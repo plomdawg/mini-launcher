@@ -4,6 +4,8 @@
 //! insert/remove debounce will live here. Everything above the reader is meant
 //! to be testable without hardware.
 
+pub mod ndef;
+
 /// Version of the core library, taken from `Cargo.toml`.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
