@@ -292,7 +292,7 @@ fn rom(ui: &mut Ui, s: &mut Settings, c: &mut Clicks) {
             for e in emulators {
                 let on = w.emu.emulator.as_ref() == Some(&e.id);
                 if theme::choice(ui, on, &e.name).clicked() {
-                    w.emu.emulator = Some(e.id.clone());
+                    w.choose_emulator(e.id.clone());
                 }
                 ui.add_space(2.0 * U);
             }
@@ -316,13 +316,19 @@ fn rom(ui: &mut Ui, s: &mut Settings, c: &mut Clicks) {
             }
             let hint = match preset {
                 Some(_) => "or pick one from a folder of games",
-                None => "Scan knows Eden's game files only: use Browse.",
+                None => "Scan doesn't know this emulator's game files: use Browse.",
             };
             ui.colored_label(SHADE, hint);
         });
     });
     if browse.is_some() {
         s.browse = browse;
+    }
+    if let Some(dir) = w.scanning() {
+        ui.add_space(U);
+        let body = theme::list(ui, &[0.0, 0.5], &["GAME", "FILE"], 0, |_, _, _, _| {});
+        list_note(ui, body, &format!("Scanning {}...", dir.display()));
+        return;
     }
     let Some((dir, found)) = &w.emu.scan else {
         return;
@@ -331,11 +337,13 @@ fn rom(ui: &mut Ui, s: &mut Settings, c: &mut Clicks) {
     if found.truncated {
         let n = found.roms.len();
         let text = format!(
-            "Showing the first {n} game files found. Choose a smaller folder, or Browse for the file."
+            "Showing {n} game files; the folder has more. Choose a smaller folder, or Browse for the file."
         );
         theme::warning(ui, 0.0, &text);
     }
     let (mut clicked, mut open) = (None, None);
+    // Paths in the scan start with `dir` as given.
+    let dir = dir.display().to_string();
     let body = theme::list(
         ui,
         &[0.0, 0.5],
@@ -343,24 +351,32 @@ fn rom(ui: &mut Ui, s: &mut Settings, c: &mut Clicks) {
         found.roms.len(),
         |ui, i, row, cols| {
             let rom = &found.roms[i];
-            let on = Path::new(w.emu.rom.trim()) == rom.path;
+            let on = wizard::same_path(Path::new(w.emu.rom.trim()), &rom.path);
             let (resp, fg, _) = theme::list_row(ui, row, ("rom", i), on, &rom.name);
             clicked = clicked.or(resp.clicked().then_some(i));
             open = open.or(resp.double_clicked().then_some(i));
-            let file = rom.path.strip_prefix(dir).unwrap_or(&rom.path);
+            let path = rom.path.display().to_string();
+            let file = path
+                .strip_prefix(&dir)
+                .map_or(&*path, |f| f.trim_start_matches(['/', '\\']));
             theme::label_at(ui, row, cols[0] + 2.0 * U, &rom.name, fg);
-            theme::label_at(ui, row, cols[1] + 2.0 * U, &file.display().to_string(), fg);
+            theme::label_at(ui, row, cols[1] + 2.0 * U, file, fg);
         },
     );
     if found.roms.is_empty() {
-        let at = pos2(body.min.x + 2.0 * U, body.min.y + ROW / 2.0);
-        let row = Rect::from_center_size(at, vec2(0.0, ROW));
-        theme::label_at(ui, row, at.x, "No game files in this folder.", SHADE);
+        list_note(ui, body, "No game files in this folder.");
     }
     if let Some(i) = clicked.or(open) {
         w.emu.rom = found.roms[i].path.display().to_string();
     }
     c.next |= open.is_some();
+}
+
+/// A grey line in the first row of an empty list.
+fn list_note(ui: &Ui, body: Rect, text: &str) {
+    let at = pos2(body.min.x + 2.0 * U, body.min.y + ROW / 2.0);
+    let row = Rect::from_center_size(at, vec2(0.0, ROW));
+    theme::label_at(ui, row, at.x, text, SHADE);
 }
 
 /// The emulator game's name and tag ID.

@@ -230,6 +230,7 @@ impl Settings {
     /// Lets the wizard handle what the run loop sent.
     fn poll_wizard(&mut self) {
         if let Some(w) = &mut self.wizard {
+            w.poll_scan();
             w.poll(&mut self.library);
             if w.take_saved() {
                 self.host.saved();
@@ -296,7 +297,8 @@ impl Settings {
                 .map(PathBuf::from),
             Pick::Rom => PathBuf::from(&self.form.rom).parent().map(PathBuf::from),
             Pick::GameFile | Pick::GameFolder => self.wizard.as_ref().and_then(|w| {
-                let scanned = w.emu.scan.as_ref().map(|(dir, _)| dir.clone());
+                let last = w.emu.scan.as_ref().map(|(dir, _)| dir.as_path());
+                let scanned = w.scanning().or(last).map(PathBuf::from);
                 let rom = PathBuf::from(&w.emu.rom).parent().map(PathBuf::from);
                 rom.filter(|_| pick == Pick::GameFile).or(scanned)
             }),
@@ -351,8 +353,10 @@ pub fn show(ui: &mut Ui, s: &mut Settings) {
     }
     if s.screen == Screen::Wizard {
         s.poll_wizard();
-        // Updates from the run loop don't wake the window: look again soon.
-        if s.wizard.as_ref().is_some_and(Wizard::has_reader) {
+        // Updates from the run loop and the folder scan don't wake the
+        // window: look again soon.
+        let waiting = |w: &Wizard| w.has_reader() || w.scanning().is_some();
+        if s.wizard.as_ref().is_some_and(waiting) {
             ui.ctx()
                 .request_repaint_after(std::time::Duration::from_millis(100));
         }

@@ -329,12 +329,15 @@ again and can break or refuse game paths with characters like `&`, `%` or `^`.
 no emulator is set up yet, click **Add Eden...**: the form fills in Eden's arguments and finds
 `eden.exe` in the usual places above (otherwise **Browse** for it); **Save** brings you back to
 the wizard. Then choose the game file with **Browse**, or click **Scan folder...** to list the
-Eden game files in a folder (and in the folders directly inside it) and click one. **Next** shows
-a name and tag ID made from the file name; change them if you like. If the name has nothing an ID
-can be made from (for example only Japanese characters), type an ID yourself. **Next** again
-takes you to the same tag step as for any other game (step 4 is done for you). The **Emulators**
-button on the library screen lists, edits and removes emulators, and a game's **Edit** form can
-change its game file or move it onto another emulator.
+Eden game files in a folder (and in the folders directly inside it) and click one. **Scan
+folder...** is greyed out when the app doesn't recognise the emulator as Eden (its name isn't
+"Eden" and its exe isn't `eden.exe`); use **Browse** then. **Next** shows a name and tag ID made
+from the file name; change them if you like. If the name has nothing an ID can be made from (for
+example only Japanese characters), type an ID yourself. **Next** again takes you to the same tag
+step as for any other game (step 4 is done for you). If the file is already in your library on
+that emulator, the first **Next** skips the name and goes straight to the tag step for that
+game. The **Emulators** button on the library screen lists, edits and removes emulators, and a
+game's **Edit** form can change its game file or move it onto another emulator.
 
 By hand: describe each emulator once in an
 `[[emulators]]` block, then point games at it with `emulator` (its `id`) and `rom` (the full path
@@ -365,10 +368,10 @@ For Eden, `-f` starts in fullscreen and `-g` is followed by the game to run. Ede
 usually end in `.nsp`, `.xci`, `.nca`, `.nro` or `.nso`. The config doesn't check that the
 `rom` file exists: if the path is wrong, Eden opens and reports that it can't load the game.
 
-**4. Write the tag** (if you added the game by hand). Write `id:` followed by the game's `id`, for example `id:kart-racer`, with
-NFC Tools ([step 4](#4-write-a-tag)) or with `.\mini-launcher.exe write id:kart-racer` (quit the
-tray app first). Or leave the tag as it is and map its UID with `uid` on the game, as for any
-other game.
+**4. Write the tag** (if you added the game by hand). Write `id:` followed by the game's `id`,
+for example `id:kart-racer`, with NFC Tools ([step 4](#4-write-a-tag)) or with
+`.\mini-launcher.exe write id:kart-racer` (quit the tray app first). Or leave the tag as it is
+and map its UID with `uid` on the game, as for any other game.
 
 **5. Try it.** The tray app reloads `config.toml` when you save it (restart `run` if you use
 that). `run --dry-run` shows the exact command without starting Eden:
