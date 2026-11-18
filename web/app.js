@@ -1,27 +1,31 @@
 (() => {
   const $ = (id) => document.getElementById(id);
-  const ids = ['projectName','imageFit','spineArtFit','faceHeight','spineWidth','bleed','dpi','cropMarks','spineDirection','fontFamily','spineFontSize','spineColor','textColor','spineFillMode','spineTextOutline','logoRotation'];
+  const ids = ['projectName','imageFit','spineArtFit','faceHeight','spineWidth','bleed','dpi','cropMarks','spineDirection','fontFamily','spineFontSize','spineColor','textColor','spineFillMode','spineTextOutline','logoRotation','discFit','discDiameter','discHole'];
   const settingIds = ids.filter((id) => id !== 'projectName');
   const settingGroups = {
     artwork: ['imageFit','spineArtFit'],
     layout: ['faceHeight','spineWidth','bleed','dpi','cropMarks'],
-    theme: ['spineDirection','fontFamily','spineFontSize','spineColor','textColor','spineFillMode','spineTextOutline','logoRotation']
+    theme: ['spineDirection','fontFamily','spineFontSize','spineColor','textColor','spineFillMode','spineTextOutline','logoRotation'],
+    disc: ['discFit','discDiameter','discHole']
   };
   const builtInDefaults = {
     imageFit: 'cover', spineArtFit: 'stretch', faceHeight: '120', spineWidth: '13', bleed: '0', dpi: '300', cropMarks: false,
     spineDirection: '90', fontFamily: "'Rubik', sans-serif", spineFontSize: '8', spineColor: '#ffffff',
-    textColor: '#000000', spineFillMode: 'back-front', spineTextOutline: 'auto', logoRotation: '0'
+    textColor: '#000000', spineFillMode: 'back-front', spineTextOutline: 'auto', logoRotation: '0',
+    discFit: 'cover', discDiameter: '31.75', discHole: '4'
   };
   const legacyDefaults = {
     imageFit: 'cover', spineArtFit: 'stretch', faceHeight: '120', spineWidth: '12', bleed: '3', dpi: '300', cropMarks: true,
     spineDirection: '90', fontFamily: "'Rubik', sans-serif", spineFontSize: '6', spineColor: '#ffffff',
-    textColor: '#000000', spineFillMode: 'back-front', spineTextOutline: 'auto', logoRotation: '0'
+    textColor: '#000000', spineFillMode: 'back-front', spineTextOutline: 'auto', logoRotation: '0',
+    discFit: 'cover', discDiameter: '31.75', discHole: '4'
   };
   const legacyDefaultValues = {spineWidth: ['12', '8']};
   const defaultsStorageKey = 'plomcase.settingDefaults.v1';
   let settingDefaults = loadSettingDefaults();
   let settingOverrides = {};
-  const files = {back: null, front: null, logo: null, spine: null};
+  const files = {back: null, front: null, logo: null, spine: null, disc: null};
+  const changeListeners = [];
   let spineArtLandscape = false;
   let spineArtRevision = 0;
   const artworkEdgeCache = new Map();
@@ -52,13 +56,13 @@
     if (id === 'cropMarks') return typeof value === 'boolean' ? value : fallback;
     if (id === 'spineColor' || id === 'textColor') return safeColor(value, fallback);
     const choices = {
-      imageFit: ['cover', 'contain'], spineArtFit: ['stretch', 'cover', 'contain'], dpi: ['150', '300', '600'], spineDirection: ['90', '-90'],
+      imageFit: ['cover', 'contain'], discFit: ['cover', 'contain'], spineArtFit: ['stretch', 'cover', 'contain'], dpi: ['150', '300', '600'], spineDirection: ['90', '-90'],
       fontFamily: ["'Rubik', sans-serif", "Impact, Haettenschweiler, 'Arial Narrow Bold', sans-serif"],
       spineFillMode: ['back-front','front-back','dark-blend','light-blend','back-edge','front-edge','center-mix','solid'],
       spineTextOutline: ['auto','none','white','black']
     };
     if (choices[id]) return choices[id].includes(String(value)) ? String(value) : fallback;
-    const ranges = {faceHeight: [40,350], spineWidth: [3,60], bleed: [0,10], spineFontSize: [2,24], logoRotation: [-180,180]};
+    const ranges = {faceHeight: [40,350], spineWidth: [3,60], bleed: [0,10], spineFontSize: [2,24], logoRotation: [-180,180], discDiameter: [10,130], discHole: [0,40]};
     if (ranges[id]) {
       const number = Number(value);
       return Number.isFinite(number) && number >= ranges[id][0] && number <= ranges[id][1] ? String(number) : fallback;
@@ -97,7 +101,7 @@
   function readState() {
     const values = {};
     ids.forEach((id) => { const el = $(id); values[id] = el.type === 'checkbox' ? el.checked : el.value; });
-    return {...values, settingOverrides: {...settingOverrides}, backImage: files.back, frontImage: files.front, logoImage: files.logo, spineImage: files.spine, version: 1};
+    return {...values, settingOverrides: {...settingOverrides}, backImage: files.back, frontImage: files.front, logoImage: files.logo, spineImage: files.spine, discImage: files.disc, discFileName: files.disc ? $('discFileName').textContent : '', version: 1};
   }
 
   function confirmDiscard(action) {
@@ -140,12 +144,15 @@
     files.front = safeImage(state.frontImage);
     files.logo = restoredLogo;
     files.spine = safeImage(state.spineImage);
+    files.disc = safeImage(state.discImage);
     $('backFileName').textContent = state.backFileName || (files.back ? 'Image ready' : 'Add image');
     $('frontFileName').textContent = state.frontFileName || (files.front ? 'Image ready' : 'Add image');
     $('logoFileName').textContent = state.logoFileName || (files.logo ? 'Logo ready' : 'Add image');
     $('spineFileName').textContent = state.spineFileName || (files.spine ? 'Spine art ready' : 'Add image');
     $('removeSpineLogo').hidden = !files.logo;
     $('spineArtOptions').hidden = !files.spine;
+    $('discFileName').textContent = (files.disc && typeof state.discFileName === 'string' && state.discFileName) || (files.disc ? 'Disc art ready' : 'Add image');
+    $('removeDiscArt').hidden = !files.disc;
     hasUnsavedChanges = false;
     refreshSpineArt();
     refreshSpinePalette();
@@ -403,6 +410,45 @@
     return {svg: parts.join(''), width: totalW, height: totalH, trimW, faceW, faceH, spineW, bleed, spineFit};
   }
 
+  function circlePath(c, r) {
+    return `M${c-r} ${c}a${r} ${r} 0 1 0 ${r*2} 0a${r} ${r} 0 1 0 ${-r*2} 0Z`;
+  }
+
+  // Disc label: art authored in full-CD proportions, scaled so its CD edge sits on the trim
+  // circle (the printed diameter). Bleed extends outward via a larger copy confined to the
+  // bleed ring, and inward by cutting the art's hole smaller than the punched hole; the
+  // hole itself stays transparent.
+  function buildDiscSvg(s = readState(), includeGuides = false) {
+    const diameter = Number(normalizeSettingValue('discDiameter', s.discDiameter));
+    const hole = Math.min(Number(normalizeSettingValue('discHole', s.discHole)), diameter * .8);
+    const bleed = Number(normalizeSettingValue('bleed', s.bleed));
+    const total = diameter + bleed * 2;
+    const c = total / 2, trimR = diameter / 2, holeR = hole / 2;
+    const artHoleR = Math.max(0, holeR - bleed);
+    const holePath = artHoleR > 0 ? circlePath(c, artHoleR) : '';
+    const disc = circlePath(c, c) + holePath;
+    const image = safeImage(s.discImage);
+    const aspect = s.discFit === 'contain' ? 'xMidYMid meet' : 'xMidYMid slice';
+    const defs = [`<clipPath id="discArtClip"><path d="${circlePath(c, trimR) + holePath}" clip-rule="evenodd"/></clipPath>`];
+    // Bleed ring starts slightly inside the trim circle so no seam shows where the layers meet.
+    if (bleed > 0) defs.push(`<clipPath id="discBleedClip"><path d="${circlePath(c, c) + circlePath(c, Math.max(0, trimR - .05))}" clip-rule="evenodd"/></clipPath>`);
+    const parts = [`<svg xmlns="http://www.w3.org/2000/svg" width="${total}mm" height="${total}mm" viewBox="0 0 ${total} ${total}">`,
+      `<defs>${defs.join('')}</defs>`,
+      `<path d="${disc}" fill="#eef0ea" fill-rule="evenodd"/>`];
+    if (image && bleed > 0) parts.push(`<image href="${image}" x="0" y="0" width="${total}" height="${total}" preserveAspectRatio="${aspect}" clip-path="url(#discBleedClip)"/>`);
+    if (image) parts.push(`<image href="${image}" x="${bleed}" y="${bleed}" width="${diameter}" height="${diameter}" preserveAspectRatio="${aspect}" clip-path="url(#discArtClip)"/>`);
+    if (s.cropMarks) {
+      const stroke = Math.min(.18, diameter / 200);
+      parts.push(`<circle cx="${c}" cy="${c}" r="${trimR}" fill="none" stroke="#111" stroke-width="${stroke}"/>`);
+      if (holeR > 0) parts.push(`<circle cx="${c}" cy="${c}" r="${holeR}" fill="none" stroke="#111" stroke-width="${stroke}"/>`);
+    }
+    if (includeGuides && $('toggleGuides').getAttribute('aria-pressed') === 'true') {
+      parts.push(`<circle cx="${c}" cy="${c}" r="${trimR}" fill="none" stroke="#c5df60" stroke-width="${diameter / 150}" stroke-dasharray="${diameter / 60} ${diameter / 120}"/>`);
+    }
+    parts.push('</svg>');
+    return {svg: parts.join(''), width: total, height: total, diameter, hole, bleed};
+  }
+
   function update() {
     const {svg, width, height, faceW, spineW, spineFit} = buildSvg(undefined, true);
     $('preview').outerHTML = svg.replace('<svg ', '<svg id="preview" role="img" aria-label="Printable back, spine, and front cover preview" ');
@@ -426,8 +472,12 @@
       fitNote.classList.add('adjusted');
       if (spineFit.effective < spineFit.requested * .7) fitNote.classList.add('tight');
     } else fitNote.textContent = `Fits at ${spineFit.effective.toFixed(1)} mm.`;
+    const disc = buildDiscSvg(undefined, true);
+    $('discPreview').outerHTML = disc.svg.replace('<svg ', '<svg id="discPreview" role="img" aria-label="Printable disc label preview" ');
+    $('discDimensions').textContent = `${disc.width.toFixed(2)} mm${disc.bleed > 0 ? ' with bleed' : ''} · ${disc.hole.toFixed(1)} mm hole`;
     clearTimeout(saveTimer);
     saveTimer = setTimeout(renderProjectList, 700);
+    changeListeners.forEach((listener) => { try { listener(); } catch (error) { console.error(error); } });
   }
 
   function toast(message) {
@@ -468,26 +518,57 @@
     });
   }
 
+  function imageLabel(which) {
+    return {logo: 'spine logo', spine: 'spine art', disc: 'disc art'}[which] || `${which} cover`;
+  }
+
+  // Re-encode formats outside safeImage's allowlist (e.g. BMP) to PNG so they render in the
+  // SVG and survive a save/reload; resolves null if the browser cannot decode the image.
+  function ensureSafeImage(data) {
+    if (safeImage(data)) return Promise.resolve(data);
+    return new Promise((resolve) => {
+      const image = new Image();
+      image.onload = () => {
+        try {
+          const canvas = document.createElement('canvas');
+          canvas.width = Math.max(1, image.naturalWidth || image.width);
+          canvas.height = Math.max(1, image.naturalHeight || image.height);
+          canvas.getContext('2d').drawImage(image, 0, 0);
+          resolve(safeImage(canvas.toDataURL('image/png')));
+        } catch { resolve(null); }
+      };
+      image.onerror = () => resolve(null);
+      image.src = data;
+    });
+  }
+
+  // Single entry point for putting an image on a target: front|back|spine|logo|disc.
+  async function applyImage(which, data, name) {
+    if (!Object.prototype.hasOwnProperty.call(files, which)) throw new Error(`Unknown image target: ${which}`);
+    const safe = await ensureSafeImage(which === 'logo' ? await normalizeLogo(data) : data);
+    if (!safe) throw new Error('That image format is not supported. Try a PNG, JPEG, or WebP file.');
+    files[which] = safe;
+    $(`${which}FileName`).textContent = name;
+    if (which === 'logo') $('removeSpineLogo').hidden = false;
+    if (which === 'spine') $('spineArtOptions').hidden = false;
+    if (which === 'disc') $('removeDiscArt').hidden = false;
+    hasUnsavedChanges = true;
+    if (which === 'back' || which === 'front') refreshSpinePalette();
+    else if (which === 'spine') { refreshSpineArt(); update(); }
+    else update();
+  }
+
   async function addImage(which, file) {
     if (!file) return;
     const isIcoFile = /\.ico$/i.test(file.name || '');
     if (!file.type.startsWith('image/') && !isIcoFile) { toast('Choose an image file.'); return; }
     if (file.size > 40 * 1024 * 1024) { toast('Please choose an image under 40 MB.'); return; }
-    const label = {logo: 'spine logo', spine: 'spine art'}[which] || `${which} cover`;
-    if (files[which] && !confirm(`Replace the current ${label} with this image?`)) return;
+    if (files[which] && !confirm(`Replace the current ${imageLabel(which)} with this image?`)) return;
     try {
       const iconMimeKnown = /^image\/(?:x-icon|vnd\.microsoft\.icon)$/i.test(file.type);
       const source = isIcoFile && !iconMimeKnown ? new Blob([file], {type: 'image/x-icon'}) : file;
-      const data = await imageData(source);
-      files[which] = which === 'logo' ? await normalizeLogo(data) : data;
-      $(`${which}FileName`).textContent = file.name;
-      if (which === 'logo') $('removeSpineLogo').hidden = false;
-      if (which === 'spine') $('spineArtOptions').hidden = false;
-      hasUnsavedChanges = true;
-      if (which === 'back' || which === 'front') refreshSpinePalette();
-      else if (which === 'spine') { refreshSpineArt(); update(); }
-      else update();
-    } catch { toast('Could not load that image.'); }
+      await applyImage(which, await imageData(source), file.name);
+    } catch (error) { toast(error && /not supported/.test(error.message) ? error.message : 'Could not load that image.'); }
   }
 
   function safeFilename(name) {
@@ -543,8 +624,9 @@
     toast('SVG downloaded.');
   });
 
-  $('downloadPng').addEventListener('click', () => {
-    const drawing = buildSvg();
+  // Rasterize an export drawing at the selected DPI. Opaque exports get a white backdrop;
+  // transparent ones (the disc label) keep the area outside the circle and the hole clear.
+  function exportPng(drawing, name, {transparent = false, label = 'Print PNG'} = {}) {
     const dpi = Number($('dpi').value) || 300;
     const widthPx = Math.round(drawing.width / 25.4 * dpi);
     const heightPx = Math.round(drawing.height / 25.4 * dpi);
@@ -553,15 +635,16 @@
     const img = new Image();
     img.onload = () => {
       const canvas = document.createElement('canvas'); canvas.width = widthPx; canvas.height = heightPx;
-      const ctx = canvas.getContext('2d', {alpha: false});
-      ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, widthPx, heightPx); ctx.drawImage(img, 0, 0, widthPx, heightPx);
+      const ctx = canvas.getContext('2d', {alpha: transparent});
+      if (!transparent) { ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, widthPx, heightPx); }
+      ctx.drawImage(img, 0, 0, widthPx, heightPx);
       canvas.toBlob(async (blob) => {
         URL.revokeObjectURL(svgUrl);
         if (blob) {
           try {
             const printBlob = await pngWithDpi(blob, dpi);
-            downloadBlob(printBlob, `${safeFilename($('projectName').value)}-${dpi}dpi.png`);
-            toast(`Print PNG exported at ${dpi} DPI.`);
+            downloadBlob(printBlob, `${name}-${dpi}dpi.png`);
+            toast(`${label} exported at ${dpi} DPI.`);
           } catch { toast('PNG metadata could not be written. Try the SVG export.'); }
         }
         else toast('PNG export failed. Try a smaller image or 300 DPI.');
@@ -569,7 +652,17 @@
     };
     img.onerror = () => { URL.revokeObjectURL(svgUrl); toast('Could not render the print PNG. Try SVG export instead.'); };
     img.src = svgUrl;
+  }
+
+  $('downloadPng').addEventListener('click', () => exportPng(buildSvg(), safeFilename($('projectName').value)));
+
+  $('downloadDiscSvg').addEventListener('click', () => {
+    const {svg} = buildDiscSvg();
+    downloadBlob(new Blob([svg], {type: 'image/svg+xml;charset=utf-8'}), `${safeFilename($('projectName').value)}-disc.svg`);
+    toast('Disc SVG downloaded.');
   });
+
+  $('downloadDiscPng').addEventListener('click', () => exportPng(buildDiscSvg(), `${safeFilename($('projectName').value)}-disc`, {transparent: true, label: 'Disc PNG'}));
 
   function idbRequest(mode, action) {
     return dbPromise.then((db) => new Promise((resolve, reject) => {
@@ -619,7 +712,8 @@
         || current.backImage !== safeImage(saved.backImage)
         || current.frontImage !== safeImage(saved.frontImage)
         || current.logoImage !== savedLogo
-        || current.spineImage !== safeImage(saved.spineImage);
+        || current.spineImage !== safeImage(saved.spineImage)
+        || current.discImage !== safeImage(saved.discImage);
       const savedOverrides = inferSettingOverrides(saved);
       for (const id of settingIds) {
         if (Boolean(current.settingOverrides[id]) !== Boolean(savedOverrides[id])) { dirty = true; break; }
@@ -735,7 +829,7 @@
   $('exportProject').addEventListener('click', exportProjectFile);
   $('newProject').addEventListener('click', async () => {
     if (hasUnsavedChanges ? !confirmDiscard('start a new case') : !confirm('Start a new case?')) return;
-    files.back = files.front = files.logo = files.spine = null;
+    files.back = files.front = files.logo = files.spine = files.disc = null;
     activeProjectId = null;
     $('backFileName').textContent = $('frontFileName').textContent = 'Add image';
     $('logoFileName').textContent = 'Add image';
@@ -785,6 +879,15 @@
   $('frontFile').addEventListener('change', (e) => chooseImage('front', e.target));
   $('logoFile').addEventListener('change', (e) => chooseImage('logo', e.target));
   $('spineFile').addEventListener('change', (e) => chooseImage('spine', e.target));
+  $('discFile').addEventListener('change', (e) => chooseImage('disc', e.target));
+  $('removeDiscArt').addEventListener('click', () => {
+    if (!files.disc || !confirm('Remove the disc art from this case?')) return;
+    files.disc = null;
+    $('discFileName').textContent = 'Add image';
+    $('removeDiscArt').hidden = true;
+    hasUnsavedChanges = true;
+    update();
+  });
   $('removeSpineArt').addEventListener('click', () => {
     if (!files.spine || !confirm('Remove the spine art from this case?')) return;
     files.spine = null;
@@ -813,7 +916,7 @@
     card.addEventListener('drop', (e) => {
       e.preventDefault(); e.stopPropagation(); card.classList.remove('dragging');
       const file = Array.from(e.dataTransfer.files || []).find((item) => item.type.startsWith('image/'));
-      if (file) addImage(({backFile:'back',frontFile:'front',logoFile:'logo',spineFile:'spine'})[card.htmlFor] || 'front', file);
+      if (file) addImage(({backFile:'back',frontFile:'front',logoFile:'logo',spineFile:'spine',discFile:'disc'})[card.htmlFor] || 'front', file);
       else toast('Drop an image file on an artwork tile.');
     });
   });
@@ -989,7 +1092,7 @@
     const assetUrl = safeAssetUrl(asset.url);
     if (!assetUrl) { sgdbStatus('This artwork has no secure download URL.', 'error'); return; }
     const target = sgdbMode === 'logo' ? 'logo' : $('sgdbTarget').value;
-    if (files[target] && !confirm(`Replace the current ${target === 'logo' ? 'spine logo' : `${target} cover`} with this SteamGridDB image?`)) return;
+    if (files[target] && !confirm(`Replace the current ${imageLabel(target)} with this SteamGridDB image?`)) return;
     assetButton.disabled = true;
     sgdbStatus('Downloading artwork into this project…');
     try {
@@ -998,15 +1101,7 @@
       if (!response.ok) throw new Error(`Artwork download returned HTTP ${response.status}.`);
       const source = await response.blob();
       const mime = source.type.startsWith('image/') ? source.type : 'image/png';
-      let image = await imageData(new Blob([source], {type: mime}));
-      if (target === 'logo') image = await normalizeLogo(image);
-      files[target] = image;
-      const label = `SteamGridDB · ${sgdbGame.name}`;
-      $(`${target}FileName`).textContent = label;
-      if (target === 'logo') $('removeSpineLogo').hidden = false;
-      hasUnsavedChanges = true;
-      if (target === 'back' || target === 'front') refreshSpinePalette();
-      else update();
+      await applyImage(target, await imageData(new Blob([source], {type: mime})), `SteamGridDB · ${sgdbGame.name}`);
       sgdbStatus(`Added ${sgdbMode === 'grid' ? 'cover grid' : 'logo'} for ${sgdbGame.name}.`);
       toast(sgdbMode === 'grid' ? `Grid added to ${target} cover.` : 'Logo added to the spine.');
     } catch (error) {
@@ -1039,6 +1134,13 @@
     event.preventDefault();
     event.returnValue = '';
   });
+
+  window.plomcase = {
+    getState: () => readState(),
+    buildSvg: () => buildSvg(),
+    buildDiscSvg: () => buildDiscSvg(),
+    onChange(cb) { if (typeof cb === 'function') changeListeners.push(cb); }
+  };
 
   applySharedDefaultsToControls();
   update();

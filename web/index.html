@@ -91,6 +91,21 @@
         </div>
       </details>
 
+      <details class="section" open>
+        <summary><span class="section-icon">◎</span><span><b>Disc art</b><small>Round label, full-CD proportions</small></span><span class="chevron">⌄</span></summary>
+        <div class="section-body">
+          <label class="upload-card disc-art-upload" for="discFile"><span class="upload-symbol">↥</span><b>Disc art</b><small id="discFileName">Add image</small><input type="file" id="discFile" accept="image/*"></label>
+          <button class="button quiet remove-logo-button" id="removeDiscArt" type="button" hidden>Remove disc art</button>
+          <label class="field"><span>Disc art fit <small class="setting-source" id="discFitSource">(default)</small></span><select id="discFit"><option value="cover">Fill disc (crop edges)</option><option value="contain">Fit whole image</option></select></label>
+          <div class="field-row">
+            <label class="field"><span>Printed diameter <small class="setting-source" id="discDiameterSource">(default)</small> <i>mm</i></span><input type="number" id="discDiameter" min="10" max="130" step="0.05" value="31.75"></label>
+            <label class="field"><span>Center hole <small class="setting-source" id="discHoleSource">(default)</small> <i>mm</i></span><input type="number" id="discHole" min="0" max="40" step="0.5" value="4"></label>
+          </div>
+          <p class="hint">Use square art laid out like a full 120 mm CD with a 15 mm hole; it is scaled to the printed diameter. The center hole stays transparent. Bleed, cut guides, and export resolution come from Case layout.</p>
+          <div class="default-actions"><button class="button" type="button" data-default-action="save" data-default-group="disc">Save as default</button><button class="button quiet" type="button" data-default-action="reset" data-default-group="disc">Use default</button></div>
+        </div>
+      </details>
+
       <div class="inspector-footer"><span>Prototype v0.1</span><span>Files stay on this device</span></div>
     </aside>
 
@@ -105,6 +120,14 @@
         <svg id="preview" role="img" aria-label="Printable back, spine, and front cover preview"></svg>
       </div>
       <div class="preview-foot"><div class="legend"><span><i class="legend-back"></i>Back</span><span><i class="legend-spine"></i>Spine</span><span><i class="legend-front"></i>Front</span></div><span id="exportDimensions">178 × 126 mm with bleed</span></div>
+      <div class="disc-panel">
+        <div class="disc-stage"><svg id="discPreview" role="img" aria-label="Printable disc label preview"></svg></div>
+        <div class="disc-panel-info">
+          <p class="eyebrow">DISC LABEL</p><h3>Disc preview</h3>
+          <span class="disc-dimensions" id="discDimensions">31.75 mm · 4.0 mm hole</span>
+          <div class="preview-actions"><button class="button quiet" id="downloadDiscSvg">Download disc SVG</button><button class="button" id="downloadDiscPng">Export disc PNG</button></div>
+        </div>
+      </div>
       <div class="export-note"><span class="note-mark">✳</span><p><b>Print at 100% scale.</b> The PNG export uses the selected DPI and includes the bleed. Confirm your case's final dimensions before printing a batch.</p></div>
     </section>
 
