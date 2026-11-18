@@ -30,7 +30,7 @@
       <label class="field project-name-field"><span>Project name <i>also used on spine</i></span><input id="projectName" placeholder="Game title" maxlength="80"></label>
 
       <details class="section" open>
-        <summary><span class="section-icon">▧</span><span><b>Cover artwork</b><small>Portrait art, 2:3 ratio</small></span><span class="chevron">⌄</span></summary>
+        <summary><span class="section-icon">▧</span><span><b>Cover artwork</b><small>Front and back art, fit to the case face</small></span><span class="chevron">⌄</span></summary>
         <div class="section-body">
           <div class="upload-grid">
             <label class="upload-card" for="backFile"><span class="upload-symbol">↥</span><b>Back cover</b><small id="backFileName">Add image</small><input type="file" id="backFile" accept="image/*"></label>
@@ -41,11 +41,12 @@
             <label class="field"><span>Spine art fit <small class="setting-source" id="spineArtFitSource">(default)</small></span><select id="spineArtFit"><option value="stretch">Stretch to spine</option><option value="cover">Fill spine (crop edges)</option><option value="contain">Fit whole image</option></select></label>
             <button class="button quiet remove-logo-button" id="removeSpineArt" type="button">Remove spine art</button>
           </div>
-          <p class="hint">600 × 900 SteamGridDB grids fit the 2:3 front panel. Spine art (e.g. a scan of the original spine) replaces the spine fill, title, and logo; landscape images are rotated to match the spine direction. Drop an image on either tile or browse. Artwork stays in this browser unless you export a project file.</p>
+          <p class="hint">600 × 900 SteamGridDB grids are 2:3, a little narrower than a DVD insert face (129.5 × 183 mm). <b>Fill</b> crops a few mm off the top and bottom (use crop position to keep a logo); <b>Fit + blurred extension</b> keeps the whole image and fills the sides with a blurred copy. Spine art (e.g. a scan of the original spine) replaces the spine fill, title, and logo; landscape images are rotated to match the spine direction. Drop an image on either tile or browse. Artwork stays in this browser unless you export a project file.</p>
           <button class="button sgdb-open-button" id="openSgdbPicker" type="button">Choose art from SteamGridDB</button>
           <button class="button sgdb-open-button" id="openLaunchBoxPicker" type="button">Choose art from LaunchBox</button>
           <a class="steam-link" id="steamGridSearch" href="https://www.steamgriddb.com/search/grids?term=" target="_blank" rel="noopener noreferrer"><span>Search <b>SteamGridDB</b> for <span id="steamSearchTerm">game title</span></span><span aria-hidden="true">↗</span></a>
-          <label class="field"><span>Image fit <small class="setting-source" id="imageFitSource">(default)</small></span><select id="imageFit"><option value="cover">Fill panel (crop edges)</option><option value="contain">Fit whole image</option></select></label>
+          <label class="field"><span>Image fit <small class="setting-source" id="imageFitSource">(default)</small></span><select id="imageFit"><option value="cover">Fill panel (crop edges)</option><option value="extend">Fit + blurred extension</option><option value="contain">Fit whole image</option></select></label>
+          <label class="field" id="imageAnchorField"><span>Crop position <small class="setting-source" id="imageAnchorSource">(default)</small></span><select id="imageAnchor"><option value="top">Keep top</option><option value="center">Center</option><option value="bottom">Keep bottom</option></select></label>
           <div class="default-actions"><button class="button" type="button" data-default-action="save" data-default-group="artwork">Save as default</button><button class="button quiet" type="button" data-default-action="reset" data-default-group="artwork">Use default</button></div>
         </div>
       </details>
@@ -53,12 +54,17 @@
       <details class="section" open>
         <summary><span class="section-icon">▤</span><span><b>Case layout</b><small>Adjust to your printed case</small></span><span class="chevron">⌄</span></summary>
         <div class="section-body">
+          <label class="field"><span>Case size</span><select id="casePreset"><option value="dvd">DVD insert (129.5 × 183 × 14 mm)</option><option value="mini">Legacy mini 2:3 (80 × 120 × 13 mm)</option><option value="custom">Custom</option></select></label>
           <div class="field-row">
-            <label class="field"><span>Face height <small class="setting-source" id="faceHeightSource">(default)</small> <i>mm</i></span><input type="number" id="faceHeight" min="40" max="350" step="0.5" value="120"></label>
-            <label class="field"><span>Spine width <small class="setting-source" id="spineWidthSource">(default)</small> <i>mm</i></span><input type="number" id="spineWidth" min="3" max="60" step="0.5" value="13"></label>
+            <label class="field"><span>Face width <small class="setting-source" id="faceWidthSource">(default)</small> <i>mm</i></span><input type="number" id="faceWidth" min="30" max="300" step="0.5" value="129.5"></label>
+            <label class="field"><span>Face height <small class="setting-source" id="faceHeightSource">(default)</small> <i>mm</i></span><input type="number" id="faceHeight" min="40" max="350" step="0.5" value="183"></label>
+          </div>
+          <p class="hint" id="gridFitNote" aria-live="polite"></p>
+          <div class="field-row">
+            <label class="field"><span>Spine width <small class="setting-source" id="spineWidthSource">(default)</small> <i>mm</i></span><input type="number" id="spineWidth" min="3" max="60" step="0.5" value="14"></label>
+            <label class="field"><span>Bleed <small class="setting-source" id="bleedSource">(default)</small> <i>mm</i></span><input type="number" id="bleed" min="0" max="10" step="0.5" value="0"></label>
           </div>
           <div class="field-row">
-            <label class="field"><span>Bleed <small class="setting-source" id="bleedSource">(default)</small> <i>mm</i></span><input type="number" id="bleed" min="0" max="10" step="0.5" value="0"></label>
             <label class="field"><span>Export resolution <small class="setting-source" id="dpiSource">(default)</small></span><select id="dpi"><option value="300" selected>300 DPI</option><option value="600">600 DPI</option><option value="150">150 DPI</option></select></label>
           </div>
           <label class="check-row crop-guides"><input type="checkbox" id="cropMarks"><span><span>Add cut guides (crop marks) in the bleed <i class="setting-source" id="cropMarksSource">(default)</i></span><small>Corner marks show the trim edge for hand cutting.</small></span></label>
@@ -130,7 +136,7 @@
         </div>
         <p class="case3d-hint">Drag to orbit · scroll to zoom</p>
       </div>
-      <div class="preview-foot"><div class="legend"><span><i class="legend-back"></i>Back</span><span><i class="legend-spine"></i>Spine</span><span><i class="legend-front"></i>Front</span></div><span id="exportDimensions">178 × 126 mm with bleed</span></div>
+      <div class="preview-foot"><div class="legend"><span><i class="legend-back"></i>Back</span><span><i class="legend-spine"></i>Spine</span><span><i class="legend-front"></i>Front</span></div><span id="exportDimensions">273 × 183 mm with bleed</span></div>
       <div class="disc-panel">
         <div class="disc-stage"><svg id="discPreview" role="img" aria-label="Printable disc label preview"></svg></div>
         <div class="disc-panel-info">

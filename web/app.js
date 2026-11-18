@@ -1,27 +1,33 @@
 (() => {
   const $ = (id) => document.getElementById(id);
-  const ids = ['projectName','imageFit','spineArtFit','faceHeight','spineWidth','bleed','dpi','cropMarks','spineDirection','fontFamily','spineFontSize','spineColor','textColor','spineFillMode','spineTextOutline','logoRotation','discFit','discDiameter','discHole'];
+  const ids = ['projectName','imageFit','imageAnchor','spineArtFit','faceWidth','faceHeight','spineWidth','bleed','dpi','cropMarks','spineDirection','fontFamily','spineFontSize','spineColor','textColor','spineFillMode','spineTextOutline','logoRotation','discFit','discDiameter','discHole'];
   const settingIds = ids.filter((id) => id !== 'projectName');
   const settingGroups = {
-    artwork: ['imageFit','spineArtFit'],
-    layout: ['faceHeight','spineWidth','bleed','dpi','cropMarks'],
+    artwork: ['imageFit','imageAnchor','spineArtFit'],
+    layout: ['faceWidth','faceHeight','spineWidth','bleed','dpi','cropMarks'],
     theme: ['spineDirection','fontFamily','spineFontSize','spineColor','textColor','spineFillMode','spineTextOutline','logoRotation'],
     disc: ['discFit','discDiameter','discHole']
   };
   const builtInDefaults = {
-    imageFit: 'cover', spineArtFit: 'stretch', faceHeight: '120', spineWidth: '13', bleed: '0', dpi: '300', cropMarks: false,
+    imageFit: 'cover', imageAnchor: 'center', spineArtFit: 'stretch', faceWidth: '129.5', faceHeight: '183', spineWidth: '14', bleed: '0', dpi: '300', cropMarks: false,
     spineDirection: '90', fontFamily: "'Rubik', sans-serif", spineFontSize: '8', spineColor: '#ffffff',
     textColor: '#000000', spineFillMode: 'back-front', spineTextOutline: 'auto', logoRotation: '0',
     discFit: 'cover', discDiameter: '50', discHole: '6.25'
   };
   const legacyDefaults = {
-    imageFit: 'cover', spineArtFit: 'stretch', faceHeight: '120', spineWidth: '12', bleed: '3', dpi: '300', cropMarks: true,
+    imageFit: 'cover', imageAnchor: 'center', spineArtFit: 'stretch', faceWidth: '80', faceHeight: '120', spineWidth: '12', bleed: '3', dpi: '300', cropMarks: true,
     spineDirection: '90', fontFamily: "'Rubik', sans-serif", spineFontSize: '6', spineColor: '#ffffff',
     textColor: '#000000', spineFillMode: 'back-front', spineTextOutline: 'auto', logoRotation: '0',
     discFit: 'cover', discDiameter: '31.75', discHole: '4'
   };
   const legacyDefaultValues = {spineWidth: ['12', '8']};
   const defaultsStorageKey = 'plomcase.settingDefaults.v1';
+  const casePresets = {dvd: ['129.5', '183', '14'], mini: ['80', '120', '13']};
+  // Faces used to be a fixed 2:3 ratio of the height; derive the width for data saved before faceWidth existed.
+  const legacyFaceWidth = (height) => {
+    const h = Number(height);
+    return Number.isFinite(h) ? String(Math.round(h * 2 / 3 * 100) / 100) : undefined;
+  };
   let settingDefaults = loadSettingDefaults();
   let settingOverrides = {};
   const files = {back: null, front: null, logo: null, spine: null, disc: null};
@@ -56,13 +62,13 @@
     if (id === 'cropMarks') return typeof value === 'boolean' ? value : fallback;
     if (id === 'spineColor' || id === 'textColor') return safeColor(value, fallback);
     const choices = {
-      imageFit: ['cover', 'contain'], discFit: ['cover', 'contain'], spineArtFit: ['stretch', 'cover', 'contain'], dpi: ['150', '300', '600'], spineDirection: ['90', '-90'],
+      imageFit: ['cover', 'contain', 'extend'], imageAnchor: ['top', 'center', 'bottom'], discFit: ['cover', 'contain'], spineArtFit: ['stretch', 'cover', 'contain'], dpi: ['150', '300', '600'], spineDirection: ['90', '-90'],
       fontFamily: ["'Rubik', sans-serif", "Impact, Haettenschweiler, 'Arial Narrow Bold', sans-serif"],
       spineFillMode: ['back-front','front-back','dark-blend','light-blend','back-edge','front-edge','center-mix','solid'],
       spineTextOutline: ['auto','none','white','black']
     };
     if (choices[id]) return choices[id].includes(String(value)) ? String(value) : fallback;
-    const ranges = {faceHeight: [40,350], spineWidth: [3,60], bleed: [0,10], spineFontSize: [2,24], logoRotation: [-180,180], discDiameter: [10,130], discHole: [0,40]};
+    const ranges = {faceWidth: [30,300], faceHeight: [40,350], spineWidth: [3,60], bleed: [0,10], spineFontSize: [2,24], logoRotation: [-180,180], discDiameter: [10,130], discHole: [0,40]};
     if (ranges[id]) {
       const number = Number(value);
       return Number.isFinite(number) && number >= ranges[id][0] && number <= ranges[id][1] ? String(number) : fallback;
@@ -76,6 +82,7 @@
       const parsed = JSON.parse(localStorage.getItem(defaultsStorageKey) || '{}');
       if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) saved = parsed;
     } catch {}
+    if (saved.faceHeight !== undefined && saved.faceWidth === undefined) saved = {...saved, faceWidth: legacyFaceWidth(saved.faceHeight)};
     return Object.fromEntries(settingIds.map((id) => [id, normalizeSettingValue(id, saved[id], builtInDefaults[id])]));
   }
 
@@ -112,6 +119,11 @@
   function normalizeState(state = {}) {
     const normalized = {...state};
     if ((!normalized.projectName || normalized.projectName === 'Untitled game case') && normalized.spineTitle) normalized.projectName = normalized.spineTitle;
+    if (normalized.faceHeight !== undefined && normalized.faceWidth === undefined) {
+      normalized.faceWidth = legacyFaceWidth(normalized.faceHeight);
+      const overrides = normalized.settingOverrides;
+      if (overrides && typeof overrides === 'object' && overrides.faceHeight === true) normalized.settingOverrides = {...overrides, faceWidth: true};
+    }
     return normalized;
   }
 
@@ -273,23 +285,33 @@
     return Math.min(max, Math.max(min, n));
   }
 
-  function imageMarkup(data, x, y, w, h, fit, label, background) {
+  function imageMarkup(data, x, y, w, h, fit, label, background, {anchor = 'center', key = 'panel', size = '', trim = null} = {}) {
+    // Fill modes cover the whole panel including bleed; fit modes keep the whole image inside the trim box.
+    const t = trim || {x, y, w, h};
     const out = [`<rect x="${x}" y="${y}" width="${w}" height="${h}" fill="${background}"/>`];
-    if (data) {
-      const aspect = fit === 'contain' ? 'xMidYMid meet' : 'xMidYMid slice';
-      out.push(`<image href="${data}" x="${x}" y="${y}" width="${w}" height="${h}" preserveAspectRatio="${aspect}"/>`);
+    if (data && fit === 'extend') {
+      // Whole image on top, with a blurred, darkened, zoomed copy of itself filling the leftover space.
+      const pad = Math.max(w, h) * .06;
+      out.push(`<defs><clipPath id="${key}Clip"><rect x="${x}" y="${y}" width="${w}" height="${h}"/></clipPath><filter id="${key}Blur" x="-10%" y="-10%" width="120%" height="120%"><feGaussianBlur stdDeviation="${(Math.min(w, h) * .025).toFixed(2)}"/></filter></defs>`);
+      out.push(`<g clip-path="url(#${key}Clip)"><image href="${data}" x="${x-pad}" y="${y-pad}" width="${w+pad*2}" height="${h+pad*2}" preserveAspectRatio="xMidYMid slice" filter="url(#${key}Blur)"/><rect x="${x}" y="${y}" width="${w}" height="${h}" fill="#000" fill-opacity=".25"/></g>`);
+      out.push(`<image href="${data}" x="${t.x}" y="${t.y}" width="${t.w}" height="${t.h}" preserveAspectRatio="xMidYMid meet"/>`);
+    } else if (data && fit === 'contain') {
+      out.push(`<image href="${data}" x="${t.x}" y="${t.y}" width="${t.w}" height="${t.h}" preserveAspectRatio="xMidYMid meet"/>`);
+    } else if (data) {
+      const align = {top: 'xMidYMin', bottom: 'xMidYMax'}[anchor] || 'xMidYMid';
+      out.push(`<image href="${data}" x="${x}" y="${y}" width="${w}" height="${h}" preserveAspectRatio="${align} slice"/>`);
     } else {
       out.push(`<rect x="${x+2}" y="${y+2}" width="${w-4}" height="${h-4}" fill="none" stroke="#ffffff" stroke-opacity=".22" stroke-dasharray="2 2"/>`);
       out.push(`<text x="${x+w/2}" y="${y+h/2}" text-anchor="middle" fill="#ffffff" fill-opacity=".7" font-family="Arial,sans-serif" font-size="4">${esc(label)}</text>`);
-      out.push(`<text x="${x+w/2}" y="${y+h/2+6}" text-anchor="middle" fill="#ffffff" fill-opacity=".45" font-family="Arial,sans-serif" font-size="2.5">2:3 ART</text>`);
+      out.push(`<text x="${x+w/2}" y="${y+h/2+6}" text-anchor="middle" fill="#ffffff" fill-opacity=".45" font-family="Arial,sans-serif" font-size="2.5">${esc(size)}</text>`);
     }
     return out.join('');
   }
 
   function buildSvg(s = readState(), includeGuides = false) {
-    const faceH = clampNumber('faceHeight', 120, 40, 350);
-    const faceW = faceH * 2 / 3;
-    const spineW = clampNumber('spineWidth', 13, 3, 60);
+    const faceH = clampNumber('faceHeight', 183, 40, 350);
+    const faceW = clampNumber('faceWidth', 129.5, 30, 300);
+    const spineW = clampNumber('spineWidth', 14, 3, 60);
     const bleed = clampNumber('bleed', 0, 0, 10);
     const trimW = faceW * 2 + spineW;
     const totalW = trimW + bleed * 2;
@@ -330,13 +352,14 @@
     const outlineWidth = outline ? .55 : 0;
     const font = esc(s.fontFamily || "'Rubik', sans-serif");
     const fit = s.imageFit || 'cover';
+    const panelOptions = {anchor: s.imageAnchor || 'center', size: `${+faceW.toFixed(1)} × ${+faceH.toFixed(1)} MM`};
     const requestedFontSize = clampNumber('spineFontSize', 8, 2, 24);
     let spineFit = {requested: requestedFontSize, effective: requestedFontSize, reason: ''};
     let parts = [`<svg xmlns="http://www.w3.org/2000/svg" width="${totalW}mm" height="${totalH}mm" viewBox="0 0 ${totalW} ${totalH}">`,
       spineGradient,
       `<rect width="${totalW}" height="${totalH}" fill="${theme}"/>`,
-      imageMarkup(s.backImage, 0, 0, faceW + bleed, faceH + 2 * bleed, fit, 'Back cover artwork', '#343c35'),
-      imageMarkup(s.frontImage, frontX, 0, faceW + bleed, faceH + 2 * bleed, fit, 'Front cover artwork', '#30382f'),
+      imageMarkup(s.backImage, 0, 0, faceW + bleed, faceH + 2 * bleed, fit, 'Back cover artwork', '#343c35', {...panelOptions, key: 'back', trim: {x: backX, y: bleed, w: faceW, h: faceH}}),
+      imageMarkup(s.frontImage, frontX, 0, faceW + bleed, faceH + 2 * bleed, fit, 'Front cover artwork', '#30382f', {...panelOptions, key: 'front', trim: {x: frontX, y: bleed, w: faceW, h: faceH}}),
       `<rect x="${spineX}" y="${bleed}" width="${spineW}" height="${faceH}" fill="${spinePaint}"/>`];
 
     const spine = s.spineImage ? '' : String(s.projectName || '').trim();
@@ -450,12 +473,21 @@
   }
 
   function update() {
-    const {svg, width, height, faceW, spineW, spineFit} = buildSvg(undefined, true);
+    const {svg, width, height, faceW, faceH, spineW, spineFit} = buildSvg(undefined, true);
     $('preview').outerHTML = svg.replace('<svg ', '<svg id="preview" role="img" aria-label="Printable back, spine, and front cover preview" ');
     const ready = Boolean(files.back || files.front || $('projectName').value.trim());
     $('previewStage').classList.toggle('has-art', ready);
     $('emptyHint').style.display = ready ? 'none' : '';
     const trimWidth = (faceW * 2 + spineW).toFixed(1);
+    const sizeValues = ['faceWidth', 'faceHeight', 'spineWidth'].map((id) => String(Number($(id).value)));
+    $('casePreset').value = Object.keys(casePresets).find((key) => casePresets[key].every((v, i) => v === sizeValues[i])) || 'custom';
+    $('imageAnchorField').hidden = $('imageFit').value !== 'cover';
+    const gridCrop = faceW * 1.5 - faceH, gridGap = faceW - faceH * 2 / 3;
+    $('gridFitNote').textContent = Math.abs(gridGap) < .05
+      ? 'A 2:3 grid fits this face exactly.'
+      : gridCrop > 0
+        ? `A 600 × 900 grid loses ${gridCrop.toFixed(1)} mm of height when filled, or leaves ${gridGap.toFixed(1)} mm of side space when fit.`
+        : `A 600 × 900 grid loses ${(-gridGap).toFixed(1)} mm of width when filled, or leaves ${(-gridCrop).toFixed(1)} mm of top/bottom space when fit.`;
     $('exportDimensions').textContent = `${width.toFixed(1)} × ${height.toFixed(1)} mm with bleed · ${trimWidth} mm trim width`;
     $('logoRotationValue').textContent = `${Number($('logoRotation').value) < 0 ? '−' : ''}${Math.abs(Number($('logoRotation').value))}°`;
     const title = $('projectName').value.trim();
@@ -1013,7 +1045,7 @@
       showSgdbGames(sgdbItems(payload));
     } catch (error) {
       if (requestId !== sgdbRequestId) return;
-      const networkMessage = error instanceof TypeError ? 'Could not reach Plomcase’s API proxy. Start the app with “python server.py” and open it at http://127.0.0.1:8784.' : error.message;
+      const networkMessage = error instanceof TypeError ? 'Could not reach Plomcase’s API proxy. Start the app with “python server.py” and open it at http://127.0.0.1:8787.' : error.message;
       sgdbStatus(networkMessage, 'error');
     }
   }
@@ -1066,7 +1098,7 @@
       showSgdbAssets(sgdbItems(payload));
     } catch (error) {
       if (requestId !== sgdbRequestId) return;
-      const networkMessage = error instanceof TypeError ? 'Could not reach Plomcase’s API proxy. Start the app with “python server.py” and open it at http://127.0.0.1:8784.' : error.message;
+      const networkMessage = error instanceof TypeError ? 'Could not reach Plomcase’s API proxy. Start the app with “python server.py” and open it at http://127.0.0.1:8787.' : error.message;
       sgdbStatus(networkMessage, 'error');
     }
   }
@@ -1129,7 +1161,7 @@
       sgdbStatus(`Added ${sgdbMode === 'grid' ? 'cover grid' : 'logo'} for ${sgdbGame.name}.`);
       toast(sgdbMode === 'grid' ? `Grid added to ${target} cover.` : 'Logo added to the spine.');
     } catch (error) {
-      const networkMessage = error instanceof TypeError ? 'Could not reach Plomcase’s image proxy. Start the app with “python server.py” and open it at http://127.0.0.1:8784.' : error.message;
+      const networkMessage = error instanceof TypeError ? 'Could not reach Plomcase’s image proxy. Start the app with “python server.py” and open it at http://127.0.0.1:8787.' : error.message;
       sgdbStatus(networkMessage, 'error');
       assetButton.disabled = false;
     }
@@ -1196,7 +1228,7 @@
   }
 
   function launchBoxNetworkMessage(error) {
-    return error instanceof TypeError ? 'Could not reach Plomcase’s LaunchBox proxy. Start the app with “python server.py” and open it at http://127.0.0.1:8784.' : error.message;
+    return error instanceof TypeError ? 'Could not reach Plomcase’s LaunchBox proxy. Start the app with “python server.py” and open it at http://127.0.0.1:8787.' : error.message;
   }
 
   async function searchLaunchBoxGames() {
@@ -1319,6 +1351,16 @@
     update();
   };
   ids.forEach((id) => $(id).addEventListener('input', () => markSettingEdited(id)));
+  $('casePreset').addEventListener('change', () => {
+    const preset = casePresets[$('casePreset').value];
+    if (!preset) return;
+    ['faceWidth', 'faceHeight', 'spineWidth'].forEach((id, i) => {
+      setControlValue(id, preset[i]);
+      settingOverrides[id] = true;
+    });
+    renderSettingSources();
+    markSettingEdited('casePreset');
+  });
   ids.forEach((id) => $(id).addEventListener('change', () => markSettingEdited(id)));
   window.addEventListener('storage', (event) => {
     if (event.key !== defaultsStorageKey) return;

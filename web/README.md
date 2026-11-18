@@ -8,17 +8,18 @@ Run locally with Python 3.10 or newer:
 python server.py
 ```
 
-Then open <http://127.0.0.1:8784>. Opening `index.html` directly still allows local artwork editing, but the SteamGridDB and LaunchBox pickers need the server.
+The server listens on all interfaces at port 8787 by default (set `PLOMCASE_HOST=127.0.0.1` to keep it local-only, `PORT` to change the port). Then open <http://127.0.0.1:8787>. Opening `index.html` directly still allows local artwork editing, but the SteamGridDB and LaunchBox pickers need the server.
 
 ## Prototype features
 
-- Back, spine, and front cover in one spread, with front and back faces kept at a 2:3 ratio.
+- Back, spine, and front cover in one spread. Face width, face height, and spine width are separate settings (standard DVD insert 129.5 × 183 × 14 mm by default, which fits under a DVD case sleeve or on a DVD-sized printed case; a **Case size** preset also offers the legacy 80 × 120 × 13 mm 2:3 mini case). A note under the size fields shows how much a 2:3 grid loses or leaves over on the current face.
 - Drag and drop or browse for separate cover art, including 600 × 900 SteamGridDB images. The project name is printed vertically on the spine, with an optional rotated logo near its lower end.
 - Optional spine art upload for using a scan of the original spine: it replaces the spine fill, title, and logo. Choose stretch (default), fill, or fit; landscape images are rotated to match the spine direction.
 - Optional disc art for a round disc label: upload square art laid out like a full 120 mm CD, choose fill or fit, and set the printed diameter (50 mm default) and center hole (6.25 mm default). The art is scaled to the printed diameter and clipped to the disc; the center hole and the area outside the circle stay transparent. A small disc preview sits under the wrap preview, with **Download disc SVG** and **Export disc PNG** (selected DPI, bleed ring, and cut circles when cut guides are on).
 - LaunchBox Games DB picker for region box fronts, backs, spines, discs, and clear logos (no key needed).
 - Embedded SteamGridDB picker for cover grids and logos. Search is manual; grid results can be limited to 600 × 900 and are paged in batches of up to 50.
-- Editable case face height, spine width (13 mm default), title size (8 mm default), bleed (0 mm default), cut guides (off by default), typeface, spine direction, and spine/text colors. Spine fills can use sampled back/front cover-edge colors in either gradient direction, dark/light blends, edge solids, a mixed color, or a custom solid; an adaptive title keyline helps keep text readable. Title size auto-fits to the spine width and length. Rubik Bold and Impact are available.
+- Three cover-art fits: **Fill panel** (default; crops the overflow, with a top/center/bottom crop position so a top logo survives), **Fit + blurred extension** (the whole image, with a blurred, darkened, zoomed copy of itself filling the leftover space), and **Fit whole image** (plain dark bars).
+- Editable case face size, spine width (14 mm default), title size (8 mm default), bleed (0 mm default), cut guides (off by default), typeface, spine direction, and spine/text colors. Spine fills can use sampled back/front cover-edge colors in either gradient direction, dark/light blends, edge solids, a mixed color, or a custom solid; an adaptive title keyline helps keep text readable. Title size auto-fits to the spine width and length. Rubik Bold and Impact are available.
 - Shared settings defaults are stored in this browser. Each project follows those defaults until you edit a setting; edited settings become project overrides. Use **Save as default** or **Use default** within a section to manage that section independently. Project values and override markers are included in exported project JSON; another browser will apply its own shared defaults to inherited settings.
 - SVG or DPI-selected PNG export. The PNG includes bleed, selected-DPI pixel dimensions, and physical-resolution metadata for the entered millimeter dimensions.
 - Local project library plus portable `.plomcase.json` project files.

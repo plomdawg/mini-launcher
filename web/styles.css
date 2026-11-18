@@ -44,3 +44,4 @@ body{font-size:15px}.brand{font-size:17px}.topbar-meta,.button{font-size:13px}.e
 .case3d-lid input{width:150px;accent-color:var(--green)}
 .case3d-hint{position:absolute;right:12px;bottom:12px;margin:0;font:10px var(--mono);color:#6f7a70;pointer-events:none}
 .case3d-controls[hidden],.case3d-hint[hidden]{display:none}
+#imageAnchorField[hidden]{display:none}
