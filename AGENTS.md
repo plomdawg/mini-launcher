@@ -104,7 +104,8 @@ Tag contents are untrusted input.
 ## Web (box-art generator)
 
 - `web/` is the imported Plomcase prototype (see `web/README.md`). Users supply their own art or
-  their own SteamGridDB API key; the server only proxies SteamGridDB and stores nothing.
+  their own SteamGridDB API key; the server only proxies SteamGridDB and LaunchBox Games DB
+  (keyless, allowlisted hosts, on demand) and stores nothing. Tests: `python -m unittest discover -s web/tests`.
 - The server port is set with `PORT` (default 8784).
 - Planned rework: templates per printed part (case wrap, cart label, CD label/insert), split
   `app.js` into modules, tests for layout math.

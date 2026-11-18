@@ -1112,6 +1112,192 @@
   });
   $('sgdbPrev').addEventListener('click', () => { if (sgdbPage > 0) loadSgdbAssets(sgdbPage - 1); });
   $('sgdbNext').addEventListener('click', () => { if (!$('sgdbNext').disabled) loadSgdbAssets(sgdbPage + 1); });
+  // ---- LaunchBox Games DB picker ------------------------------------------------------
+  // No API key. The server reads a game's public images page on demand and relays images
+  // from images.launchbox-app.com only. Applying goes through applyImage() (see below).
+  const launchBoxTypeTargets = {'Box - Front': 'front', 'Box - Back': 'back', 'Box - Spine': 'spine', 'Disc': 'disc', 'Clear Logo': 'logo'};
+  const launchBoxTargetNames = {front: 'front', back: 'back', spine: 'spine', logo: 'spine logo', disc: 'disc'};
+  const launchBoxImagePattern = /^https:\/\/images\.launchbox-app\.com\/(?:r2_)?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.(?:jpe?g|png)$/i;
+  const launchBoxSlotLabels = {back: 'back cover', front: 'front cover', logo: 'spine logo', spine: 'spine art', disc: 'disc art'};
+  let launchBoxGame = null;
+  let launchBoxRequestId = 0;
+
+  // A target is usable once `files` has the slot and its `<target>FileName` label exists, so
+  // `disc` lights up automatically when the disc-art upload tile (files.disc, #discFileName) is present.
+  function artworkSlotAvailable(target) {
+    return Object.prototype.hasOwnProperty.call(files, target) && Boolean($(`${target}FileName`));
+  }
+
+  // Load a downloaded blob into a slot through the shared applyImage(target, dataUrl, name)
+  // when this build has it; the fallback mirrors it for builds that predate it.
+  async function applyLaunchBoxImage(target, blob, name) {
+    const mime = blob.type.startsWith('image/') ? blob.type : 'image/png';
+    const data = await imageData(new Blob([blob], {type: mime}));
+    if (typeof applyImage === 'function') { await applyImage(target, data, name); return; }
+    files[target] = target === 'logo' ? await normalizeLogo(data) : data;
+    $(`${target}FileName`).textContent = name;
+    if (target === 'logo') $('removeSpineLogo').hidden = false;
+    if (target === 'spine') $('spineArtOptions').hidden = false;
+    hasUnsavedChanges = true;
+    if (target === 'back' || target === 'front') refreshSpinePalette();
+    else if (target === 'spine') { refreshSpineArt(); update(); }
+    else update();
+  }
+
+  function launchBoxStatus(message, kind = '') {
+    const status = $('launchBoxStatus');
+    status.textContent = message;
+    status.className = `sgdb-status${kind ? ` ${kind}` : ''}`;
+  }
+
+  // Accepts "1992", "https://gamesdb.launchbox-app.com/games/details/1992-the-simpsons-hit-run",
+  // or an /games/images/ link; returns the numeric id as a string, or ''.
+  function launchBoxGameId(value) {
+    const text = String(value || '').trim();
+    if (/^[1-9]\d{0,9}$/.test(text)) return text;
+    try {
+      const url = new URL(text);
+      if (url.hostname !== 'gamesdb.launchbox-app.com') return '';
+      const match = url.pathname.match(/^\/games\/(?:details|images)\/([1-9]\d{0,9})(?:-[a-z0-9-]*)?\/?$/i);
+      return match ? match[1] : '';
+    } catch { return ''; }
+  }
+
+  function launchBoxTargetFor(type) {
+    const chosen = $('launchBoxTarget').value;
+    return chosen === 'auto' ? (launchBoxTypeTargets[type] || 'front') : chosen;
+  }
+
+  function launchBoxButtonLabel(type) {
+    const target = launchBoxTargetFor(type);
+    return artworkSlotAvailable(target) ? `Use on ${launchBoxTargetNames[target] || target}` : `No ${launchBoxTargetNames[target] || target} slot yet`;
+  }
+
+  async function launchBoxRequest(path, params) {
+    const response = await fetch(`/api/launchbox/${path}?${new URLSearchParams(params)}`, {headers: {Accept: 'application/json'}});
+    if (!response.ok) {
+      let message = '';
+      try { message = (await response.json()).error || ''; } catch { /* Keep the status-based fallback. */ }
+      throw new Error(message || `LaunchBox returned HTTP ${response.status}.`);
+    }
+    return response.json();
+  }
+
+  function launchBoxNetworkMessage(error) {
+    return error instanceof TypeError ? 'Could not reach Plomcase’s LaunchBox proxy. Start the app with “python server.py” and open it at http://127.0.0.1:8784.' : error.message;
+  }
+
+  async function searchLaunchBoxGames() {
+    const term = $('launchBoxSearchTerm').value.trim();
+    if (!term) { launchBoxStatus('Enter a game title to search.', 'error'); return; }
+    const pastedId = launchBoxGameId(term);
+    if (pastedId) { await loadLaunchBoxGame(pastedId); return; }
+    launchBoxGame = null;
+    $('launchBoxGameName').textContent = '';
+    const requestId = ++launchBoxRequestId;
+    $('launchBoxContent').innerHTML = '';
+    launchBoxStatus('Searching LaunchBox…');
+    try {
+      const payload = await launchBoxRequest('search', {q: term});
+      if (requestId !== launchBoxRequestId) return;
+      const games = Array.isArray(payload.results) ? payload.results : [];
+      if (!games.length) { launchBoxStatus('No matching games found. Try a shorter or alternate title, or paste the game’s link.', 'empty'); return; }
+      launchBoxStatus('Choose the matching game and platform to browse its box art.');
+      $('launchBoxContent').innerHTML = `<div class="sgdb-game-list">${games.map((game) => `<button class="sgdb-game-option" type="button" data-launchbox-id="${esc(game.id)}"><span><b>${esc(game.title || 'Unnamed game')}</b><small>${esc(game.platform || 'LaunchBox game')} · #${esc(game.id)}</small></span><span aria-hidden="true">›</span></button>`).join('')}</div>`;
+    } catch (error) {
+      if (requestId !== launchBoxRequestId) return;
+      launchBoxStatus(launchBoxNetworkMessage(error), 'error');
+    }
+  }
+
+  function showLaunchBoxImages() {
+    const {title, images} = launchBoxGame;
+    $('launchBoxGameName').textContent = title;
+    if (!images.length) { $('launchBoxContent').innerHTML = ''; launchBoxStatus(`LaunchBox has no box, disc or logo images for ${title}.`, 'empty'); return; }
+    launchBoxStatus(`${images.length} images for ${title}. Select one to add it to the case.`);
+    const groups = [];
+    images.forEach((image, index) => {
+      let group = groups.find((item) => item.type === image.type);
+      if (!group) groups.push(group = {type: image.type, items: []});
+      group.items.push({image, index});
+    });
+    $('launchBoxContent').innerHTML = groups.map(({type, items}) => `<section class="lb-group"><h3>${esc(type)}<small>${items.length}</small></h3><div class="sgdb-assets">${items.map(({image, index}) => {
+      const thumb = launchBoxImagePattern.test(image.thumb || '') ? image.thumb : image.url;
+      const detail = [image.region || 'No region', image.width && image.height ? `${image.width} × ${image.height}` : ''].filter(Boolean).join(' · ');
+      return `<article class="sgdb-asset"><div class="sgdb-asset-image"><img src="${esc(thumb)}" loading="lazy" alt="${esc(`${title} ${type} ${image.region || ''}`.trim())}"></div><div class="sgdb-asset-meta"><small title="${esc(detail)}">${esc(detail)}</small><button class="button" type="button" data-launchbox-index="${index}">${esc(launchBoxButtonLabel(type))}</button></div></article>`;
+    }).join('')}</div></section>`).join('');
+  }
+
+  async function loadLaunchBoxGame(id) {
+    const requestId = ++launchBoxRequestId;
+    launchBoxGame = null;
+    $('launchBoxGameName').textContent = '';
+    $('launchBoxContent').innerHTML = '';
+    launchBoxStatus(`Loading LaunchBox game #${id}…`);
+    try {
+      const payload = await launchBoxRequest('game', {id});
+      if (requestId !== launchBoxRequestId) return;
+      const images = (Array.isArray(payload.images) ? payload.images : []).filter((image) => image && launchBoxImagePattern.test(image.url || ''));
+      launchBoxGame = {id, title: String(payload.title || `LaunchBox #${id}`), images};
+      showLaunchBoxImages();
+    } catch (error) {
+      if (requestId !== launchBoxRequestId) return;
+      launchBoxStatus(launchBoxNetworkMessage(error), 'error');
+    }
+  }
+
+  function openLaunchBoxGameRef() {
+    const id = launchBoxGameId($('launchBoxGameRef').value);
+    if (!id) { launchBoxStatus('Paste a gamesdb.launchbox-app.com game link (…/games/details/1992-…) or a numeric game ID.', 'error'); return; }
+    loadLaunchBoxGame(id);
+  }
+
+  function showLaunchBoxPicker() {
+    if (!$('launchBoxSearchTerm').value.trim()) $('launchBoxSearchTerm').value = $('projectName').value.trim();
+    if (!launchBoxGame) launchBoxStatus('Search for a game or paste its LaunchBox Games DB link.');
+    $('launchBoxDialog').showModal();
+  }
+
+  $('openLaunchBoxPicker').addEventListener('click', showLaunchBoxPicker);
+  $('closeLaunchBoxPicker').addEventListener('click', () => $('launchBoxDialog').close());
+  $('launchBoxDialog').addEventListener('click', (event) => { if (event.target === $('launchBoxDialog')) $('launchBoxDialog').close(); });
+  $('launchBoxSearch').addEventListener('click', searchLaunchBoxGames);
+  $('launchBoxSearchTerm').addEventListener('keydown', (event) => { if (event.key === 'Enter') searchLaunchBoxGames(); });
+  $('launchBoxOpenGame').addEventListener('click', openLaunchBoxGameRef);
+  $('launchBoxGameRef').addEventListener('keydown', (event) => { if (event.key === 'Enter') openLaunchBoxGameRef(); });
+  $('launchBoxTarget').addEventListener('change', () => { if (launchBoxGame) showLaunchBoxImages(); });
+  $('launchBoxContent').addEventListener('click', async (event) => {
+    const gameButton = event.target.closest('[data-launchbox-id]');
+    if (gameButton) { await loadLaunchBoxGame(gameButton.dataset.launchboxId); return; }
+    const assetButton = event.target.closest('[data-launchbox-index]');
+    if (!assetButton || !launchBoxGame) return;
+    const image = launchBoxGame.images[Number(assetButton.dataset.launchboxIndex)];
+    if (!image) return;
+    const target = launchBoxTargetFor(image.type);
+    const targetLabel = launchBoxSlotLabels[target] || target;
+    if (!artworkSlotAvailable(target)) { launchBoxStatus(`This version of Plomcase has no ${targetLabel} slot yet. Choose another “Apply to” target.`, 'error'); return; }
+    if (files[target] && !confirm(`Replace the current ${targetLabel} with this LaunchBox image?`)) return;
+    assetButton.disabled = true;
+    launchBoxStatus('Downloading artwork into this project…');
+    try {
+      const response = await fetch(`/api/launchbox/image?${new URLSearchParams({url: image.url})}`);
+      if (!response.ok) {
+        let message = '';
+        try { message = (await response.json()).error || ''; } catch { /* Keep the status-based fallback. */ }
+        throw new Error(message || `Artwork download returned HTTP ${response.status}.`);
+      }
+      const region = image.region ? ` (${image.region})` : '';
+      await applyLaunchBoxImage(target, await response.blob(), `LaunchBox · ${image.type}${region}`);
+      launchBoxStatus(`Added ${image.type}${region} for ${launchBoxGame.title} as the ${targetLabel}.`);
+      toast(`LaunchBox ${image.type} added as the ${targetLabel}.`);
+    } catch (error) {
+      launchBoxStatus(launchBoxNetworkMessage(error), 'error');
+    } finally {
+      assetButton.disabled = false;
+    }
+  });
+  // ---- end LaunchBox Games DB picker --------------------------------------------------
+
   const markSettingEdited = (id) => {
     if (settingIds.includes(id)) {
       settingOverrides[id] = true;
