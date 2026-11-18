@@ -8,7 +8,7 @@ Run locally with Python 3.10 or newer:
 python server.py
 ```
 
-Then open <http://127.0.0.1:8784>. Opening `index.html` directly still allows local artwork editing, but the SteamGridDB and LaunchBox pickers need the server.
+The server listens on all interfaces at port 8787 by default (set `PLOMCASE_HOST=127.0.0.1` to keep it local-only, `PORT` to change the port). Then open <http://127.0.0.1:8787>. Opening `index.html` directly still allows local artwork editing, but the SteamGridDB and LaunchBox pickers need the server.
 
 ## Prototype features
 
