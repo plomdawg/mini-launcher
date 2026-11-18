@@ -31,8 +31,3 @@ Bundled third-party parts keep their own licenses: Departure Mono (SIL OFL 1.1,
 `app/assets/fonts/DepartureMono-OFL.txt`) and three.js (MIT, `web/vendor/three/LICENSE`).
 
 The hardware license is still to be decided.
-
-### Contribution
-
-Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion in
-this project is licensed under GPL-3.0-or-later, without any additional terms or conditions.
