@@ -108,6 +108,8 @@ Tag contents are untrusted input.
   (keyless, allowlisted hosts, on demand) and stores nothing. Tests: `python -m unittest discover -s web/tests`.
 - The server listens on `PLOMCASE_HOST` (default 0.0.0.0) and `PORT` (default 8787).
 - Printed parts today: case wrap (DVD insert default, mini-case preset) and round disc label.
+  The wrap can carry platform-logo and ESRB-rating overlays; those logos are bundled in
+  `web/overlays/` (catalog JSON + SVGs) for personal prints — the selling guardrails below still apply to anything sold.
   Deferred ideas: a cart-label template, splitting `app.js` into modules with layout-math tests,
   and per-client rate limits on the art proxies for public deployments.
 

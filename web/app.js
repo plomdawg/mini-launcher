@@ -1,24 +1,31 @@
 (() => {
   const $ = (id) => document.getElementById(id);
-  const ids = ['projectName','imageFit','imageAnchor','spineArtFit','faceWidth','faceHeight','spineWidth','bleed','dpi','cropMarks','spineDirection','fontFamily','spineFontSize','spineColor','textColor','spineFillMode','spineTextOutline','logoRotation','discFit','discDiameter','discHole'];
-  const settingIds = ids.filter((id) => id !== 'projectName');
+  const ids = ['projectName','imageFit','imageAnchor','spineArtFit','faceWidth','faceHeight','spineWidth','bleed','dpi','cropMarks','spineDirection','fontFamily','spineFontSize','spineColor','textColor','spineFillMode','spineTextOutline','logoRotation','discFit','discDiameter','discHole','overlayPlatform','overlayStyle','overlayAlign','overlayCorner','overlaySize','overlaySpine','overlayCustomBand','overlayBandColor','esrbRating','esrbCorner','esrbSize','esrbBack'];
+  // Per-project fields: saved with each case but never part of the shared setting defaults.
+  const projectFields = ['projectName', 'overlayPlatform', 'esrbRating'];
+  const settingIds = ids.filter((id) => !projectFields.includes(id));
   const settingGroups = {
     artwork: ['imageFit','imageAnchor','spineArtFit'],
     layout: ['faceWidth','faceHeight','spineWidth','bleed','dpi','cropMarks'],
     theme: ['spineDirection','fontFamily','spineFontSize','spineColor','textColor','spineFillMode','spineTextOutline','logoRotation'],
-    disc: ['discFit','discDiameter','discHole']
+    disc: ['discFit','discDiameter','discHole'],
+    overlay: ['overlayStyle','overlayAlign','overlayCorner','overlaySize','overlaySpine','overlayCustomBand','overlayBandColor','esrbCorner','esrbSize','esrbBack']
+  };
+  const overlayDefaults = {
+    overlayStyle: 'banner', overlayAlign: 'center', overlayCorner: 'tl', overlaySize: '9', overlaySpine: true,
+    overlayCustomBand: false, overlayBandColor: '#000000', esrbCorner: 'bl', esrbSize: '20', esrbBack: false
   };
   const builtInDefaults = {
     imageFit: 'cover', imageAnchor: 'center', spineArtFit: 'stretch', faceWidth: '129.5', faceHeight: '183', spineWidth: '14', bleed: '0', dpi: '300', cropMarks: false,
     spineDirection: '90', fontFamily: "'Rubik', sans-serif", spineFontSize: '8', spineColor: '#ffffff',
     textColor: '#000000', spineFillMode: 'back-front', spineTextOutline: 'auto', logoRotation: '0',
-    discFit: 'cover', discDiameter: '50', discHole: '6.25'
+    discFit: 'cover', discDiameter: '50', discHole: '6.25', ...overlayDefaults
   };
   const legacyDefaults = {
     imageFit: 'cover', imageAnchor: 'center', spineArtFit: 'stretch', faceWidth: '80', faceHeight: '120', spineWidth: '12', bleed: '3', dpi: '300', cropMarks: true,
     spineDirection: '90', fontFamily: "'Rubik', sans-serif", spineFontSize: '6', spineColor: '#ffffff',
     textColor: '#000000', spineFillMode: 'back-front', spineTextOutline: 'auto', logoRotation: '0',
-    discFit: 'cover', discDiameter: '31.75', discHole: '4'
+    discFit: 'cover', discDiameter: '31.75', discHole: '4', ...overlayDefaults
   };
   const legacyDefaultValues = {spineWidth: ['12', '8']};
   const defaultsStorageKey = 'plomcase.settingDefaults.v1';
@@ -59,16 +66,18 @@
   });
 
   function normalizeSettingValue(id, value, fallback = builtInDefaults[id]) {
-    if (id === 'cropMarks') return typeof value === 'boolean' ? value : fallback;
-    if (id === 'spineColor' || id === 'textColor') return safeColor(value, fallback);
+    if (['cropMarks', 'overlaySpine', 'overlayCustomBand', 'esrbBack'].includes(id)) return typeof value === 'boolean' ? value : fallback;
+    if (['spineColor', 'textColor', 'overlayBandColor'].includes(id)) return safeColor(value, fallback);
     const choices = {
       imageFit: ['cover', 'contain', 'extend'], imageAnchor: ['top', 'center', 'bottom'], discFit: ['cover', 'contain'], spineArtFit: ['stretch', 'cover', 'contain'], dpi: ['150', '300', '600'], spineDirection: ['90', '-90'],
       fontFamily: ["'Rubik', sans-serif", "Impact, Haettenschweiler, 'Arial Narrow Bold', sans-serif"],
       spineFillMode: ['back-front','front-back','dark-blend','light-blend','back-edge','front-edge','center-mix','solid'],
-      spineTextOutline: ['auto','none','white','black']
+      spineTextOutline: ['auto','none','white','black'],
+      overlayStyle: ['banner', 'badge', 'none'], overlayAlign: ['left', 'center', 'right'],
+      overlayCorner: ['tl', 'tr', 'bl', 'br'], esrbCorner: ['tl', 'tr', 'bl', 'br']
     };
     if (choices[id]) return choices[id].includes(String(value)) ? String(value) : fallback;
-    const ranges = {faceWidth: [30,300], faceHeight: [40,350], spineWidth: [3,60], bleed: [0,10], spineFontSize: [2,24], logoRotation: [-180,180], discDiameter: [10,130], discHole: [0,40]};
+    const ranges = {faceWidth: [30,300], faceHeight: [40,350], spineWidth: [3,60], bleed: [0,10], spineFontSize: [2,24], logoRotation: [-180,180], discDiameter: [10,130], discHole: [0,40], overlaySize: [4,25], esrbSize: [8,40]};
     if (ranges[id]) {
       const number = Number(value);
       return Number.isFinite(number) && number >= ranges[id][0] && number <= ranges[id][1] ? String(number) : fallback;
@@ -144,7 +153,11 @@
     state = normalizeState(state);
     const restoredLogo = await normalizeLogo(safeImage(state.logoImage));
     const restoredTitle = await normalizeLogo(safeImage(state.titleImage));
+    await overlayCatalogReady;
     $('projectName').value = state.projectName || '';
+    $('overlayPlatform').value = overlayEntry('platforms', state.overlayPlatform)?.id || '';
+    $('esrbRating').value = overlayEntry('ratings', state.esrbRating)?.id || '';
+    await preloadOverlays(state);
     settingOverrides = inferSettingOverrides(state);
     settingIds.forEach((id) => {
       const value = settingOverrides[id]
@@ -312,6 +325,217 @@
     return out.join('');
   }
 
+  // ---- Platform & rating overlays ---------------------------------------------------
+  // Logos are bundled SVG/PNG files under overlays/ (catalogs: platforms.json, ratings.json). They are
+  // tight-cropped, optionally tinted, and embedded as data URIs: PNG export and the 3D preview
+  // rasterize the SVG through an <img>, which never loads external hrefs.
+  const overlayCatalog = {platforms: [], ratings: []};
+  const overlayAssets = new Map();
+  const overlayLoading = new Map();
+  const overlayFilePattern = /^[a-z0-9][a-z0-9-]*\.(?:svg|png)$/;
+  const overlayCatalogReady = Promise.all(['platforms', 'ratings'].map((kind) => fetch(`overlays/${kind}.json`)
+    .then((response) => response.ok ? response.json() : [])
+    .catch(() => [])
+    .then((list) => {
+      overlayCatalog[kind] = (Array.isArray(list) ? list : []).filter((entry) => entry && typeof entry.id === 'string' && overlayFilePattern.test(entry.logo || ''));
+      const select = $(kind === 'platforms' ? 'overlayPlatform' : 'esrbRating');
+      const current = select.value;
+      select.insertAdjacentHTML('beforeend', overlayCatalog[kind].map((entry) => `<option value="${esc(entry.id)}">${esc(entry.name || entry.id)}</option>`).join(''));
+      select.value = current;
+    })));
+
+  function overlayEntry(kind, id) {
+    return id ? overlayCatalog[kind].find((entry) => entry.id === id) || null : null;
+  }
+
+  async function normalizeOverlaySvg(text, ink) {
+    const doc = new DOMParser().parseFromString(text, 'image/svg+xml');
+    const svg = doc.documentElement;
+    if (!svg || svg.nodeName !== 'svg' || doc.querySelector('parsererror')) return null;
+    svg.querySelectorAll('script, foreignObject').forEach((node) => node.remove());
+    if (ink) {
+      const style = doc.createElementNS('http://www.w3.org/2000/svg', 'style');
+      style.textContent = `*{fill:${ink}!important}`;
+      svg.insertBefore(style, svg.firstChild);
+    }
+    // Measure the drawn area so padding baked into the source file doesn't shrink the logo.
+    const host = document.createElement('div');
+    host.style.cssText = 'position:absolute;left:-10000px;top:0;width:400px;height:400px;visibility:hidden;pointer-events:none';
+    const live = document.importNode(svg, true);
+    live.setAttribute('width', '400');
+    live.setAttribute('height', '400');
+    host.appendChild(live);
+    document.body.appendChild(host);
+    let box;
+    try { box = live.getBBox(); } catch { box = null; } finally { host.remove(); }
+    if (!box || !(box.width > 0) || !(box.height > 0)) return null;
+    svg.setAttribute('viewBox', `${box.x} ${box.y} ${box.width} ${box.height}`);
+    svg.setAttribute('width', String(box.width));
+    svg.setAttribute('height', String(box.height));
+    svg.setAttribute('preserveAspectRatio', 'xMidYMid meet');
+    const bytes = new TextEncoder().encode(new XMLSerializer().serializeToString(svg));
+    let binary = '';
+    for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+    return {data: `data:image/svg+xml;base64,${btoa(binary)}`, aspect: box.width / box.height};
+  }
+
+  // PNG logos get the same treatment on a canvas: crop to the opaque pixels, optional tint.
+  function normalizeOverlayRaster(blob, ink) {
+    return new Promise((resolve) => {
+      const url = URL.createObjectURL(blob);
+      const image = new Image();
+      image.onload = () => {
+        URL.revokeObjectURL(url);
+        try {
+          const w = image.naturalWidth, h = image.naturalHeight;
+          const canvas = document.createElement('canvas');
+          canvas.width = w; canvas.height = h;
+          const context = canvas.getContext('2d', {willReadFrequently: true});
+          context.drawImage(image, 0, 0);
+          const pixels = context.getImageData(0, 0, w, h).data;
+          let x0 = w, y0 = h, x1 = -1, y1 = -1;
+          for (let y = 0; y < h; y += 1) {
+            for (let x = 0; x < w; x += 1) {
+              if (pixels[(y * w + x) * 4 + 3] > 8) { if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; }
+            }
+          }
+          if (x1 < x0 || y1 < y0) { resolve(null); return; }
+          const out = document.createElement('canvas');
+          out.width = x1 - x0 + 1; out.height = y1 - y0 + 1;
+          const outContext = out.getContext('2d');
+          outContext.drawImage(canvas, x0, y0, out.width, out.height, 0, 0, out.width, out.height);
+          if (ink) {
+            outContext.globalCompositeOperation = 'source-in';
+            outContext.fillStyle = ink;
+            outContext.fillRect(0, 0, out.width, out.height);
+          }
+          resolve({data: out.toDataURL('image/png'), aspect: out.width / out.height});
+        } catch { resolve(null); }
+      };
+      image.onerror = () => { URL.revokeObjectURL(url); resolve(null); };
+      image.src = url;
+    });
+  }
+
+  function overlayKey(entry) {
+    return `${entry.logo}|${safeColor(entry.ink, '')}`;
+  }
+
+  function loadOverlayAsset(entry) {
+    if (!entry) return Promise.resolve(null);
+    const key = overlayKey(entry);
+    if (overlayAssets.has(key)) return Promise.resolve(overlayAssets.get(key));
+    if (!overlayLoading.has(key)) {
+      overlayLoading.set(key, fetch(`overlays/${entry.logo}`)
+        .then((response) => response.ok ? response.blob() : Promise.reject(new Error(`HTTP ${response.status}`)))
+        .then(async (blob) => entry.logo.endsWith('.png')
+          ? normalizeOverlayRaster(blob, safeColor(entry.ink, ''))
+          : normalizeOverlaySvg(await blob.text(), safeColor(entry.ink, '')))
+        .catch(() => null)
+        .then((asset) => { overlayAssets.set(key, asset); overlayLoading.delete(key); return asset; }));
+    }
+    return overlayLoading.get(key);
+  }
+
+  // Synchronous lookup for buildSvg: returns the cached asset, or starts loading it and
+  // re-renders once it arrives (failed loads are cached as null, so this never loops).
+  function overlayAsset(entry) {
+    if (!entry) return null;
+    const key = overlayKey(entry);
+    if (overlayAssets.has(key)) return overlayAssets.get(key);
+    loadOverlayAsset(entry).then(() => update());
+    return null;
+  }
+
+  function preloadOverlays(s) {
+    return Promise.all([loadOverlayAsset(overlayEntry('platforms', s.overlayPlatform)), loadOverlayAsset(overlayEntry('ratings', s.esrbRating))]);
+  }
+
+  function overlayImage(data, x, y, w, h, transform = '') {
+    return `<image href="${data}" x="${x}" y="${y}" width="${w}" height="${h}" preserveAspectRatio="xMidYMid meet"${transform ? ` transform="${transform}"` : ''}/>`;
+  }
+
+  function cornerPosition(corner, panelX, g, w, h, inset) {
+    return {
+      x: String(corner).endsWith('l') ? panelX + inset : panelX + g.faceW - inset - w,
+      y: String(corner).startsWith('t') ? g.bleed + inset : g.bleed + g.faceH - inset - h
+    };
+  }
+
+  // g: {backX, spineX, frontX, faceW, faceH, spineW, bleed}. Returns markup drawn on top of the
+  // wrap plus how much of the spine top the platform badge occupies (the title avoids it).
+  function overlayMarkup(s, g) {
+    const parts = [];
+    let spineReserve = 0;
+    const platform = overlayEntry('platforms', s.overlayPlatform);
+    const logo = overlayAsset(platform);
+    if (platform && logo) {
+      const platformBand = safeColor(platform.band, '#000000');
+      const band = s.overlayCustomBand ? safeColor(s.overlayBandColor, platformBand) : platformBand;
+      const size = Number(normalizeSettingValue('overlaySize', s.overlaySize));
+      const style = normalizeSettingValue('overlayStyle', s.overlayStyle);
+      if (style === 'banner') {
+        const bandH = g.faceH * size / 100;
+        const pad = bandH * .2;
+        let lh = bandH - pad * 2, lw = lh * logo.aspect;
+        const maxW = g.faceW * .45;  // wide wordmarks stay modest, like real case headers
+        if (lw > maxW) { lw = maxW; lh = lw / logo.aspect; }
+        const align = normalizeSettingValue('overlayAlign', s.overlayAlign);
+        const lx = align === 'left' ? g.frontX + pad * 2 : align === 'right' ? g.frontX + g.faceW - pad * 2 - lw : g.frontX + (g.faceW - lw) / 2;
+        parts.push(`<rect x="${g.frontX}" y="0" width="${g.faceW + g.bleed}" height="${g.bleed + bandH}" fill="${band}"/>`);
+        parts.push(overlayImage(logo.data, lx, g.bleed + (bandH - lh) / 2, lw, lh));
+      } else if (style === 'badge') {
+        const h = g.faceH * size / 100;
+        const pad = h * .18;
+        let lh = h - pad * 2, lw = lh * logo.aspect;
+        const maxW = g.faceW * .6 - pad * 2;
+        if (lw > maxW) { lw = maxW; lh = lw / logo.aspect; }
+        const bw = lw + pad * 2, bh = lh + pad * 2;
+        const {x, y} = cornerPosition(s.overlayCorner, g.frontX, g, bw, bh, 3);
+        parts.push(`<rect x="${x}" y="${y}" width="${bw}" height="${bh}" rx="${Math.min(bw, bh) * .18}" fill="${band}"/>`);
+        parts.push(overlayImage(logo.data, x + pad, y + pad, lw, lh));
+      }
+      if (s.overlaySpine) {
+        // Wide wordmarks run along the spine like the title; squarish marks stay upright.
+        const pad = Math.max(.6, g.spineW * .15);
+        const rotate = logo.aspect > 1.4;
+        let across = g.spineW - pad * 2;
+        let along = rotate ? across * logo.aspect : across / logo.aspect;
+        const maxAlong = g.faceH * (rotate ? .2 : .12);
+        if (along > maxAlong) { across *= maxAlong / along; along = maxAlong; }
+        spineReserve = along + pad * 2;
+        const cx = g.spineX + g.spineW / 2, cy = g.bleed + spineReserve / 2;
+        parts.push(`<rect x="${g.spineX}" y="0" width="${g.spineW}" height="${g.bleed + spineReserve}" fill="${band}"/>`);
+        if (rotate) {
+          const dir = Number(s.spineDirection) === 90 ? 90 : -90;
+          parts.push(overlayImage(logo.data, cx - along / 2, cy - across / 2, along, across, `rotate(${dir} ${cx} ${cy})`));
+        } else {
+          parts.push(overlayImage(logo.data, cx - across / 2, cy - along / 2, across, along));
+        }
+      }
+    }
+    const rating = overlayEntry('ratings', s.esrbRating);
+    const ratingArt = overlayAsset(rating);
+    if (rating && ratingArt) {
+      const h = Math.min(Number(normalizeSettingValue('esrbSize', s.esrbSize)), g.faceH * .45);
+      const w = h * ratingArt.aspect;
+      const panels = s.esrbBack ? [g.frontX, g.backX] : [g.frontX];
+      panels.forEach((panelX) => {
+        const {x, y} = cornerPosition(s.esrbCorner, panelX, g, w, h, 4);
+        parts.push(overlayImage(ratingArt.data, x, y, w, h));
+      });
+    }
+    return {markup: parts.join(''), spineReserve};
+  }
+
+  function matchOverlayPlatform(name) {
+    const wanted = String(name || '').trim().toLowerCase();
+    if (!wanted) return null;
+    return overlayCatalog.platforms.find((entry) => [entry.name, ...(Array.isArray(entry.aliases) ? entry.aliases : [])]
+      .some((alias) => String(alias).toLowerCase() === wanted)) || null;
+  }
+  // ---- end overlays -------------------------------------------------------------------
+
   function buildSvg(s = readState(), includeGuides = false) {
     const faceH = clampNumber('faceHeight', 183, 40, 350);
     const faceW = clampNumber('faceWidth', 129.5, 30, 300);
@@ -366,6 +590,7 @@
       imageMarkup(s.frontImage, frontX, 0, faceW + bleed, faceH + 2 * bleed, fit, 'Front cover artwork', '#30382f', {...panelOptions, key: 'front', trim: {x: frontX, y: bleed, w: faceW, h: faceH}}),
       `<rect x="${spineX}" y="${bleed}" width="${spineW}" height="${faceH}" fill="${spinePaint}"/>`];
 
+    const overlay = overlayMarkup(s, {backX, spineX, frontX, faceW, faceH, spineW, bleed});
     const spine = s.spineImage ? '' : String(s.projectName || '').trim();
     const logoLength = Math.min(20, Math.max(10, faceH * .18));
     const spineCenterY = bleed + faceH / 2;
@@ -404,7 +629,7 @@
       // Title logo: a stylized wordmark in place of the title text, laid along the spine like the
       // text and kept clear of the bottom spine logo.
       const dir = Number(s.spineDirection) === 90 ? 90 : -90;
-      const top = bleed + 8;
+      const top = bleed + Math.max(8, overlay.spineReserve + 2);  // clear of the platform spine badge
       const bottom = logoTop !== null ? logoTop - 2 : bleed + faceH - 8;
       const len = Math.max(4, bottom - top);
       const cross = Math.max(1, spineW - 2);
@@ -415,7 +640,8 @@
       const chars = Array.from(spine);
       const units = chars.reduce((sum, ch) => sum + (ch === ' ' ? .36 : /[il.,'!|]/.test(ch) ? .34 : /[MW@#]/.test(ch) ? .86 : .63), 0);
       const letterSpacing = .15;
-      const availableLength = Math.max(10, faceH - 16);
+      const availableLength = Math.max(10, faceH - 16 - overlay.spineReserve);
+      const titleY = spineCenterY + overlay.spineReserve / 2;
       const widthLimit = Math.max(1, (spineW - 2 - outlineWidth * 2) / .82);
       const lengthLimit = Math.max(1, (availableLength - Math.max(0, chars.length - 1) * letterSpacing) / Math.max(.1, units));
       const fontSize = Math.max(1, Math.min(requestedFontSize, widthLimit, lengthLimit));
@@ -424,13 +650,14 @@
       const estimated = units * fontSize + Math.max(0, chars.length - 1) * letterSpacing;
       const squeeze = estimated > availableLength ? ` textLength="${availableLength}" lengthAdjust="spacingAndGlyphs"` : '';
       const outlineAttrs = outline ? ` stroke="${outline}" stroke-width="${outlineWidth}" stroke-linejoin="round" paint-order="stroke"` : '';
-      parts.push(`<text x="${spineX+spineW/2}" y="${spineCenterY}" transform="rotate(${dir} ${spineX+spineW/2} ${spineCenterY})" text-anchor="middle" dominant-baseline="central" fill="${ink}"${outlineAttrs} font-family="${font}" font-size="${fontSize}" font-weight="700" letter-spacing=".15"${squeeze}>${esc(spine)}</text>`);
+      parts.push(`<text x="${spineX+spineW/2}" y="${titleY}" transform="rotate(${dir} ${spineX+spineW/2} ${titleY})" text-anchor="middle" dominant-baseline="central" fill="${ink}"${outlineAttrs} font-family="${font}" font-size="${fontSize}" font-weight="700" letter-spacing=".15"${squeeze}>${esc(spine)}</text>`);
     } else {
       const hintSize = Math.min(2.5, spineW * .55);
       parts.push(`<text x="${spineX+spineW/2}" y="${spineCenterY}" transform="rotate(90 ${spineX+spineW/2} ${spineCenterY})" text-anchor="middle" fill="${ink}" fill-opacity=".45" font-family="${font}" font-size="${hintSize}">PROJECT NAME</text>`);
     }
     if (logoMarkup) parts.push(logoMarkup);
 
+    parts.push(overlay.markup);
     if (s.cropMarks && bleed > 0) {
       const mark = Math.min(2.5, bleed * .8), gap = Math.min(.6, bleed * .2), x1=bleed, x2=bleed+trimW, y1=bleed, y2=bleed+faceH;
       const paths = [
@@ -499,6 +726,9 @@
     const sizeValues = ['faceWidth', 'faceHeight', 'spineWidth'].map((id) => String(Number($(id).value)));
     $('casePreset').value = Object.keys(casePresets).find((key) => casePresets[key].every((v, i) => v === sizeValues[i])) || 'custom';
     $('imageAnchorField').hidden = $('imageFit').value !== 'cover';
+    $('overlayAlignField').hidden = $('overlayStyle').value !== 'banner';
+    $('overlayCornerField').hidden = $('overlayStyle').value !== 'badge';
+    $('overlayBandColor').disabled = !$('overlayCustomBand').checked;
     const gridCrop = faceW * 1.5 - faceH, gridGap = faceW - faceH * 2 / 3;
     $('gridFitNote').textContent = Math.abs(gridGap) < .05
       ? 'A 2:3 grid fits this face exactly.'
@@ -761,6 +991,8 @@
       const savedLogo = await normalizeLogo(safeImage(saved.logoImage));
       const savedTitle = await normalizeLogo(safeImage(saved.titleImage));
       let dirty = current.projectName !== (saved.projectName || '')
+        || current.overlayPlatform !== (saved.overlayPlatform || '')
+        || current.esrbRating !== (saved.esrbRating || '')
         || current.backImage !== safeImage(saved.backImage)
         || current.frontImage !== safeImage(saved.frontImage)
         || current.logoImage !== savedLogo
@@ -1360,7 +1592,7 @@
       const games = Array.isArray(payload.results) ? payload.results : [];
       if (!games.length) { launchBoxStatus('No matching games found. Try a shorter or alternate title, or paste the game’s link.', 'empty'); return; }
       launchBoxStatus('Choose the matching game and platform to browse its box art.');
-      $('launchBoxContent').innerHTML = `<div class="sgdb-game-list">${games.map((game) => `<button class="sgdb-game-option" type="button" data-launchbox-id="${esc(game.id)}"><span><b>${esc(game.title || 'Unnamed game')}</b><small>${esc(game.platform || 'LaunchBox game')} · #${esc(game.id)}</small></span><span aria-hidden="true">›</span></button>`).join('')}</div>`;
+      $('launchBoxContent').innerHTML = `<div class="sgdb-game-list">${games.map((game) => `<button class="sgdb-game-option" type="button" data-launchbox-id="${esc(game.id)}" data-launchbox-platform="${esc(game.platform || '')}"><span><b>${esc(game.title || 'Unnamed game')}</b><small>${esc(game.platform || 'LaunchBox game')} · #${esc(game.id)}</small></span><span aria-hidden="true">›</span></button>`).join('')}</div>`;
     } catch (error) {
       if (requestId !== launchBoxRequestId) return;
       launchBoxStatus(launchBoxNetworkMessage(error), 'error');
@@ -1390,7 +1622,7 @@
     }).join('')}</div></section>`).join('');
   }
 
-  async function loadLaunchBoxGame(id) {
+  async function loadLaunchBoxGame(id, platformName = '') {
     const requestId = ++launchBoxRequestId;
     launchBoxGame = null;
     setLaunchBoxGameHeading();
@@ -1402,6 +1634,13 @@
       const images = (Array.isArray(payload.images) ? payload.images : []).filter((image) => image && launchBoxImagePattern.test(image.url || ''));
       launchBoxGame = {id, title: String(payload.title || `LaunchBox #${id}`), images};
       showLaunchBoxImages();
+      // Pre-pick the platform overlay from the search result, but never replace a chosen one.
+      const platform = matchOverlayPlatform(platformName);
+      if (platform && !$('overlayPlatform').value) {
+        $('overlayPlatform').value = platform.id;
+        markSettingEdited('overlayPlatform');
+        toast(`Platform overlay set to ${platform.name}.`);
+      }
     } catch (error) {
       if (requestId !== launchBoxRequestId) return;
       launchBoxStatus(launchBoxNetworkMessage(error), 'error');
@@ -1436,7 +1675,7 @@
   $('launchBoxTarget').addEventListener('change', () => { if (launchBoxGame) showLaunchBoxImages(); });
   $('launchBoxContent').addEventListener('click', async (event) => {
     const gameButton = event.target.closest('[data-launchbox-id]');
-    if (gameButton) { await loadLaunchBoxGame(gameButton.dataset.launchboxId); return; }
+    if (gameButton) { await loadLaunchBoxGame(gameButton.dataset.launchboxId, gameButton.dataset.launchboxPlatform); return; }
     const assetButton = event.target.closest('[data-launchbox-index]');
     if (!assetButton || !launchBoxGame) return;
     const image = launchBoxGame.images[Number(assetButton.dataset.launchboxIndex)];

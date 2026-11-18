@@ -53,6 +53,34 @@
       </details>
 
       <details class="section" open>
+        <summary><span class="section-icon">◩</span><span><b>Platform &amp; rating</b><small>Console banner and ESRB badge</small></span><span class="chevron">⌄</span></summary>
+        <div class="section-body">
+          <div class="field-row">
+            <label class="field"><span>Platform <i>this case</i></span><select id="overlayPlatform"><option value="">None</option></select></label>
+            <label class="field"><span>Front style <small class="setting-source" id="overlayStyleSource">(default)</small></span><select id="overlayStyle"><option value="banner">Top banner</option><option value="badge">Corner badge</option><option value="none">Spine only</option></select></label>
+          </div>
+          <div class="field-row">
+            <label class="field" id="overlayAlignField"><span>Logo position <small class="setting-source" id="overlayAlignSource">(default)</small></span><select id="overlayAlign"><option value="left">Left</option><option value="center">Center</option><option value="right">Right</option></select></label>
+            <label class="field" id="overlayCornerField"><span>Badge corner <small class="setting-source" id="overlayCornerSource">(default)</small></span><select id="overlayCorner"><option value="tl">Top left</option><option value="tr">Top right</option><option value="bl">Bottom left</option><option value="br">Bottom right</option></select></label>
+            <label class="field"><span>Size <small class="setting-source" id="overlaySizeSource">(default)</small> <i>% height</i></span><input type="number" id="overlaySize" min="4" max="25" step="0.5" value="9"></label>
+          </div>
+          <label class="check-row crop-guides"><input type="checkbox" id="overlaySpine" checked><span><span>Platform badge on the spine <i class="setting-source" id="overlaySpineSource">(default)</i></span><small>Sits at the top of the spine; the title shrinks to make room.</small></span></label>
+          <label class="check-row crop-guides"><input type="checkbox" id="overlayCustomBand"><span><span>Custom band color <i class="setting-source" id="overlayCustomBandSource">(default)</i></span><small>Otherwise each platform uses its own case color.</small></span></label>
+          <div class="color-row"><label class="color-field"><span>Band <small class="setting-source" id="overlayBandColorSource">(default)</small></span><input id="overlayBandColor" type="color" value="#000000"></label></div>
+          <div class="field-row">
+            <label class="field"><span>ESRB rating <i>this case</i></span><select id="esrbRating"><option value="">None</option></select></label>
+            <label class="field"><span>Rating corner <small class="setting-source" id="esrbCornerSource">(default)</small></span><select id="esrbCorner"><option value="bl">Bottom left</option><option value="br">Bottom right</option><option value="tl">Top left</option><option value="tr">Top right</option></select></label>
+          </div>
+          <div class="field-row">
+            <label class="field"><span>Rating height <small class="setting-source" id="esrbSizeSource">(default)</small> <i>mm</i></span><input type="number" id="esrbSize" min="8" max="40" step="0.5" value="20"></label>
+          </div>
+          <label class="check-row crop-guides"><input type="checkbox" id="esrbBack"><span><span>Rating on the back cover too <i class="setting-source" id="esrbBackSource">(default)</i></span><small>Same corner as the front.</small></span></label>
+          <p class="hint">Use these when the cover art (e.g. a SteamGridDB grid) doesn't show where the game is from. Picking a game from a LaunchBox search fills in the platform if none is set.</p>
+          <div class="default-actions"><button class="button" type="button" data-default-action="save" data-default-group="overlay">Save as default</button><button class="button quiet" type="button" data-default-action="reset" data-default-group="overlay">Use default</button></div>
+        </div>
+      </details>
+
+      <details class="section" open>
         <summary><span class="section-icon">▤</span><span><b>Case layout</b><small>Adjust to your printed case</small></span><span class="chevron">⌄</span></summary>
         <div class="section-body">
           <label class="field"><span>Case size</span><select id="casePreset"><option value="dvd">DVD insert (129.5 × 183 × 14 mm)</option><option value="mini">Legacy mini 2:3 (80 × 120 × 13 mm)</option><option value="custom">Custom</option></select></label>

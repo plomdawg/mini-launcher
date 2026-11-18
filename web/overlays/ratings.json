@@ -1,0 +1,9 @@
+[
+  {"id": "esrb-ec", "name": "ESRB EC — Early Childhood", "logo": "esrb-ec.png"},
+  {"id": "esrb-e", "name": "ESRB E — Everyone", "logo": "esrb-e.svg"},
+  {"id": "esrb-e10", "name": "ESRB E10+ — Everyone 10+", "logo": "esrb-e10.png"},
+  {"id": "esrb-t", "name": "ESRB T — Teen", "logo": "esrb-t.png"},
+  {"id": "esrb-m", "name": "ESRB M — Mature 17+", "logo": "esrb-m.svg"},
+  {"id": "esrb-ao", "name": "ESRB AO — Adults Only 18+", "logo": "esrb-ao.png"},
+  {"id": "esrb-rp", "name": "ESRB RP — Rating Pending", "logo": "esrb-rp.png"}
+]

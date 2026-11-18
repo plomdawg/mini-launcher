@@ -360,5 +360,41 @@ class ImageProxyMimeTest(unittest.TestCase):
                     self.assertEqual(self.fetch(endpoint, url, mime), (415, None))
 
 
+class OverlayCatalogTests(unittest.TestCase):
+    """The bundled platform/rating catalogs must match what app.js accepts and what ships."""
+
+    OVERLAYS = Path(__file__).resolve().parent.parent / "overlays"
+
+    def check_catalog(self, name, colors=()):
+        entries = json.loads((self.OVERLAYS / name).read_text(encoding="utf-8"))
+        self.assertTrue(entries)
+        ids = [entry["id"] for entry in entries]
+        self.assertEqual(len(ids), len(set(ids)), "duplicate ids")
+        for entry in entries:
+            with self.subTest(catalog=name, id=entry["id"]):
+                self.assertRegex(entry["logo"], r"^[a-z0-9][a-z0-9-]*\.(svg|png)$")
+                logo = self.OVERLAYS / entry["logo"]
+                self.assertTrue(logo.is_file(), f"missing {logo.name}")
+                self.assertLess(logo.stat().st_size, 512 * 1024, "keep bundled logos small")
+                if logo.suffix == ".png":
+                    self.assertEqual(logo.read_bytes()[:8], b"\x89PNG\r\n\x1a\n")
+                else:
+                    text = logo.read_text(encoding="utf-8", errors="replace")
+                    self.assertIn("<svg", text[:4000])
+                    self.assertNotIn("<html", text[:4000].lower(), "saved an error page, not an SVG")
+                    self.assertNotIn("<script", text)
+                self.assertTrue(entry.get("name"))
+                for key in colors:
+                    if entry.get(key) is not None:
+                        self.assertRegex(entry[key], r"^#[0-9a-f]{6}$")
+        return entries
+
+    def test_platforms(self):
+        self.check_catalog("platforms.json", colors=("band", "ink"))
+
+    def test_ratings(self):
+        self.check_catalog("ratings.json")
+
+
 if __name__ == "__main__":
     unittest.main()
