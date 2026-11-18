@@ -17,17 +17,20 @@
 ; Must match mini_launcher_core::autostart::VALUE_NAME.
 #define RunKey "Software\Microsoft\Windows\CurrentVersion\Run"
 #define RunValue "Mini Launcher"
+; Must match mini_launcher_core::instance::NAME and QUIT_EVENT.
+#define AppMutex "Local\mini-launcher"
+#define QuitEvent "Local\mini-launcher-quit"
 
 [Setup]
 ; Never change AppId: it identifies the install for upgrades and uninstall.
 AppId={{2CF94C44-B086-4260-A67B-B6EEFF027C09}
 AppName={#AppName}
 AppVersion={#AppVersion}
-AppPublisher=The Mini Launcher contributors
+AppPublisher=plomdawg
 AppPublisherURL={#RepoUrl}
 AppSupportURL={#RepoUrl}/issues
 AppUpdatesURL={#RepoUrl}/releases
-AppCopyright=Copyright (c) The Mini Launcher contributors
+AppCopyright=Copyright (C) 2026 plomdawg and Mini Launcher contributors
 ; Per-user only; no PrivilegesRequiredOverridesAllowed, so it never asks for admin.
 PrivilegesRequired=lowest
 DefaultDirName={autopf}\{#AppName}
@@ -35,9 +38,10 @@ DisableProgramGroupPage=yes
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 MinVersion=10.0
-; Named mutex held by a running tray app or `mini-launcher run` (core::instance::NAME):
-; setup and the uninstaller ask the user to quit it first.
-AppMutex=Local\mini-launcher
+; Named mutex held by a running tray app or `mini-launcher run`. Setup and the
+; uninstaller first ask a running tray app to quit (CloseRunningApp below); if it is
+; still running after that, they ask the user to quit it.
+AppMutex={#AppMutex}
 SetupIconFile=..\app\assets\icon\mini-launcher.ico
 UninstallDisplayIcon={app}\{#TrayExe}
 UninstallDisplayName={#AppName}
@@ -68,7 +72,9 @@ Name: "{autoprograms}\{#AppName}"; Filename: "{app}\{#TrayExe}"
 Root: HKCU; Subkey: "{#RunKey}"; ValueType: string; ValueName: "{#RunValue}"; ValueData: """{app}\{#TrayExe}"""; Tasks: autostart
 
 [Run]
-Filename: "{app}\{#TrayExe}"; Description: "Launch {#AppName}"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\{#TrayExe}"; Description: "Launch {#AppName}"; Flags: nowait postinstall skipifsilent; Check: not ClosedRunningApp
+; Setup closed the running tray app: start the new one (silent installs too).
+Filename: "{app}\{#TrayExe}"; Flags: nowait; Check: ClosedRunningApp
 
 [Code]
 // True if the start-at-login value starts a program from Dir (written by the task
@@ -114,9 +120,89 @@ begin
   end;
 end;
 
+const
+  EVENT_MODIFY_STATE = 2;
+
+function OpenEvent(DesiredAccess: DWORD; InheritHandle: Integer; Name: String): THandle;
+  external 'OpenEventW@kernel32.dll stdcall';
+function SetEvent(Handle_: THandle): BOOL;
+  external 'SetEvent@kernel32.dll stdcall';
+function CloseHandle(Handle_: THandle): BOOL;
+  external 'CloseHandle@kernel32.dll stdcall';
+
+var
+  ClosedApp, InstallDone: Boolean;
+  PrevTrayExe: String;
+
+// Asks a running tray app to quit (it listens on QuitEvent) and waits up to 10 s.
+// The request repeats while waiting: the app does not quit while its Settings
+// window is open (it may hold unsaved edits), but does once that is closed.
+// True if it was running and has exited. `mini-launcher run` and older tray
+// versions don't listen: the AppMutex prompt handles those.
+function CloseRunningApp(): Boolean;
+var
+  QuitEvt: THandle;
+  I: Integer;
+begin
+  Result := False;
+  if not CheckForMutexes('{#AppMutex}') then
+    Exit;
+  QuitEvt := OpenEvent(EVENT_MODIFY_STATE, 0, '{#QuitEvent}');
+  if QuitEvt = 0 then begin
+    Log('Mini Launcher is running but does not listen for quit requests');
+    Exit;
+  end;
+  Log('Asking the running Mini Launcher to quit');
+  I := 0;
+  while (I < 40) and not Result do begin
+    SetEvent(QuitEvt);
+    Sleep(250);
+    Result := not CheckForMutexes('{#AppMutex}');
+    I := I + 1;
+  end;
+  CloseHandle(QuitEvt);
+  if Result then begin
+    // The mutex goes just before the process ends: let it release its exe.
+    Sleep(1000);
+    Log('Mini Launcher quit');
+  end
+  else
+    Log('Mini Launcher is still running (Settings open?)');
+end;
+
+// Runs before the AppMutex check, so that only prompts if this didn't work.
+function InitializeSetup(): Boolean;
+var
+  Dir: String;
+begin
+  // The uninstall key of a previous install (AppId + '_is1').
+  if RegQueryStringValue(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Uninstall\{2CF94C44-B086-4260-A67B-B6EEFF027C09}_is1',
+     'InstallLocation', Dir) and (Dir <> '') then
+    PrevTrayExe := AddBackslash(Dir) + '{#TrayExe}';
+  ClosedApp := CloseRunningApp();
+  Result := True;
+end;
+
+// [Run] check: start the app after install only if setup closed it.
+function ClosedRunningApp(): Boolean;
+begin
+  Result := ClosedApp;
+end;
+
+// Setup closed the app but then didn't install (cancelled): start it again.
+procedure DeinitializeSetup();
+var
+  ResultCode: Integer;
+begin
+  if ClosedApp and not InstallDone and (PrevTrayExe <> '') and FileExists(PrevTrayExe) then
+    Exec(PrevTrayExe, '', '', SW_SHOWNORMAL, ewNoWait, ResultCode);
+end;
+
 // Task unticked: turn start at login off if it starts this install.
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
+  if CurStep = ssPostInstall then
+    InstallDone := True;
   if (CurStep = ssPostInstall) and not WizardIsTaskSelected('autostart') and
      RunValueInDir(ExpandConstant('{app}')) then
     RegDeleteValue(HKCU, '{#RunKey}', '{#RunValue}');
@@ -124,8 +210,11 @@ end;
 
 // Uninstall: remove the start-at-login value if it starts this install, leave one
 // that points at another copy. User config and logs are not touched.
+// Before its AppMutex check, the uninstaller asks a running tray app to quit too.
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 begin
+  if CurUninstallStep = usAppMutexCheck then
+    CloseRunningApp();
   if (CurUninstallStep = usUninstall) and RunValueInDir(ExpandConstant('{app}')) then
     RegDeleteValue(HKCU, '{#RunKey}', '{#RunValue}');
 end;

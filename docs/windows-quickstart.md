@@ -51,14 +51,18 @@ to open **Settings…**, pause, open the config or logs, turn **Start at login**
 reader's antenna off until you resume; a cart left in the reader does not launch on resume.
 
 **Updating:** run the newer setup; it replaces the installed version and keeps your settings.
-If Mini Launcher is running, setup asks you to quit it first (tray icon → **Quit**).
+If the tray app is running, setup closes it and starts the new version when it's done. If
+**Settings** is open, setup leaves it alone so nothing you haven't saved is lost: the window comes
+to the front, and setup continues once you close it (if you take longer, setup asks you to quit
+Mini Launcher and click **OK**). A `mini-launcher run` in a console still has to be stopped by hand.
+`mini-launcher-tray.exe --quit` asks a running tray app to quit the same way (for scripts).
 The **Start Mini Launcher when I sign in** box follows your current setting: it's ticked if
 start at login is on and unticked if you turned it off (for example in the tray), so updating
 never turns it back on by itself. Unticking it turns start at login off. For silent installs,
 `/MERGETASKS=autostart` or `/MERGETASKS=!autostart` overrides this.
 
 **Uninstalling:** Windows **Settings → Apps → Installed apps → Mini Launcher → Uninstall**
-(quit the tray app first). This removes the program, the Start menu entry and the start-at-login
+(it closes a running tray app the same way, unless Settings is open). This removes the program, the Start menu entry and the start-at-login
 entry. Your config (`%APPDATA%\mini-launcher`) and logs (`%LOCALAPPDATA%\mini-launcher`) are
 kept; delete those folders by hand if you want them gone.
 
