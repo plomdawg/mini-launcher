@@ -285,18 +285,21 @@
     return Math.min(max, Math.max(min, n));
   }
 
-  function imageMarkup(data, x, y, w, h, fit, label, background, {anchor = 'center', key = 'panel', size = ''} = {}) {
+  function imageMarkup(data, x, y, w, h, fit, label, background, {anchor = 'center', key = 'panel', size = '', trim = null} = {}) {
+    // Fill modes cover the whole panel including bleed; fit modes keep the whole image inside the trim box.
+    const t = trim || {x, y, w, h};
     const out = [`<rect x="${x}" y="${y}" width="${w}" height="${h}" fill="${background}"/>`];
     if (data && fit === 'extend') {
       // Whole image on top, with a blurred, darkened, zoomed copy of itself filling the leftover space.
       const pad = Math.max(w, h) * .06;
       out.push(`<defs><clipPath id="${key}Clip"><rect x="${x}" y="${y}" width="${w}" height="${h}"/></clipPath><filter id="${key}Blur" x="-10%" y="-10%" width="120%" height="120%"><feGaussianBlur stdDeviation="${(Math.min(w, h) * .025).toFixed(2)}"/></filter></defs>`);
       out.push(`<g clip-path="url(#${key}Clip)"><image href="${data}" x="${x-pad}" y="${y-pad}" width="${w+pad*2}" height="${h+pad*2}" preserveAspectRatio="xMidYMid slice" filter="url(#${key}Blur)"/><rect x="${x}" y="${y}" width="${w}" height="${h}" fill="#000" fill-opacity=".25"/></g>`);
-      out.push(`<image href="${data}" x="${x}" y="${y}" width="${w}" height="${h}" preserveAspectRatio="xMidYMid meet"/>`);
+      out.push(`<image href="${data}" x="${t.x}" y="${t.y}" width="${t.w}" height="${t.h}" preserveAspectRatio="xMidYMid meet"/>`);
+    } else if (data && fit === 'contain') {
+      out.push(`<image href="${data}" x="${t.x}" y="${t.y}" width="${t.w}" height="${t.h}" preserveAspectRatio="xMidYMid meet"/>`);
     } else if (data) {
       const align = {top: 'xMidYMin', bottom: 'xMidYMax'}[anchor] || 'xMidYMid';
-      const aspect = fit === 'contain' ? 'xMidYMid meet' : `${align} slice`;
-      out.push(`<image href="${data}" x="${x}" y="${y}" width="${w}" height="${h}" preserveAspectRatio="${aspect}"/>`);
+      out.push(`<image href="${data}" x="${x}" y="${y}" width="${w}" height="${h}" preserveAspectRatio="${align} slice"/>`);
     } else {
       out.push(`<rect x="${x+2}" y="${y+2}" width="${w-4}" height="${h-4}" fill="none" stroke="#ffffff" stroke-opacity=".22" stroke-dasharray="2 2"/>`);
       out.push(`<text x="${x+w/2}" y="${y+h/2}" text-anchor="middle" fill="#ffffff" fill-opacity=".7" font-family="Arial,sans-serif" font-size="4">${esc(label)}</text>`);
@@ -355,8 +358,8 @@
     let parts = [`<svg xmlns="http://www.w3.org/2000/svg" width="${totalW}mm" height="${totalH}mm" viewBox="0 0 ${totalW} ${totalH}">`,
       spineGradient,
       `<rect width="${totalW}" height="${totalH}" fill="${theme}"/>`,
-      imageMarkup(s.backImage, 0, 0, faceW + bleed, faceH + 2 * bleed, fit, 'Back cover artwork', '#343c35', {...panelOptions, key: 'back'}),
-      imageMarkup(s.frontImage, frontX, 0, faceW + bleed, faceH + 2 * bleed, fit, 'Front cover artwork', '#30382f', {...panelOptions, key: 'front'}),
+      imageMarkup(s.backImage, 0, 0, faceW + bleed, faceH + 2 * bleed, fit, 'Back cover artwork', '#343c35', {...panelOptions, key: 'back', trim: {x: backX, y: bleed, w: faceW, h: faceH}}),
+      imageMarkup(s.frontImage, frontX, 0, faceW + bleed, faceH + 2 * bleed, fit, 'Front cover artwork', '#30382f', {...panelOptions, key: 'front', trim: {x: frontX, y: bleed, w: faceW, h: faceH}}),
       `<rect x="${spineX}" y="${bleed}" width="${spineW}" height="${faceH}" fill="${spinePaint}"/>`];
 
     const spine = s.spineImage ? '' : String(s.projectName || '').trim();

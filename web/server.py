@@ -316,6 +316,9 @@ class PlomcaseHandler(SimpleHTTPRequestHandler):
 
     def end_headers(self):
         self.send_header("X-Content-Type-Options", "nosniff")
+        if getattr(self, "_static", False):
+            # Revalidate app files on every load so a deploy never mixes new HTML with cached old JS.
+            self.send_header("Cache-Control", "no-cache")
         super().end_headers()
 
     def do_GET(self):
@@ -333,6 +336,7 @@ class PlomcaseHandler(SimpleHTTPRequestHandler):
         elif path == "/api/launchbox/image":
             self._launchbox_image()
         else:
+            self._static = True
             super().do_GET()
 
     def _send_json(self, status: int, payload: dict):
