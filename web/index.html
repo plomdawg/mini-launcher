@@ -21,6 +21,7 @@
       <button class="button quiet" id="exportProject">Export JSON</button>
       <button class="button" id="saveProject">Save project</button>
       <input class="visually-hidden" type="file" id="projectFile" accept="application/json,.json">
+      <input class="visually-hidden" type="file" id="libraryFile" accept="application/json,.json">
     </div>
   </header>
 
@@ -150,9 +151,9 @@
     </section>
 
     <aside class="library" aria-label="Saved projects">
-      <div class="library-heading"><p class="eyebrow">LOCAL LIBRARY</p><h2>Your cases <span id="projectCount">0</span></h2><p>Projects saved in this browser.</p></div>
+      <div class="library-heading"><p class="eyebrow">LOCAL LIBRARY</p><h2>Your cases <span id="projectCount">0</span></h2><p>Projects saved in this browser.</p><div class="library-actions"><button class="button" id="exportLibrary" type="button">Export all</button><button class="button quiet" id="importLibrary" type="button">Import</button></div></div>
       <div id="projectList" class="project-list"><div class="library-empty">Saved case designs will appear here.</div></div>
-      <div class="library-tip"><span>↗</span><p>Use <b>Save project</b> to keep a design here, or export a JSON file to move it to another browser.</p></div>
+      <div class="library-tip"><span>↗</span><p>Use <b>Save project</b> to keep a design here. <b>Export all</b> saves every case to one JSON backup; <b>Import</b> adds a backup or project file to this library.</p></div>
     </aside>
   </main>
   <dialog class="sgdb-dialog" id="sgdbDialog" aria-labelledby="sgdbTitle">
