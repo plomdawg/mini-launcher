@@ -1118,30 +1118,18 @@
   const launchBoxTypeTargets = {'Box - Front': 'front', 'Box - Back': 'back', 'Box - Spine': 'spine', 'Disc': 'disc', 'Clear Logo': 'logo'};
   const launchBoxTargetNames = {front: 'front', back: 'back', spine: 'spine', logo: 'spine logo', disc: 'disc'};
   const launchBoxImagePattern = /^https:\/\/images\.launchbox-app\.com\/(?:r2_)?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.(?:jpe?g|png)$/i;
-  const launchBoxSlotLabels = {back: 'back cover', front: 'front cover', logo: 'spine logo', spine: 'spine art', disc: 'disc art'};
   let launchBoxGame = null;
   let launchBoxRequestId = 0;
 
-  // A target is usable once `files` has the slot and its `<target>FileName` label exists, so
-  // `disc` lights up automatically when the disc-art upload tile (files.disc, #discFileName) is present.
+  // A target is usable when `files` has the slot and its `<target>FileName` upload tile exists.
   function artworkSlotAvailable(target) {
     return Object.prototype.hasOwnProperty.call(files, target) && Boolean($(`${target}FileName`));
   }
 
-  // Load a downloaded blob into a slot through the shared applyImage(target, dataUrl, name)
-  // when this build has it; the fallback mirrors it for builds that predate it.
+  // Load a downloaded blob into a slot through the shared applyImage(target, dataUrl, name).
   async function applyLaunchBoxImage(target, blob, name) {
     const mime = blob.type.startsWith('image/') ? blob.type : 'image/png';
-    const data = await imageData(new Blob([blob], {type: mime}));
-    if (typeof applyImage === 'function') { await applyImage(target, data, name); return; }
-    files[target] = target === 'logo' ? await normalizeLogo(data) : data;
-    $(`${target}FileName`).textContent = name;
-    if (target === 'logo') $('removeSpineLogo').hidden = false;
-    if (target === 'spine') $('spineArtOptions').hidden = false;
-    hasUnsavedChanges = true;
-    if (target === 'back' || target === 'front') refreshSpinePalette();
-    else if (target === 'spine') { refreshSpineArt(); update(); }
-    else update();
+    await applyImage(target, await imageData(new Blob([blob], {type: mime})), name);
   }
 
   function launchBoxStatus(message, kind = '') {
@@ -1274,7 +1262,7 @@
     const image = launchBoxGame.images[Number(assetButton.dataset.launchboxIndex)];
     if (!image) return;
     const target = launchBoxTargetFor(image.type);
-    const targetLabel = launchBoxSlotLabels[target] || target;
+    const targetLabel = imageLabel(target);
     if (!artworkSlotAvailable(target)) { launchBoxStatus(`This version of Plomcase has no ${targetLabel} slot yet. Choose another “Apply to” target.`, 'error'); return; }
     if (files[target] && !confirm(`Replace the current ${targetLabel} with this LaunchBox image?`)) return;
     assetButton.disabled = true;
