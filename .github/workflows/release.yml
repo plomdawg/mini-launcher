@@ -120,7 +120,7 @@ jobs:
           base="mini-launcher-${VERSION}-windows-x86_64"
           mkdir -p "../stage/$base"
           cp target/dist/mini-launcher.exe target/dist/mini-launcher-tray.exe \
-            ../LICENSE-MIT ../LICENSE-APACHE ../README.md \
+            ../LICENSE ../README.md \
             assets/fonts/DepartureMono-OFL.txt "../stage/$base/"
           (cd ../stage && 7z a -tzip -bd "../dist/$base.zip" "$base")
           cd ../dist
