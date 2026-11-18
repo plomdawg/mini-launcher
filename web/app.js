@@ -857,6 +857,70 @@
     toast('Project file exported.');
   }
 
+  // Whole-library backup: one JSON file holding every saved case (with its id and timestamp),
+  // so a library can move to another browser in one step.
+  const libraryFormat = 'plomcase-library';
+
+  async function exportLibraryFile() {
+    let records;
+    try { records = (await idbRequest('readonly', (store) => store.getAll())) || []; }
+    catch { toast('Browser storage is unavailable.'); return; }
+    if (!records.length) { toast('No saved cases to export yet.'); return; }
+    records.sort((a, b) => b.updatedAt - a.updatedAt);
+    const bundle = {format: libraryFormat, version: 1, exportedAt: new Date().toISOString(), projects: records.map(({id, updatedAt, state}) => ({id, updatedAt, state}))};
+    const stamp = new Date().toISOString().slice(0, 10);
+    downloadBlob(new Blob([JSON.stringify(bundle, null, 2)], {type: 'application/json'}), `plomcase-library-${stamp}.json`);
+    toast(`Exported ${records.length} case${records.length === 1 ? '' : 's'}.`);
+  }
+
+  // Accepts a library backup or a single project file. Backup entries keep their ids, so
+  // re-importing a backup updates those cases instead of duplicating them.
+  function libraryRecordsFromFile(data) {
+    const isState = (value) => value && typeof value === 'object' && !Array.isArray(value);
+    const newId = () => (crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    if (isState(data) && data.format === libraryFormat && Array.isArray(data.projects)) {
+      return data.projects.filter((p) => p && isState(p.state)).map((p) => ({
+        id: typeof p.id === 'string' && p.id && p.id.length <= 100 ? p.id : newId(),
+        updatedAt: Number.isFinite(p.updatedAt) ? p.updatedAt : Date.now(),
+        state: normalizeState(p.state)
+      }));
+    }
+    if (isState(data)) return [{id: newId(), updatedAt: Date.now(), state: normalizeState(data)}];
+    return [];
+  }
+
+  async function importLibraryFile(file) {
+    let records;
+    try { records = libraryRecordsFromFile(JSON.parse(await file.text())); }
+    catch { toast('That file could not be read.'); return; }
+    if (!records.length) { toast('No cases found in that file.'); return; }
+    const existing = new Set(projects.map((p) => p.id));
+    const replacing = records.filter((r) => existing.has(r.id)).length;
+    const message = `Import ${records.length} case${records.length === 1 ? '' : 's'} into this browser?`
+      + (replacing ? ` ${replacing} already here will be replaced by the file's version.` : '');
+    if (!confirm(message)) return;
+    try {
+      const db = await dbPromise;
+      await new Promise((resolve, reject) => {
+        const tx = db.transaction('projects', 'readwrite');
+        const store = tx.objectStore('projects');
+        records.forEach((record) => store.put(record));
+        tx.oncomplete = resolve;
+        tx.onerror = () => reject(tx.error);
+        tx.onabort = () => reject(tx.error || new Error('Import aborted'));
+      });
+    } catch { toast('Could not import into browser storage.'); return; }
+    await listProjects();
+    if (activeProjectId && records.some((r) => r.id === activeProjectId)) await refreshDirtyStatusFromSavedProject();
+    toast(`Imported ${records.length} case${records.length === 1 ? '' : 's'}.`);
+  }
+
+  $('exportLibrary').addEventListener('click', exportLibraryFile);
+  $('importLibrary').addEventListener('click', () => $('libraryFile').click());
+  $('libraryFile').addEventListener('change', async (e) => {
+    const file = e.target.files[0]; e.target.value = '';
+    if (file) await importLibraryFile(file);
+  });
   $('saveProject').addEventListener('click', saveProject);
   $('exportProject').addEventListener('click', exportProjectFile);
   $('newProject').addEventListener('click', async () => {
@@ -872,8 +936,13 @@
   $('projectFile').addEventListener('change', async (e) => {
     const file = e.target.files[0]; e.target.value = '';
     if (!file) return;
+    let data;
+    try { data = JSON.parse(await file.text()); }
+    catch { toast('That project file could not be opened.'); return; }
+    // A whole-library backup goes into the library instead of replacing the open case.
+    if (data && data.format === libraryFormat) { await importLibraryFile(file); return; }
     if (!confirmDiscard('open the selected project')) return;
-    try { activeProjectId = null; await applyState(JSON.parse(await file.text())); toast('Project opened.'); }
+    try { activeProjectId = null; await applyState(data); toast('Project opened.'); }
     catch { toast('That project file could not be opened.'); }
   });
 
