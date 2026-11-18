@@ -119,9 +119,10 @@ already configured.
 ## Writing a tag with the launcher
 
 In the tray app, **Settings… → Add game** (or **Write tag…** in a game's edit form) opens a
-wizard: pick an installed Steam game, a program, or an emulator game (a configured emulator plus
-a game file, browsed for or picked from a scanned folder), hold the cart on the reader, and the
-app writes `steam://<appid>` (Steam) or `id:<slug>` (programs and emulator games) as below and
+wizard: pick an installed Steam or Battle.net game, a program, or an emulator game (a configured
+emulator plus a game file, browsed for or picked from a scanned folder), hold the cart on the
+reader, and the app writes `steam://<appid>` (Steam) or `id:<slug>` (Battle.net games, programs
+and emulator games) as below and
 saves the library.
 While the wizard waits for a tag, inserted carts don't launch. If the tag already holds another
 game, or its UID is bound to another game, the wizard asks before using it (and removes the other

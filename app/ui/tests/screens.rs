@@ -735,7 +735,7 @@ fn design_screenshots() {
         ("remove-game", |s| s.ask_remove(0)),
         ("wizard-1-pick", |s| {
             s.add();
-            s.wizard.as_mut().unwrap().selected = Some(1794680);
+            s.wizard.as_mut().unwrap().selected = Some(LaunchPlan::Steam { appid: 1794680 });
         }),
         ("wizard-1-program", |s| {
             s.add();
@@ -888,6 +888,6 @@ fn finish_scan(h: &mut Harness<'static, Settings>) {
 /// The wizard on the tap step for Vampire Survivors.
 fn pick_vampire(s: &mut Settings) {
     s.add();
-    s.wizard.as_mut().unwrap().selected = Some(1794680);
+    s.wizard.as_mut().unwrap().selected = Some(LaunchPlan::Steam { appid: 1794680 });
     s.wizard_next();
 }

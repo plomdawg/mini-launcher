@@ -1,5 +1,6 @@
 //! Win32 calls: a named mutex for single instance, the per-user `Run` key
-//! for start at login and Steam's install path. No admin rights needed.
+//! for start at login, Steam's install path and Battle.net's uninstall
+//! entries. No admin rights needed.
 
 use std::io;
 use std::path::PathBuf;
@@ -11,7 +12,8 @@ use windows_sys::Win32::Foundation::{
     ERROR_MORE_DATA, ERROR_SUCCESS, HANDLE,
 };
 use windows_sys::Win32::System::Registry::{
-    RegDeleteKeyValueW, RegGetValueW, RegSetKeyValueW, HKEY, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE,
+    RegCloseKey, RegDeleteKeyValueW, RegEnumKeyExW, RegGetValueW, RegOpenKeyExW, RegSetKeyValueW,
+    HKEY, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_READ, KEY_WOW64_32KEY, KEY_WOW64_64KEY,
     REG_EXPAND_SZ, REG_SZ, RRF_NOEXPAND, RRF_RT_ANY,
 };
 use windows_sys::Win32::System::Threading::{
@@ -172,6 +174,120 @@ pub(crate) fn steam_paths() -> Vec<PathBuf> {
     .filter(|v| !v.is_empty())
     .map(PathBuf::from)
     .collect()
+}
+
+const UNINSTALL_KEY: &str = r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall";
+/// Uninstall subkeys read per view; a sane bound for untrusted data.
+const MAX_UNINSTALL_KEYS: u32 = 10_000;
+
+/// An open registry key, closed on drop.
+struct Key(HKEY);
+
+impl Key {
+    /// `None` if the key does not exist or cannot be read.
+    fn open(root: HKEY, path: &str, view: u32) -> Option<Key> {
+        let path = wide(path);
+        let mut key: HKEY = ptr::null_mut();
+        // SAFETY: `path` is NUL-terminated; `key` is a valid out pointer.
+        let code = unsafe { RegOpenKeyExW(root, path.as_ptr(), 0, KEY_READ | view, &mut key) };
+        (code == ERROR_SUCCESS).then_some(Key(key))
+    }
+
+    /// The names of its direct subkeys (at most `max`).
+    fn subkeys(&self, max: u32) -> Vec<String> {
+        let mut names = Vec::new();
+        // Key names are at most 255 characters.
+        let mut buf = [0u16; 256];
+        for index in 0..max {
+            let mut len = buf.len() as u32;
+            // SAFETY: `buf` holds `len` characters; the optional out
+            // pointers are null.
+            let code = unsafe {
+                RegEnumKeyExW(
+                    self.0,
+                    index,
+                    buf.as_mut_ptr(),
+                    &mut len,
+                    ptr::null(),
+                    ptr::null_mut(),
+                    ptr::null_mut(),
+                    ptr::null_mut(),
+                )
+            };
+            if code != ERROR_SUCCESS {
+                // ERROR_NO_MORE_ITEMS, or a key that vanished meanwhile.
+                break;
+            }
+            names.push(String::from_utf16_lossy(&buf[..len as usize]));
+        }
+        names
+    }
+}
+
+impl Drop for Key {
+    fn drop(&mut self) {
+        // SAFETY: we own the open key and close it exactly once.
+        unsafe { RegCloseKey(self.0) };
+    }
+}
+
+/// The uninstall entries of Battle.net games, from the 32- and 64-bit
+/// machine views and the user's own.
+pub(crate) fn blizzard_uninstalls() -> Vec<crate::battlenet::Uninstall> {
+    use crate::battlenet::{is_blizzard_uninstaller, uninstall_uid, Uninstall};
+    let views = [
+        (HKEY_LOCAL_MACHINE, KEY_WOW64_32KEY),
+        (HKEY_LOCAL_MACHINE, KEY_WOW64_64KEY),
+        (HKEY_CURRENT_USER, 0),
+    ];
+    let mut found: Vec<Uninstall> = Vec::new();
+    for (root, view) in views {
+        let Some(key) = Key::open(root, UNINSTALL_KEY, view) else {
+            continue;
+        };
+        for name in key.subkeys(MAX_UNINSTALL_KEYS) {
+            let value = |v| reg_string(key.0, &name, v).ok().flatten();
+            let Some(command) = value("UninstallString") else {
+                continue;
+            };
+            let location = value("InstallLocation").filter(|l| !l.trim().is_empty());
+            if let (true, Some(location)) = (is_blizzard_uninstaller(&command), location) {
+                let entry = Uninstall {
+                    location: PathBuf::from(location.trim().trim_matches('"')),
+                    uid: uninstall_uid(&command),
+                };
+                if !found.contains(&entry) {
+                    found.push(entry);
+                }
+            }
+        }
+    }
+    found
+}
+
+/// `%ProgramFiles(x86)%` and `%ProgramFiles%`.
+pub(crate) fn program_files() -> Vec<PathBuf> {
+    ["ProgramFiles(x86)", "ProgramFiles"]
+        .into_iter()
+        .filter_map(std::env::var_os)
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .collect()
+}
+
+/// Where Battle.net may be installed: its uninstall entry's folder, then
+/// the default folders.
+pub(crate) fn battlenet_dirs() -> Vec<PathBuf> {
+    let registered = [KEY_WOW64_32KEY, KEY_WOW64_64KEY]
+        .into_iter()
+        .filter_map(|view| {
+            let key = Key::open(HKEY_LOCAL_MACHINE, UNINSTALL_KEY, view)?;
+            let location = reg_string(key.0, "Battle.net", "InstallLocation").ok()??;
+            let location = location.trim().trim_matches('"');
+            (!location.is_empty()).then(|| PathBuf::from(location))
+        });
+    let defaults = program_files().into_iter().map(|p| p.join("Battle.net"));
+    registered.chain(defaults).collect()
 }
 
 /// A string value, or `Ok(None)` if the key or value does not exist.

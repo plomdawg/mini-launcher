@@ -6,6 +6,7 @@ use clap::{Args, Parser, Subcommand};
 use mini_launcher_cli::{logging, port};
 
 mod autostart;
+mod battlenet;
 mod diagnose;
 mod run;
 mod scan;
@@ -78,11 +79,25 @@ enum Command {
         #[command(subcommand)]
         action: SteamAction,
     },
+    /// Installed Battle.net games (Windows only).
+    #[command(name = "battlenet")]
+    BattleNet {
+        #[command(subcommand)]
+        action: BattleNetAction,
+    },
 }
 
 #[derive(Debug, Subcommand)]
 enum SteamAction {
     /// List installed games (appid and name), sorted by name.
+    List,
+}
+
+#[derive(Debug, Subcommand)]
+enum BattleNetAction {
+    /// List installed games (launch code, name and folder), sorted by name.
+    /// With -v, also what detection looked at (product.db, uninstall
+    /// entries, WoW flavor folders).
     List,
 }
 
@@ -186,6 +201,9 @@ fn main() -> ExitCode {
         Command::Steam {
             action: SteamAction::List,
         } => steam::list(&mut out),
+        Command::BattleNet {
+            action: BattleNetAction::List,
+        } => battlenet::list(&mut out, cli.verbose > 0),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -293,6 +311,14 @@ mod tests {
             }
         ));
         assert!(Cli::try_parse_from(["mini-launcher", "steam"]).is_err());
+        let cli = Cli::try_parse_from(["mini-launcher", "battlenet", "list", "-v"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::BattleNet {
+                action: BattleNetAction::List
+            }
+        ));
+        assert_eq!(cli.verbose, 1);
     }
 
     #[test]

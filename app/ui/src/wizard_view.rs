@@ -157,52 +157,56 @@ fn pick(ui: &mut Ui, s: &mut Settings, c: &mut Clicks) {
     let Some(w) = &mut s.wizard else {
         return;
     };
+    let any = w.steam.is_ok() || !w.battlenet.is_empty();
     ui.horizontal(|ui| {
         let l = theme::form_label(ui, 14.0 * U, "Search");
         let width = (ui.available_width() - 66.0 * U).floor();
-        theme::field(ui, &mut w.search, width, w.steam.is_ok(), l.id);
+        theme::field(ui, &mut w.search, width, any, l.id);
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             c.emulator = theme::button(ui, "Emulator game...", true, false).clicked();
             c.program = theme::button(ui, "Program...", true, false).clicked();
         });
     });
     ui.add_space(U);
-    if let Err(e) = &w.steam {
+    // With Battle.net games listed, a missing Steam is not worth a warning.
+    if let (Err(e), true) = (&w.steam, w.battlenet.is_empty()) {
         theme::warning(ui, 0.0, &format!("{e}. Use Program... to add any program."));
     }
     let games = w.filtered();
     let mut clicked = None;
     let mut open = None;
-    let body = theme::list(
+    let body = theme::sortable_list(
         ui,
-        &[0.0, 0.62, 0.80],
-        &["STEAM GAME", "APP ID", "LIBRARY"],
+        &[0.0, 0.62, 0.84],
+        &["INSTALLED GAME", "STORE", "LIBRARY"],
+        (&mut w.sort, &[0, 1]),
         games.len(),
         |ui, i, row, cols| {
-            let game = games[i];
-            let on = w.selected == Some(game.appid);
-            let (resp, fg, weak) = theme::list_row(ui, row, ("steam", game.appid), on, &game.name);
+            let game = &games[i];
+            let on = w.selected.as_ref() == Some(&game.plan);
+            let (resp, fg, weak) =
+                theme::list_row(ui, row, ("installed", &game.store), on, &game.name);
             if resp.clicked() {
-                clicked = Some(game.appid);
+                clicked = Some(i);
             }
             if resp.double_clicked() {
-                open = Some(game.appid);
+                open = Some(i);
             }
             theme::label_at(ui, row, cols[0] + 2.0 * U, &game.name, fg);
-            theme::label_at(ui, row, cols[1] + 2.0 * U, &game.appid.to_string(), fg);
-            let added = Wizard::in_library(config.as_ref(), game.appid).is_some();
+            theme::label_at(ui, row, cols[1] + 2.0 * U, &game.store, fg);
+            let added = Wizard::in_library(config.as_ref(), &game.plan).is_some();
             let x = theme::mark(ui.painter(), row, cols[2] + 2.0 * U, added, fg);
             let (text, color) = if added { ("added", fg) } else { ("-", weak) };
             theme::label_at(ui, row, x, text, color);
         },
     );
-    if games.is_empty() && w.steam.is_ok() {
+    if games.is_empty() && any {
         let at = pos2(body.min.x + 2.0 * U, body.min.y + ROW / 2.0);
         let row = Rect::from_center_size(at, vec2(0.0, ROW));
         theme::label_at(ui, row, at.x, "No installed game matches.", SHADE);
     }
-    if let Some(appid) = clicked.or(open) {
-        w.selected = Some(appid);
+    if let Some(i) = clicked.or(open) {
+        w.selected = Some(games[i].plan.clone());
     }
     if open.is_some() {
         c.next = true;

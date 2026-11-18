@@ -409,10 +409,11 @@ fn write_game(table: &mut Table, game: &Game) -> Result<(), EditError> {
         "uid",
         game.uid.as_deref().map(|u| format_uid(u).into()),
     );
-    let (mut appid, mut exe, mut args, mut cwd, mut emulator, mut rom) =
-        (None, None, None, None, None, None);
+    let (mut appid, mut battlenet, mut exe, mut args, mut cwd, mut emulator, mut rom) =
+        (None, None, None, None, None, None, None);
     match &game.plan {
         LaunchPlan::Steam { appid: n } => appid = Some(i64::from(*n).into()),
+        LaunchPlan::BattleNet { code } => battlenet = Some(code.as_str().into()),
         LaunchPlan::Exe {
             path,
             args: a,
@@ -433,6 +434,7 @@ fn write_game(table: &mut Table, game: &Game) -> Result<(), EditError> {
         }
     }
     set(table, "steam_appid", appid);
+    set(table, "battlenet", battlenet);
     set(table, "exe", exe);
     set(table, "args", args);
     set(table, "cwd", cwd);
@@ -785,6 +787,13 @@ rom = 'D:\Switch\botw.nsp'
         mk8.plan = LaunchPlan::Steam { appid: 70 };
         doc.upsert_game(&mk8).unwrap();
         assert_eq!(game_keys(&doc, 0), ["id", "name", "steam_appid"]);
+        mk8.plan = LaunchPlan::BattleNet {
+            code: crate::battlenet::Code::new("WoWF").unwrap(),
+        };
+        doc.upsert_game(&mk8).unwrap();
+        assert_eq!(game_keys(&doc, 0), ["id", "name", "battlenet"]);
+        assert!(doc.to_string().contains("battlenet = \"WoWF\""));
+        assert_eq!(doc.config().games[0].plan, mk8.plan);
 
         let mut botw = doc.config().games[1].clone();
         botw.plan = LaunchPlan::Exe {

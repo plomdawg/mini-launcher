@@ -9,6 +9,7 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
+use crate::battlenet::{self, Code};
 use crate::config::Config;
 use crate::payload::{steam_launch_uri, Payload, Slug};
 
@@ -17,6 +18,8 @@ use crate::payload::{steam_launch_uri, Payload, Slug};
 pub enum LaunchPlan {
     /// Open `steam://rungameid/{appid}` with the desktop opener.
     Steam { appid: u32 },
+    /// Start `Battle.net.exe --exec="launch <code>"` (Windows only).
+    BattleNet { code: Code },
     /// Start a configured executable directly (no shell).
     Exe {
         path: PathBuf,
@@ -40,6 +43,7 @@ impl fmt::Display for LaunchPlan {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             LaunchPlan::Steam { appid } => write!(f, "open {}", steam_launch_uri(*appid)),
+            LaunchPlan::BattleNet { code } => write!(f, "launch Battle.net game {code}"),
             LaunchPlan::Exe { path, args, cwd } => write_run(f, path, args, cwd),
             LaunchPlan::Emulator {
                 emulator,
@@ -135,6 +139,12 @@ pub fn execute(plan: &LaunchPlan, dry_run: bool) -> std::io::Result<Outcome> {
         // opener) on Linux — never the `steam` binary, which Flatpak Steam
         // lacks. The URI is rebuilt from the number, never taken from the tag.
         LaunchPlan::Steam { appid } => open::that_detached(steam_launch_uri(*appid))?,
+        // The code is validated (letters, digits, `_`), so the raw argument
+        // can't break out of its quotes.
+        LaunchPlan::BattleNet { code } => {
+            let exe = battlenet::client_exe().map_err(std::io::Error::other)?;
+            spawn_raw(&exe, &battlenet::exec_arg(code))?
+        }
         LaunchPlan::Exe { path, args, cwd }
         | LaunchPlan::Emulator {
             path, args, cwd, ..
@@ -155,6 +165,26 @@ fn spawn(path: &Path, args: &[String], cwd: Option<&Path>) -> std::io::Result<()
     // Reap the child when it exits so it doesn't linger as a zombie.
     std::thread::spawn(move || child.wait());
     Ok(())
+}
+
+/// Starts `path` with one argument passed verbatim, as Battle.net expects
+/// `--exec="launch <code>"` with the quotes inside the argument.
+#[cfg(windows)]
+fn spawn_raw(path: &Path, arg: &str) -> std::io::Result<()> {
+    use std::os::windows::process::CommandExt;
+    let mut cmd = Command::new(path);
+    cmd.raw_arg(arg).stdin(Stdio::null());
+    detach(&mut cmd);
+    let mut child = cmd.spawn()?;
+    std::thread::spawn(move || child.wait());
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn spawn_raw(_: &Path, _: &str) -> std::io::Result<()> {
+    Err(std::io::Error::other(
+        battlenet::BattleNetError::Unsupported,
+    ))
 }
 
 /// Keeps the launcher's Ctrl-C away from the game (killing games loses
@@ -274,7 +304,12 @@ mod tests {
             cwd: Some("/g".into()),
         };
         assert_eq!(exe.to_string(), r#"run "/g/run" with args ["a b"] in "/g""#);
+        let bnet = LaunchPlan::BattleNet {
+            code: Code::new("WoWF").unwrap(),
+        };
+        assert_eq!(bnet.to_string(), "launch Battle.net game WoWF");
         // Dry run never touches the system, even for a path that doesn't exist.
+        assert_eq!(execute(&bnet, true).unwrap(), Outcome::DryRun);
         assert_eq!(execute(&steam, true).unwrap(), Outcome::DryRun);
         assert_eq!(execute(&exe, true).unwrap(), Outcome::DryRun);
     }

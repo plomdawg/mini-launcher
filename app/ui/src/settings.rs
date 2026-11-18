@@ -9,6 +9,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use egui::{pos2, vec2, Align, Layout, Rect, Sense, Ui};
+use mini_launcher_core::battlenet::BattleNetGame;
 use mini_launcher_core::config::location::ConfigLocation;
 use mini_launcher_core::config::{format_uid, Config};
 use mini_launcher_core::launch::LaunchPlan;
@@ -32,6 +33,10 @@ pub trait Host: Send + Sync {
     fn tag_session(&self) -> Option<Box<dyn Link>>;
     /// The installed Steam games, or why they can't be listed.
     fn steam_games(&self) -> Result<Vec<SteamGame>, String>;
+    /// The installed Battle.net games (none by default).
+    fn battlenet_games(&self) -> Vec<BattleNetGame> {
+        Vec::new()
+    }
     /// Starts `plan` now (the wizard's "Launch now").
     fn launch(&self, plan: &LaunchPlan) -> Result<(), String>;
     /// The default config folder, where `location.toml` lives.
@@ -128,7 +133,9 @@ impl Settings {
     /// Opens the add-game wizard on its pick step.
     pub fn add(&mut self) {
         self.form = Form::new();
-        self.wizard = Some(Wizard::new(self.host.steam_games()));
+        let mut wizard = Wizard::new(self.host.steam_games());
+        wizard.battlenet = self.host.battlenet_games();
+        self.wizard = Some(wizard);
         self.screen = Screen::Wizard;
     }
 
@@ -157,7 +164,7 @@ impl Settings {
             return;
         };
         let next = match w.step {
-            crate::wizard::Step::Pick => w.pick_steam(config),
+            crate::wizard::Step::Pick => w.pick_installed(config),
             crate::wizard::Step::Program => w.program_next(&mut self.form, config),
             crate::wizard::Step::Rom => w.rom_next(config),
             crate::wizard::Step::Name => w.name_next(config),
@@ -584,6 +591,7 @@ fn library(ui: &mut Ui, s: &mut Settings) {
 pub fn launch_label(plan: &LaunchPlan) -> String {
     match plan {
         LaunchPlan::Steam { appid } => format!("Steam {appid}"),
+        LaunchPlan::BattleNet { code } => format!("Battle.net {code}"),
         LaunchPlan::Exe { .. } => "Program".to_owned(),
         LaunchPlan::Emulator { .. } => "Emulator".to_owned(),
     }
@@ -660,13 +668,22 @@ fn form(ui: &mut Ui, s: &mut Settings) {
         });
         note(ui, Field::Name);
         let emulator = f.emulator.is_some();
+        let bnet = f.battlenet && !emulator;
         row(ui, "Launch with", |ui, _| {
-            if theme::choice(ui, f.steam && !emulator, "Steam").clicked() {
-                (f.steam, f.emulator) = (true, None);
+            if theme::choice(ui, f.steam && !bnet && !emulator, "Steam").clicked() {
+                (f.steam, f.battlenet, f.emulator) = (true, false, None);
             }
             ui.add_space(2.0 * U);
-            if theme::choice(ui, !f.steam && !emulator, "Program").clicked() {
-                (f.steam, f.emulator) = (false, None);
+            // Battle.net runs on Windows only; an entry made there still
+            // shows (and keeps) its code elsewhere.
+            if cfg!(windows) || bnet {
+                if theme::choice(ui, bnet, "Battle.net").clicked() {
+                    (f.battlenet, f.emulator) = (true, None);
+                }
+                ui.add_space(2.0 * U);
+            }
+            if theme::choice(ui, !f.steam && !bnet && !emulator, "Program").clicked() {
+                (f.steam, f.battlenet, f.emulator) = (false, false, None);
             }
             ui.add_space(2.0 * U);
             // Offered once an emulator is set up (on the Emulators screen).
@@ -691,6 +708,14 @@ fn form(ui: &mut Ui, s: &mut Settings) {
                 }
             });
             note(ui, Field::Rom);
+            return;
+        }
+        if bnet {
+            row(ui, "Launch code", |ui, id| {
+                theme::field(ui, &mut f.code, 24.0 * U, true, id);
+                ui.colored_label(SHADE, "e.g. WoW, WoWC, WoWF, Pro");
+            });
+            note(ui, Field::Code);
             return;
         }
         let steam = f.steam;
