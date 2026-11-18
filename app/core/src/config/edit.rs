@@ -184,7 +184,7 @@ impl ConfigDocument {
              # config.toml directly, delete this [mini_launcher] table.\n",
         );
         doc.insert(EXPORT_TABLE, Item::Table(header));
-        write_atomic(path, &render(&doc, self.crlf), false, true)
+        write_atomic(path, &render(&doc, self.crlf, &self.config), false, true)
     }
 
     /// Reads and fully validates an export (or a plain `config.toml`).
@@ -219,7 +219,8 @@ impl ConfigDocument {
                 return Err(bad(format!("unknown keys in [{EXPORT_TABLE}]")));
             }
         }
-        ConfigDocument::parse(&render(&doc, uses_crlf(&text)))
+        let config = Config::parse(&doc.to_string())?;
+        ConfigDocument::parse(&render(&doc, uses_crlf(&text), &config))
     }
 
     /// Validates the export at `from`, then saves it as the config at `to`
@@ -254,24 +255,53 @@ impl ConfigDocument {
 
 impl std::fmt::Display for ConfigDocument {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&render(&self.doc, self.crlf))
+        f.write_str(&render(&self.doc, self.crlf, &self.config))
     }
 }
 
-/// Whether `text` uses CRLF line endings, judged by its first line.
+/// Whether `text` uses CRLF line endings. Only the first line ending is
+/// looked at: a file whose first line ends in LF is written all LF.
 fn uses_crlf(text: &str) -> bool {
     text.find('\n').is_some_and(|i| text[..i].ends_with('\r'))
 }
 
-/// `doc` as text. toml_edit drops every `\r` when writing, so CRLF line
-/// endings are restored here (a file mixing both comes back all CRLF).
-fn render(doc: &DocumentMut, crlf: bool) -> String {
-    let text = doc.to_string();
-    if crlf {
-        text.replace('\n', "\r\n")
-    } else {
-        text
+/// `doc` as text, which must describe `config`. toml_edit drops `\r` from
+/// comments, whitespace and the line breaks it writes (multi-line string
+/// values keep theirs), so for a CRLF source each bare `\n` is turned back
+/// into `\r\n`. If that would change a value (an LF inside a multi-line
+/// string, or a new value containing a newline) or break the TOML, the
+/// plain LF output is used instead: losing CRLF beats changing data.
+fn render(doc: &DocumentMut, crlf: bool, config: &Config) -> String {
+    let lf = doc.to_string();
+    if !crlf {
+        return lf;
     }
+    let mut out = String::with_capacity(lf.len() + lf.len() / 16);
+    let mut prev = '\0';
+    for c in lf.chars() {
+        if c == '\n' && prev != '\r' {
+            out.push('\r');
+        }
+        out.push(c);
+        prev = c;
+    }
+    if describes(&out, config) {
+        out
+    } else {
+        lf
+    }
+}
+
+/// Whether `text` parses to exactly `config` (ignoring an export header).
+fn describes(text: &str, config: &Config) -> bool {
+    let Ok(mut doc) = text.parse::<DocumentMut>() else {
+        return false;
+    };
+    let parsed = match doc.remove(EXPORT_TABLE) {
+        Some(_) => Config::parse(&doc.to_string()),
+        None => Config::parse(text),
+    };
+    parsed.is_ok_and(|c| c == *config)
 }
 
 const GAMES: &str = "games";
@@ -892,6 +922,77 @@ args = [
         assert_eq!(text, crlf(&lf.to_string()));
         assert!(all_crlf(&text), "{text:?}");
         assert_eq!(&Config::parse(&text).unwrap(), doc.config());
+    }
+
+    /// Saves `doc`, then checks the file is valid and reloads to the same
+    /// config, also through export and import. Returns the saved text.
+    fn saved(doc: &ConfigDocument, name: &str) -> String {
+        let dir = temp(name);
+        let (path, export) = (dir.join("config.toml"), dir.join("export.toml"));
+        doc.save(&path).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(ConfigDocument::parse(&text).unwrap().config(), doc.config());
+        doc.export(&export).unwrap();
+        let imported = ConfigDocument::import(&export, &path).unwrap();
+        assert_eq!(imported.config(), doc.config());
+        text
+    }
+
+    #[test]
+    fn crlf_multi_line_strings_keep_their_values() {
+        let text = "[[games]]\r\nid = \"a\"\r\nname = '''x\r\ny'''\r\nsteam_appid = 1\r\n\
+                    \r\n[[games]]\r\nid = \"b\"\r\nname = \"\"\"p\r\nq\"\"\"\r\nsteam_appid = 2\r\n";
+        let mut doc = ConfigDocument::parse(text).unwrap();
+        let names = |doc: &ConfigDocument| -> Vec<String> {
+            doc.config().games.iter().map(|g| g.name.clone()).collect()
+        };
+        assert_eq!(names(&doc), ["x\r\ny", "p\r\nq"]);
+        assert_eq!(doc.to_string(), text);
+        for game in doc.config().games.clone() {
+            doc.upsert_game(&game).unwrap();
+        }
+        assert_eq!(saved(&doc, "crlf-multi-noop"), text);
+
+        let mut a = doc.config().games[0].clone();
+        a.plan = LaunchPlan::Steam { appid: 10 };
+        doc.upsert_game(&a).unwrap();
+        let want = text.replace("steam_appid = 1\r", "steam_appid = 10\r");
+        assert_eq!(saved(&doc, "crlf-multi-edit"), want);
+        assert_eq!(names(&doc), ["x\r\ny", "p\r\nq"]);
+    }
+
+    #[test]
+    fn mixed_line_endings_inside_a_string_fall_back_to_lf() {
+        // CRLF by its first line, but the multi-line name holds an LF:
+        // CRLF everywhere would change the name, so the file is written LF.
+        let text = "[[games]]\r\nid = \"a\"\r\nname = '''x\ny'''\r\nsteam_appid = 1\r\n";
+        let doc = ConfigDocument::parse(text).unwrap();
+        assert_eq!(doc.config().games[0].name, "x\ny");
+        let want = "[[games]]\nid = \"a\"\nname = '''x\ny'''\nsteam_appid = 1\n";
+        assert_eq!(doc.to_string(), want);
+        assert_eq!(saved(&doc, "mixed-multi"), want);
+    }
+
+    #[test]
+    fn a_new_value_with_a_newline_keeps_its_value_in_crlf_files() {
+        let mut doc = ConfigDocument::parse(&crlf(COMMENTED)).unwrap();
+        doc.upsert_game(&Game {
+            id: slug("two"),
+            name: "line1\nline2".into(),
+            uid: None,
+            plan: LaunchPlan::Steam { appid: 5 },
+        })
+        .unwrap();
+        let text = saved(&doc, "crlf-new-newline");
+        let cfg = Config::parse(&text).unwrap();
+        assert_eq!(cfg.games[2].name, "line1\nline2");
+        assert_eq!(&cfg, doc.config());
+        // CRLF would turn the new name's line break into `\r\n`, so the
+        // file is written LF.
+        let want = format!(
+            "{COMMENTED}\n[[games]]\nid = \"two\"\nname = \"\"\"\nline1\nline2\"\"\"\nsteam_appid = 5\n"
+        );
+        assert_eq!(text, want);
     }
 
     #[test]
