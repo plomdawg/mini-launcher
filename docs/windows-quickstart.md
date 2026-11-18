@@ -329,7 +329,8 @@ again and can break or refuse game paths with characters like `&`, `%` or `^`.
 no emulator is set up yet, click **Add Eden...**: the form fills in Eden's arguments and finds
 `eden.exe` in the usual places above (otherwise **Browse** for it); **Save** brings you back to
 the wizard. Then choose the game file with **Browse**, or click **Scan folder...** to list the
-Eden game files in a folder (and in the folders directly inside it) and click one. **Scan
+Eden game files in a folder (and in the folders up to three levels inside it) and click one. See
+[Updates and DLC](#updates-and-dlc) for what the scan leaves out. **Scan
 folder...** is greyed out when the app doesn't recognise the emulator as Eden (its name isn't
 "Eden" and its exe isn't `eden.exe`); use **Browse** then. **Next** shows a name and tag ID made
 from the file name; change them if you like. If the name has nothing an ID can be made from (for
@@ -397,6 +398,30 @@ Rules for emulators and emulator games:
   only allowed together with `emulator`.
 - The tag still only says `id:<slug>` (or is mapped by `uid`); nothing on the tag reaches the
   command line.
+
+#### Updates and DLC
+
+A tag launches a base game; updates and DLC aren't games of their own, so **Scan folder...**
+leaves them out of the list and says how many it skipped. A file counts as an update or DLC when:
+
+- its name has an `[UPD]`, `[Update]` or `[DLC]` tag (any case);
+- its name has a title ID in brackets (16 hex characters starting with `01`) that isn't a base
+  game's (base game IDs end in `000`, updates in `800`, and anything else is DLC), e.g.
+  `[0100152000022800]`;
+- it is anywhere under a folder named `Update`, `Updates`, `DLC` or `Add-On` (any case) inside
+  the scanned folder, e.g. `Update\v1.0.1\Game.nsp`.
+
+So a library laid out like this lists one game, *Super Mario Party*, and skips one update:
+
+```
+Games\
+  Super Mario Party\
+    Title\Super Mario Party.nsp
+    Update\Super Mario Party v1.0.1 [UPD].nsp
+```
+
+Install updates and DLC in Eden once (**File > Install Files to NAND**); after that they load
+with the base game whenever it starts, including from a tag.
 
 Backups, export/import and keeping the config in a synced folder are covered in
 [config.md](config.md).

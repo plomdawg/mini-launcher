@@ -5,7 +5,7 @@
 //! anything missing or unreadable is skipped quietly. File names are
 //! untrusted: names are display-only and suggested slugs are validated.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -38,6 +38,8 @@ pub const PRESETS: &[EmulatorPreset] = &[EDEN];
 
 /// Default cap on [`scan_roms`] results.
 pub const MAX_ROMS: usize = 2000;
+/// Default for [`ScanOptions::max_depth`].
+pub const MAX_DEPTH: usize = 3;
 /// Directory entries looked at in one scan (all folders together), so huge
 /// folders can't stall it.
 const MAX_ENTRIES: usize = 50_000;
@@ -89,16 +91,19 @@ pub struct RomScan {
     /// Sorted by name then path.
     pub roms: Vec<RomFile>,
     /// The scan stopped early (the ROM limit or the entry budget was hit), so
-    /// `roms` is only part of the folder, in directory-listing order rather
-    /// than the alphabetically first ones. UIs can say there are more.
+    /// `roms` is only part of the folder: the shallowest folders first, each
+    /// in directory-listing order, rather than the alphabetically first
+    /// ones. UIs can say there are more.
     pub truncated: bool,
+    /// Update and DLC files left out of `roms` (see [`is_update_or_dlc`]).
+    pub skipped_updates: usize,
 }
 
 /// Options for [`scan_roms`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ScanOptions {
-    /// Also look one level into subfolders.
-    pub recurse_one_level: bool,
+    /// How many levels of subfolders to look into: 0 is `dir` only.
+    pub max_depth: usize,
     /// Stop after this many ROMs.
     pub limit: usize,
 }
@@ -106,16 +111,19 @@ pub struct ScanOptions {
 impl Default for ScanOptions {
     fn default() -> Self {
         ScanOptions {
-            recurse_one_level: false,
+            max_depth: MAX_DEPTH,
             limit: MAX_ROMS,
         }
     }
 }
 
-/// ROM files in `dir`, sorted by name then path. Dotfiles (e.g. macOS
+/// ROM files in `dir` and its subfolders down to `opts.max_depth`, sorted by
+/// name then path. Folders are visited breadth-first in sorted order, so a
+/// truncated scan keeps the shallowest ones. Update and DLC files are counted
+/// in [`RomScan::skipped_updates`] instead of being listed. Dotfiles (e.g. macOS
 /// `._Game.nsp`) are skipped, symlinks pointing outside `dir` are skipped,
 /// symlinked folders are never entered, and a file reachable through several
-/// names (a symlink to a ROM in the same folder) is listed once. Unreadable
+/// names (a symlink to a ROM in the scanned folders) is listed once. Unreadable
 /// entries are ignored; an unreadable `dir` gives an empty scan.
 pub fn scan_roms(dir: &Path, preset: &EmulatorPreset, opts: ScanOptions) -> RomScan {
     scan_roms_with_budget(dir, preset, opts, MAX_ENTRIES)
@@ -140,17 +148,22 @@ fn scan_roms_with_budget(
         budget: max_entries,
         found: RomScan::default(),
         seen: HashMap::new(),
+        skipped: HashSet::new(),
     };
-    let mut subdirs = Vec::new();
-    scan.dir(dir, Some(&mut subdirs));
-    if opts.recurse_one_level {
-        subdirs.sort();
-        for sub in subdirs {
-            if scan.found.truncated {
-                break;
-            }
-            scan.dir(&sub, None);
+    // (folder, depth below `dir`, whether it is in an update/DLC folder)
+    let mut queue = VecDeque::from([(dir.to_path_buf(), 0, false)]);
+    while let Some((folder, depth, updates)) = queue.pop_front() {
+        let mut subdirs = Vec::new();
+        let want_subdirs = depth < opts.max_depth;
+        scan.dir(&folder, updates, want_subdirs.then_some(&mut subdirs));
+        if scan.found.truncated {
+            break;
         }
+        subdirs.sort();
+        queue.extend(subdirs.into_iter().map(|sub| {
+            let updates = updates || is_update_folder(&sub);
+            (sub, depth + 1, updates)
+        }));
     }
     let mut found = scan.found;
     found
@@ -168,10 +181,14 @@ struct Scan<'a> {
     found: RomScan,
     /// Canonical target -> (index in `found.roms`, listed via a symlink).
     seen: HashMap<PathBuf, (usize, bool)>,
+    /// Canonical targets of the skipped update/DLC files.
+    skipped: HashSet<PathBuf>,
 }
 
 impl Scan<'_> {
-    fn dir(&mut self, dir: &Path, mut subdirs: Option<&mut Vec<PathBuf>>) {
+    /// Looks at the files in `dir` (all of them updates/DLC if `updates`),
+    /// collecting its folders into `subdirs` if given.
+    fn dir(&mut self, dir: &Path, updates: bool, mut subdirs: Option<&mut Vec<PathBuf>>) {
         let Ok(entries) = fs::read_dir(dir) else {
             tracing::debug!("skipping unreadable folder {}", dir.display());
             return;
@@ -208,6 +225,13 @@ impl Scan<'_> {
             } else {
                 fs::canonicalize(&path).unwrap_or_else(|_| path.clone())
             };
+            if updates || is_update_or_dlc(&path) {
+                // Counted once however many names reach it.
+                if self.skipped.insert(target) {
+                    self.found.skipped_updates += 1;
+                }
+                continue;
+            }
             if !self.add(path, target, kind.is_symlink()) {
                 return;
             }
@@ -239,6 +263,36 @@ impl Scan<'_> {
         self.found.roms.push(rom);
         true
     }
+}
+
+/// Whether a game file is an update or DLC rather than a base game, from its
+/// name: an `[UPD]`, `[Update]` or `[DLC]` tag (any case), or a bracketed
+/// title ID (16 hex digits starting with `01`) that isn't a base game's
+/// (those end in `000`; updates end in `800`, anything else is DLC). Files
+/// anywhere under an update/DLC folder are caught by the scan instead.
+pub fn is_update_or_dlc(path: &Path) -> bool {
+    let stem = path.file_stem().unwrap_or_default().to_string_lossy();
+    stem.split('[')
+        .skip(1)
+        .filter_map(|s| s.split_once(']'))
+        .any(|(tag, _)| {
+            let tag = tag.trim();
+            ["upd", "update", "dlc"]
+                .iter()
+                .any(|t| tag.eq_ignore_ascii_case(t))
+                || (tag.len() == 16
+                    && tag.starts_with("01")
+                    && tag.bytes().all(|b| b.is_ascii_hexdigit())
+                    && !tag.ends_with("000"))
+        })
+}
+
+/// Whether a folder's name marks the files under it as updates or DLC.
+fn is_update_folder(path: &Path) -> bool {
+    let name = path.file_name().unwrap_or_default().to_string_lossy();
+    ["update", "updates", "dlc", "add-on"]
+        .iter()
+        .any(|n| name.eq_ignore_ascii_case(n))
 }
 
 /// `stem` without `[...]`/`(...)` tags, control characters and extra spaces;
@@ -364,7 +418,11 @@ mod tests {
         dir.touch("sub/Zelda [01007EF00011E000].nsp");
         fs::create_dir(dir.join("folder.nsp")).unwrap();
 
-        let roms = scan_roms(&dir, &EDEN, ScanOptions::default()).roms;
+        let top = ScanOptions {
+            max_depth: 0,
+            ..ScanOptions::default()
+        };
+        let roms = scan_roms(&dir, &EDEN, top).roms;
         let want = [
             ("[0100ABCD00000000]", Some("0100abcd00000000")),
             ("homebrew", Some("homebrew")),
@@ -374,10 +432,7 @@ mod tests {
         assert_eq!(names(&roms), want);
         assert_eq!(roms[3].path, mario);
 
-        let opts = ScanOptions {
-            recurse_one_level: true,
-            ..ScanOptions::default()
-        };
+        let opts = ScanOptions::default();
         let roms = scan_roms(&dir, &EDEN, opts).roms;
         assert_eq!(roms.len(), 5);
         assert_eq!(roms[4].name, "Zelda");
@@ -388,18 +443,102 @@ mod tests {
     }
 
     #[test]
-    fn recursion_stops_after_one_level() {
+    fn recursion_stops_at_the_depth_limit() {
         let dir = TempDir::new("depth");
         dir.touch("a/one.nsp");
         dir.touch("a/b/two.nsp");
-        let opts = ScanOptions {
-            recurse_one_level: true,
-            ..ScanOptions::default()
+        dir.touch("a/b/c/three.nsp");
+        dir.touch("a/b/c/d/four.nsp");
+        let found = |max_depth| {
+            let opts = ScanOptions {
+                max_depth,
+                ..ScanOptions::default()
+            };
+            let roms = scan_roms(&dir, &EDEN, opts).roms;
+            roms.into_iter().map(|r| r.name).collect::<Vec<_>>()
         };
+        assert_eq!(ScanOptions::default().max_depth, 3);
+        // Four levels down is too deep for the default.
+        assert_eq!(found(MAX_DEPTH), ["one", "three", "two"]);
+        assert_eq!(found(1), ["one"]);
+        assert!(found(0).is_empty());
+        assert_eq!(found(4).len(), 4);
+    }
+
+    #[test]
+    fn finds_nested_games_and_skips_their_updates() {
+        let dir = TempDir::new("nested");
+        let base = dir.touch("Super Mario Party/Title/Super Mario Party.nsp");
+        dir.touch("Super Mario Party/Update/Super Mario Party v1.0.1 [UPD].nsp");
+        let scan = scan_roms(&dir, &EDEN, ScanOptions::default());
         assert_eq!(
-            names(&scan_roms(&dir, &EDEN, opts).roms),
-            [("one", Some("one"))]
+            names(&scan.roms),
+            [("Super Mario Party", Some("super-mario-party"))]
         );
+        assert_eq!(scan.roms[0].path, base);
+        assert_eq!((scan.skipped_updates, scan.truncated), (1, false));
+    }
+
+    #[test]
+    fn tells_updates_and_dlc_from_base_games() {
+        let dir = TempDir::new("updates");
+        for f in [
+            "Kart [0100152000022000][v0].nsp",
+            "Kart [0100152000022800][v65536].nsp",
+            "Kart Track Pack [0100152000023001].nsp",
+            "Kart Bonus [dlc].xci",
+            "Kart [ Update ].nsp",
+            "Kart v2 [upd].nsp",
+            "Kart [0100ABC].nsp",
+            "Kart Updates.nsp",
+            "dlc/Extra.nsp",
+            "Updates/Patch.nsp",
+            "ADD-ON/Pack.nsp",
+            "add-ons/Not Skipped.nsp",
+            "Update Disc/Also Kept.nsp",
+            "Update/v1.0.1/Deep Patch.nsp",
+            "DLC/Pack 1/Deep Pack.nsp",
+            "Kart Hash [DEADBEEFCAFEBABE].nsp",
+        ] {
+            dir.touch(f);
+        }
+        let scan = scan_roms(&dir, &EDEN, ScanOptions::default());
+        let roms: Vec<_> = scan.roms.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(
+            roms,
+            [
+                "Also Kept",
+                "Kart",
+                "Kart",
+                "Kart Hash",
+                "Kart Updates",
+                "Not Skipped"
+            ]
+        );
+        // Including everything below an update/DLC folder, at any depth.
+        assert_eq!(scan.skipped_updates, 10);
+
+        let upd = |f: &str| is_update_or_dlc(Path::new(f));
+        assert!(upd("Game [0100000000010800].nsp"));
+        assert!(upd("Game [0100000000010001].nsp"));
+        assert!(upd("Game [0100abcd0001a800].nsp"));
+        assert!(upd("Game [v0] [UPDATE].nsp"));
+        assert!(!upd("Game [0100000000010000].nsp"));
+        assert!(!upd("Game [010000000001080].nsp")); // 15 digits
+        assert!(!upd("Game [010000000001080G].nsp"));
+        // Real title IDs start with `01`; other hex is just a hash.
+        assert!(!upd("Game [DEADBEEFCAFEBABE].nsp"));
+        assert!(!upd("Game [0200000000010800].nsp"));
+        assert!(!upd("Game (DLC Edition).nsp"));
+        assert!(!upd("DLC/Game.nsp"), "folders are the scan's job");
+    }
+
+    #[test]
+    fn an_update_folder_as_the_scanned_folder_still_lists() {
+        let dir = TempDir::new("pick-update");
+        dir.touch("Update/Patch.nsp");
+        let scan = scan_roms(&dir.join("Update"), &EDEN, ScanOptions::default());
+        assert_eq!((scan.roms.len(), scan.skipped_updates), (1, 0));
     }
 
     #[test]
@@ -408,10 +547,12 @@ mod tests {
         for i in 0..10 {
             dir.touch(&format!("game {i}.nsp"));
             dir.touch(&format!("sub/more {i}.xci"));
+            dir.touch(&format!("sub/a/b/deep {i}.xci"));
+            dir.touch(&format!("sub/a/Update/patch {i}.xci"));
         }
         let opts = |limit| ScanOptions {
-            recurse_one_level: true,
             limit,
+            ..ScanOptions::default()
         };
         let scan = |limit| {
             let s = scan_roms(&dir, &EDEN, opts(limit));
@@ -420,8 +561,14 @@ mod tests {
         assert_eq!(scan(4), (4, true));
         assert_eq!(scan(15), (15, true));
         assert_eq!(scan(0), (0, true));
-        assert_eq!(scan(20), (20, false));
-        assert_eq!(scan(MAX_ROMS), (20, false));
+        assert_eq!(scan(30), (30, false));
+        assert_eq!(scan(MAX_ROMS), (30, false));
+        // Breadth-first: the shallow files come before the deep ones.
+        let s = scan_roms(&dir, &EDEN, opts(20));
+        assert!(s.truncated && s.roms.iter().all(|r| !r.name.starts_with("deep")));
+        // Skipped updates don't count towards the limit.
+        let s = scan_roms(&dir, &EDEN, opts(30));
+        assert_eq!((s.truncated, s.skipped_updates), (false, 10));
     }
 
     #[test]
@@ -431,15 +578,19 @@ mod tests {
             dir.touch(&format!("{i}/x.nsp"));
             dir.touch(&format!("{i}/y.nsp"));
         }
-        let opts = ScanOptions {
-            recurse_one_level: true,
-            ..ScanOptions::default()
-        };
-        // 3 top-level folders + 6 files = 9 entries in total.
-        let full = scan_roms_with_budget(&dir, &EDEN, opts, 9);
-        assert_eq!((full.roms.len(), full.truncated), (6, false));
-        // A per-folder cap of 3 would still find all 6.
-        let cut = scan_roms_with_budget(&dir, &EDEN, opts, 6);
+        dir.touch("0/a/b/z.nsp");
+        let opts = ScanOptions::default();
+        // 3 top-level folders, 1 folder in each of `0` and `0/a`, 7 files =
+        // 12 entries in total.
+        let full = scan_roms_with_budget(&dir, &EDEN, opts, 12);
+        assert_eq!((full.roms.len(), full.truncated), (7, false));
+        // One short: the deepest file is the one left out.
+        let short = scan_roms_with_budget(&dir, &EDEN, opts, 11);
+        assert_eq!((short.roms.len(), short.truncated), (6, true));
+        assert!(short.roms.iter().all(|r| r.name != "z"));
+        // The top level and `0` use 6; one more entry reaches into `1`. A
+        // per-folder cap of 4 would still find all 7.
+        let cut = scan_roms_with_budget(&dir, &EDEN, opts, 7);
         assert_eq!((cut.roms.len(), cut.truncated), (3, true));
         let none = scan_roms_with_budget(&dir, &EDEN, opts, 0);
         assert_eq!((none.roms.len(), none.truncated), (0, true));
@@ -452,10 +603,7 @@ mod tests {
         dir.touch("._Game.nsp");
         dir.touch(".hidden.xci");
         dir.touch(".Trashes/Old.nsp");
-        let opts = ScanOptions {
-            recurse_one_level: true,
-            ..ScanOptions::default()
-        };
+        let opts = ScanOptions::default();
         let roms = scan_roms(&dir, &EDEN, opts).roms;
         assert_eq!(names(&roms), [("Game", Some("game"))]);
     }
@@ -472,10 +620,7 @@ mod tests {
         symlink(&target, dir.join("escape.nsp")).unwrap();
         symlink(&real, dir.join("alias.nsp")).unwrap();
         symlink(outside.join("dir"), dir.join("linked")).unwrap();
-        let opts = ScanOptions {
-            recurse_one_level: true,
-            ..ScanOptions::default()
-        };
+        let opts = ScanOptions::default();
         let roms = scan_roms(&dir, &EDEN, opts).roms;
         // `alias` is the same file as `real`, so it is listed once, as `real`.
         assert_eq!(names(&roms), [("real", Some("real"))]);
@@ -488,6 +633,18 @@ mod tests {
         let roms = scan_roms(&other, &EDEN, opts).roms;
         assert_eq!(names(&roms), [("deep", Some("deep"))]);
         assert_eq!(roms[0].path, deep);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_linked_update_is_skipped_once() {
+        use std::os::unix::fs::symlink;
+        let dir = TempDir::new("links-upd");
+        let patch = dir.touch("Game [UPD].nsp");
+        symlink(&patch, dir.join("Alias [UPD].nsp")).unwrap();
+        dir.touch("Game.nsp");
+        let scan = scan_roms(&dir, &EDEN, ScanOptions::default());
+        assert_eq!((scan.roms.len(), scan.skipped_updates), (1, 1));
     }
 
     #[test]
