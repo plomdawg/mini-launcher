@@ -487,7 +487,7 @@
       ? 'A 2:3 grid fits this face exactly.'
       : gridCrop > 0
         ? `A 600 × 900 grid loses ${gridCrop.toFixed(1)} mm of height when filled, or leaves ${gridGap.toFixed(1)} mm of side space when fit.`
-        : `A 600 × 900 grid loses ${(-gridGap * 1.5).toFixed(1)} mm of width when filled, or leaves ${(-gridCrop).toFixed(1)} mm of top/bottom space when fit.`;
+        : `A 600 × 900 grid loses ${(-gridGap).toFixed(1)} mm of width when filled, or leaves ${(-gridCrop).toFixed(1)} mm of top/bottom space when fit.`;
     $('exportDimensions').textContent = `${width.toFixed(1)} × ${height.toFixed(1)} mm with bleed · ${trimWidth} mm trim width`;
     $('logoRotationValue').textContent = `${Number($('logoRotation').value) < 0 ? '−' : ''}${Math.abs(Number($('logoRotation').value))}°`;
     const title = $('projectName').value.trim();
@@ -1045,7 +1045,7 @@
       showSgdbGames(sgdbItems(payload));
     } catch (error) {
       if (requestId !== sgdbRequestId) return;
-      const networkMessage = error instanceof TypeError ? 'Could not reach Plomcase’s API proxy. Start the app with “python server.py” and open it at http://127.0.0.1:8784.' : error.message;
+      const networkMessage = error instanceof TypeError ? 'Could not reach Plomcase’s API proxy. Start the app with “python server.py” and open it at http://127.0.0.1:8787.' : error.message;
       sgdbStatus(networkMessage, 'error');
     }
   }
@@ -1098,7 +1098,7 @@
       showSgdbAssets(sgdbItems(payload));
     } catch (error) {
       if (requestId !== sgdbRequestId) return;
-      const networkMessage = error instanceof TypeError ? 'Could not reach Plomcase’s API proxy. Start the app with “python server.py” and open it at http://127.0.0.1:8784.' : error.message;
+      const networkMessage = error instanceof TypeError ? 'Could not reach Plomcase’s API proxy. Start the app with “python server.py” and open it at http://127.0.0.1:8787.' : error.message;
       sgdbStatus(networkMessage, 'error');
     }
   }
@@ -1161,7 +1161,7 @@
       sgdbStatus(`Added ${sgdbMode === 'grid' ? 'cover grid' : 'logo'} for ${sgdbGame.name}.`);
       toast(sgdbMode === 'grid' ? `Grid added to ${target} cover.` : 'Logo added to the spine.');
     } catch (error) {
-      const networkMessage = error instanceof TypeError ? 'Could not reach Plomcase’s image proxy. Start the app with “python server.py” and open it at http://127.0.0.1:8784.' : error.message;
+      const networkMessage = error instanceof TypeError ? 'Could not reach Plomcase’s image proxy. Start the app with “python server.py” and open it at http://127.0.0.1:8787.' : error.message;
       sgdbStatus(networkMessage, 'error');
       assetButton.disabled = false;
     }
@@ -1228,7 +1228,7 @@
   }
 
   function launchBoxNetworkMessage(error) {
-    return error instanceof TypeError ? 'Could not reach Plomcase’s LaunchBox proxy. Start the app with “python server.py” and open it at http://127.0.0.1:8784.' : error.message;
+    return error instanceof TypeError ? 'Could not reach Plomcase’s LaunchBox proxy. Start the app with “python server.py” and open it at http://127.0.0.1:8787.' : error.message;
   }
 
   async function searchLaunchBoxGames() {
