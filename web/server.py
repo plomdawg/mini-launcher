@@ -17,6 +17,8 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 ROOT = Path(__file__).resolve().parent
 API_BASE = "https://www.steamgriddb.com/api/v2"
 MAX_IMAGE_BYTES = 40 * 1024 * 1024
+# Raster formats the editor can place. SVG and anything else are refused by both image proxies.
+ALLOWED_IMAGE_MIMES = frozenset({"image/jpeg", "image/png", "image/webp"})
 ALLOWED_API_QUERY = {"dimensions", "styles", "mimes", "types", "nsfw", "humor", "epilepsy", "limit", "page"}
 
 
@@ -54,12 +56,14 @@ LAUNCHBOX_IMAGE_HOST = "images.launchbox-app.com"
 LAUNCHBOX_USER_AGENT = "Plomcase/0.1"
 LAUNCHBOX_MAX_PAGE_BYTES = 4 * 1024 * 1024
 LAUNCHBOX_MAX_QUERY = 100
+# A search term is percent-encoded into the results path: up to 4 UTF-8 bytes per character, "%XX" each.
+LAUNCHBOX_MAX_QUERY_PATH = LAUNCHBOX_MAX_QUERY * 4 * 3
 LAUNCHBOX_MAX_RESULTS = 50
 # Image types offered in the picker, in display order. Add a type here to offer it.
 LAUNCHBOX_IMAGE_TYPES = ("Box - Front", "Box - Back", "Box - Spine", "Disc", "Clear Logo")
 _LAUNCHBOX_GUID = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
 _LAUNCHBOX_IMAGE_PATH = re.compile(rf"/(?:r2_)?{_LAUNCHBOX_GUID}\.(?:jpg|jpeg|png)", re.IGNORECASE)
-_LAUNCHBOX_PAGE_PATH = re.compile(r"/games/(?:images|details)/\d{1,10}(?:-[a-z0-9-]{0,200})?|/games/results/[^/?#]{1,400}", re.IGNORECASE)
+_LAUNCHBOX_PAGE_PATH = re.compile(r"/games/(?:images|details)/\d{1,10}(?:-[a-z0-9-]{0,200})?|/games/results/[^/?#]{1,%d}" % LAUNCHBOX_MAX_QUERY_PATH, re.IGNORECASE)
 _LAUNCHBOX_DETAILS_HREF = re.compile(r"/games/details/(\d{1,10})(?:-[a-z0-9-]{0,200})?", re.IGNORECASE)
 _LAUNCHBOX_CAPTION = re.compile(r"^(?P<type>.+?)(?: \((?P<region>[^()]{1,80})\))? - (?P<width>\d{1,6}) x (?P<height>\d{1,6})$")
 _LAUNCHBOX_DIMENSIONS = re.compile(r"(\d{1,6}) x (\d{1,6})")
@@ -288,7 +292,11 @@ def fetch_launchbox_page(url: str) -> str:
             body = response.read(LAUNCHBOX_MAX_PAGE_BYTES + 1)
             if len(body) > LAUNCHBOX_MAX_PAGE_BYTES:
                 raise LaunchBoxError(502, "LaunchBox returned an unexpectedly large page.")
-            return body.decode(response.headers.get_content_charset() or "utf-8", errors="replace")
+            charset = response.headers.get_content_charset() or "utf-8"
+            try:
+                return body.decode(charset, errors="replace")
+            except LookupError:  # unknown charset label
+                return body.decode("utf-8", errors="replace")
     except HTTPError as error:
         error.close()
         if error.code == 404:
@@ -418,8 +426,8 @@ class PlomcaseHandler(SimpleHTTPRequestHandler):
         try:
             with build_opener(SafeImageRedirect()).open(request, timeout=20) as response:
                 mime = response.headers.get_content_type()
-                if not mime.startswith("image/"):
-                    self._send_json(415, {"error": "SteamGridDB returned a non-image asset."})
+                if mime not in ALLOWED_IMAGE_MIMES:
+                    self._send_json(415, {"error": "SteamGridDB returned an unsupported image type (JPEG, PNG or WebP only)."})
                     return
                 body = response.read(MAX_IMAGE_BYTES + 1)
                 if len(body) > MAX_IMAGE_BYTES:
@@ -450,8 +458,11 @@ class PlomcaseHandler(SimpleHTTPRequestHandler):
 
     def _launchbox_search(self):
         term = " ".join(self._query().get("q", [""])[0].split())
-        if not term or len(term) > LAUNCHBOX_MAX_QUERY:
-            self._send_json(400, {"error": f"Enter a game title up to {LAUNCHBOX_MAX_QUERY} characters long."})
+        if not term:
+            self._send_json(400, {"error": "Enter a game title to search."})
+            return
+        if len(term) > LAUNCHBOX_MAX_QUERY:
+            self._send_json(400, {"error": f"Game title is too long (max {LAUNCHBOX_MAX_QUERY} characters)."})
             return
         url = f"{LAUNCHBOX_BASE}/games/results/{quote(term, safe='')}?{urlencode({'searchText': term})}"
         try:
@@ -473,8 +484,8 @@ class PlomcaseHandler(SimpleHTTPRequestHandler):
                     self._send_json(502, {"error": "LaunchBox redirected somewhere unexpected."})
                     return
                 mime = response.headers.get_content_type()
-                if not mime.startswith("image/"):
-                    self._send_json(415, {"error": "LaunchBox returned a non-image asset."})
+                if mime not in ALLOWED_IMAGE_MIMES:
+                    self._send_json(415, {"error": "LaunchBox returned an unsupported image type (JPEG, PNG or WebP only)."})
                     return
                 body = response.read(MAX_IMAGE_BYTES + 1)
                 if len(body) > MAX_IMAGE_BYTES:

@@ -6,9 +6,12 @@ import json
 import sys
 import threading
 import unittest
+from email.message import Message
 from http.server import ThreadingHTTPServer
+from unittest import mock
 from pathlib import Path
 from urllib.error import HTTPError
+from urllib.parse import quote, urlencode
 from urllib.request import urlopen
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -238,6 +241,117 @@ class LaunchBoxEndpointValidationTest(unittest.TestCase):
         ):
             with self.subTest(path=path):
                 self.assert_rejected(path)
+
+    def test_search_length_messages(self):
+        for term, expected in (("  ", "Enter a game title"), ("a" * 101, "too long"), ("日" * 101, "too long"), ("😀" * 101, "too long")):
+            with self.subTest(term=term[:3]):
+                with self.assertRaises(HTTPError) as caught:
+                    urlopen(self.base + "/api/launchbox/search?q=" + quote(term), timeout=5)
+                self.assertEqual(caught.exception.code, 400)
+                self.assertIn(expected, json.loads(caught.exception.read())["error"])
+                caught.exception.close()
+
+
+class LaunchBoxSearchPathLengthTest(unittest.TestCase):
+    def test_longest_non_ascii_terms_fit_the_results_path(self):
+        for term in ("a" * 100, "日" * 100, "😀" * 100, "é" * 100):
+            with self.subTest(term=term[:3]):
+                url = f"{server.LAUNCHBOX_BASE}/games/results/{quote(term, safe='')}?{urlencode({'searchText': term})}"
+                self.assertTrue(server.allowed_launchbox_page_url(url))
+
+    def test_search_fetches_full_length_non_ascii_term(self):
+        fetched = []
+        with mock.patch.object(server, "fetch_launchbox_page", side_effect=lambda url: fetched.append(url) or SEARCH_PAGE):
+            httpd = ThreadingHTTPServer(("127.0.0.1", 0), QuietHandler)
+            thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+            thread.start()
+            try:
+                with urlopen(f"http://127.0.0.1:{httpd.server_address[1]}/api/launchbox/search?q=" + quote("😀" * 100), timeout=5) as response:
+                    self.assertEqual(len(json.loads(response.read())["results"]), 2)
+            finally:
+                httpd.shutdown()
+                httpd.server_close()
+        self.assertEqual(len(fetched), 1)
+        self.assertTrue(server.allowed_launchbox_page_url(fetched[0]))
+
+
+class FakeResponse:
+    def __init__(self, body: bytes, content_type: str, url: str):
+        self._body = body
+        self.status = 200
+        self.headers = Message()
+        self.headers["Content-Type"] = content_type
+        self._url = url
+
+    def read(self, limit=-1):
+        return self._body if limit < 0 else self._body[:limit]
+
+    def geturl(self):
+        return self._url
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+def fake_opener(body: bytes, content_type: str):
+    class Opener:
+        def open(self, request, timeout=None):
+            return FakeResponse(body, content_type, request.full_url)
+    return lambda *handlers: Opener()
+
+
+class CharsetFallbackTest(unittest.TestCase):
+    def test_unknown_charset_decodes_as_utf8(self):
+        page = "<h1>Café</h1>".encode("utf-8")
+        with mock.patch.object(server, "build_opener", fake_opener(page, "text/html; charset=x-made-up")):
+            html = server.fetch_launchbox_page(f"{server.LAUNCHBOX_BASE}/games/images/1")
+        self.assertEqual(html, "<h1>Café</h1>")
+
+
+class ImageProxyMimeTest(unittest.TestCase):
+    """Both image proxies pass only JPEG, PNG and WebP (served from a fake upstream, no network)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.httpd = ThreadingHTTPServer(("127.0.0.1", 0), QuietHandler)
+        threading.Thread(target=cls.httpd.serve_forever, daemon=True).start()
+        cls.base = f"http://127.0.0.1:{cls.httpd.server_address[1]}"
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.httpd.shutdown()
+        cls.httpd.server_close()
+
+    PROXIES = (
+        ("/api/launchbox/image", f"https://images.launchbox-app.com/{GUID}.png"),
+        ("/api/steamgriddb/image", "https://cdn2.steamgriddb.com/grid/example.png"),
+    )
+
+    def fetch(self, endpoint, url, content_type):
+        with mock.patch.object(server, "build_opener", fake_opener(b"fake-bytes", content_type)):
+            try:
+                with urlopen(f"{self.base}{endpoint}?{urlencode({'url': url})}", timeout=5) as response:
+                    return response.status, response.headers.get_content_type()
+            except HTTPError as error:
+                error.close()
+                return error.code, None
+
+    def test_allows_raster_types(self):
+        for endpoint, url in self.PROXIES:
+            for mime in ("image/jpeg", "image/png", "image/webp", "image/PNG; charset=binary"):
+                with self.subTest(endpoint=endpoint, mime=mime):
+                    status, served = self.fetch(endpoint, url, mime)
+                    self.assertEqual(status, 200)
+                    self.assertIn(served, server.ALLOWED_IMAGE_MIMES)
+
+    def test_rejects_other_types(self):
+        for endpoint, url in self.PROXIES:
+            for mime in ("image/svg+xml", "image/gif", "image/x-icon", "text/html", "application/octet-stream"):
+                with self.subTest(endpoint=endpoint, mime=mime):
+                    self.assertEqual(self.fetch(endpoint, url, mime), (415, None))
 
 
 if __name__ == "__main__":
