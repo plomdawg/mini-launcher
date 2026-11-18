@@ -9,6 +9,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=DM+Sans:wght@400;500;600;700&family=Rubik:wght@400;500;600;700;800&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="styles.css">
+  <script type="importmap">{"imports": {"three": "./vendor/three/three.module.js", "three/addons/": "./vendor/three/addons/"}}</script>
 </head>
 <body>
   <header class="topbar">
@@ -113,12 +114,21 @@
     <section class="workspace" aria-label="Print preview">
       <div class="workspace-head">
         <div><p class="eyebrow">PRINT LAYOUT</p><h2>Full wrap preview</h2></div>
-        <div class="preview-actions"><button class="button quiet" id="downloadSvg">Download SVG</button><button class="button primary" id="downloadPng">Export print PNG</button></div>
+        <div class="preview-actions"><div class="view-toggle" role="group" aria-label="Preview mode"><button type="button" id="view2d" aria-pressed="true">2D layout</button><button type="button" id="view3d" aria-pressed="false">3D case</button></div><button class="button quiet" id="downloadSvg">Download SVG</button><button class="button primary" id="downloadPng">Export print PNG</button></div>
       </div>
       <div class="preview-toolbar"><span class="preview-chip"><span class="chip-dot"></span> Live preview</span><span class="preview-hint">Back <span>›</span> spine <span>›</span> front</span><button id="toggleGuides" class="guide-button" aria-pressed="false">Show panel guides</button></div>
       <div class="preview-stage" id="previewStage">
         <div class="preview-empty" id="emptyHint"><span>▤</span><b>Your wrap starts here</b><small>Add cover art or customize the spine to see the print layout.</small></div>
         <svg id="preview" role="img" aria-label="Printable back, spine, and front cover preview"></svg>
+      </div>
+      <div class="preview-stage case3d-stage" id="case3dStage" hidden>
+        <div class="case3d-status" id="case3dStatus" role="status" aria-live="polite">Loading 3D preview…</div>
+        <div class="case3d-controls">
+          <button class="button" type="button" data-case3d="toggle-lid">Open</button>
+          <label class="case3d-lid"><span>Lid <output data-case3d="lid-value">0°</output></span><input type="range" min="0" max="150" step="1" value="0" data-case3d="lid" aria-label="Lid angle"></label>
+          <button class="button quiet" type="button" data-case3d="reset">Reset view</button>
+        </div>
+        <p class="case3d-hint">Drag to orbit · scroll to zoom</p>
       </div>
       <div class="preview-foot"><div class="legend"><span><i class="legend-back"></i>Back</span><span><i class="legend-spine"></i>Spine</span><span><i class="legend-front"></i>Front</span></div><span id="exportDimensions">178 × 126 mm with bleed</span></div>
       <div class="disc-panel">
