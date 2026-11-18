@@ -14,11 +14,16 @@ pub const APP: &str = "Mini Launcher";
 /// Windows keeps 128 UTF-16 units of tooltip, including the terminator.
 const TOOLTIP_MAX: usize = 127;
 
+/// Longest menu status line, in characters: the menu is as wide as its
+/// widest item, so the full error goes to the tooltip and the log instead.
+pub const STATUS_MAX: usize = 48;
+
 /// The tooltip and menu labels for one state.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct View {
     pub tooltip: String,
-    /// The (disabled) status line at the top of the menu.
+    /// The (disabled) status line at the top of the menu: one short line,
+    /// at most [`STATUS_MAX`] characters, `&` escaped for the menu.
     pub status: String,
     pub pause_label: &'static str,
 }
@@ -26,28 +31,71 @@ pub struct View {
 /// `reader` is `None` until the first open attempt has run; `config_problem`
 /// is why the config folder is unavailable, if it is.
 pub fn view(reader: Option<&ReaderState>, paused: bool, config_problem: Option<&str>) -> View {
-    let reader = match reader {
-        None => "starting…".to_owned(),
-        Some(ReaderState::Connected { port }) => format!("ready ({port})"),
+    let (reader, short) = match reader {
+        None => ("starting…".to_owned(), None),
+        Some(ReaderState::Connected { port }) => (format!("ready ({port})"), None),
         Some(ReaderState::Reconnecting { last_error, .. }) => match last_error {
-            Some(e) => format!("reader not found, retrying… ({e})"),
-            None => "reader not found, retrying…".to_owned(),
+            Some(e) => (
+                format!("reader not found, retrying… ({e})"),
+                Some(format!("reader not found: {}", shorten(e, STATUS_MAX))),
+            ),
+            None => ("reader not found, retrying…".to_owned(), None),
         },
     };
-    let (mut tooltip, mut status) = if paused {
-        ("paused".to_owned(), format!("Paused — {reader}"))
+    let short = short.unwrap_or_else(|| reader.clone());
+    let (mut tooltip, status) = if paused {
+        ("paused".to_owned(), format!("Paused — {short}"))
     } else {
-        (reader.clone(), capitalize(&reader))
+        (reader, capitalize(&short))
     };
+    // The config problem always fits: only the reader part is cut.
+    let suffix = if config_problem.is_some() {
+        CONFIG_SUFFIX
+    } else {
+        ""
+    };
+    let status = shorten(&status, STATUS_MAX - suffix.chars().count()) + suffix;
     if let Some(problem) = config_problem {
-        tooltip = format!("{tooltip}; {problem}");
-        status = format!("{status}; {problem}");
+        // First, so a long reader error cannot cut it off.
+        tooltip = format!("{problem}; {tooltip}");
     }
     View {
         tooltip: truncate_utf16(&format!("{APP} — {tooltip}"), TOOLTIP_MAX),
-        status,
+        status: status.replace('&', "&&"),
         pause_label: if paused { "Resume" } else { "Pause" },
     }
+}
+
+/// Ends the status line while the config folder is unavailable (the
+/// tooltip and the balloon say why).
+const CONFIG_SUFFIX: &str = "; config unavailable";
+
+/// The last error opening the reader, if it is not connected.
+pub fn reader_error(reader: Option<&ReaderState>) -> Option<&String> {
+    match reader {
+        Some(ReaderState::Reconnecting { last_error, .. }) => last_error.as_ref(),
+        _ => None,
+    }
+}
+
+/// `s` as one short line: its first non-blank line, whitespace collapsed,
+/// cut to at most `max` characters (never inside one), ending in `…` when
+/// cut.
+pub fn shorten(s: &str, max: usize) -> String {
+    let line = s
+        .lines()
+        .find(|l| !l.trim().is_empty())
+        .unwrap_or_default()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    if line.chars().count() <= max {
+        return line;
+    }
+    let mut out: String = line.chars().take(max.saturating_sub(1)).collect();
+    out.truncate(out.trim_end().len());
+    out.push('…');
+    out
 }
 
 fn capitalize(s: &str) -> String {
@@ -400,10 +448,7 @@ mod tests {
             v.tooltip,
             "Mini Launcher — reader not found, retrying… (no CH340 adapter found)"
         );
-        assert_eq!(
-            v.status,
-            "Reader not found, retrying… (no CH340 adapter found)"
-        );
+        assert_eq!(v.status, "Reader not found: no CH340 adapter found");
         let v = view(Some(&missing(None)), false, None);
         assert_eq!(v.tooltip, "Mini Launcher — reader not found, retrying…");
 
@@ -419,6 +464,75 @@ mod tests {
         let v = view(Some(&missing(None)), true, None);
         assert_eq!(v.tooltip, "Mini Launcher — paused");
         assert_eq!(v.status, "Paused — reader not found, retrying…");
+    }
+
+    /// Issue #106: the menu is as wide as its widest item.
+    #[test]
+    fn long_reader_errors_keep_the_status_line_short() {
+        let error = "no USB serial ports found\nis the reader plugged in and its USB-serial \
+                     driver installed? If your adapter is not a CH340 (e.g. a CP2102), pass \
+                     --port <name>";
+        let v = view(Some(&missing(Some(error))), false, None);
+        assert_eq!(v.status, "Reader not found: no USB serial ports found");
+        // The tooltip still has as much of it as fits.
+        assert!(v.tooltip.contains("is the reader plugged in"), "{v:?}");
+        // The tray logs the whole error when it changes.
+        assert_eq!(
+            reader_error(Some(&missing(Some(error)))).map(String::as_str),
+            Some(error)
+        );
+        assert_eq!(reader_error(Some(&connected())), None);
+        assert_eq!(reader_error(None), None);
+
+        let v = view(Some(&missing(Some(&"x".repeat(500)))), true, None);
+        assert_eq!(v.status.chars().count(), STATUS_MAX);
+        assert!(
+            v.status.starts_with("Paused — reader not found: xxx"),
+            "{v:?}"
+        );
+        assert!(v.status.ends_with('…'), "{v:?}");
+
+        // A config problem is never cut off, in the menu or the tooltip,
+        // however long the reader error is.
+        let problem = "config folder \"D:\\Sync\" unavailable: not mounted";
+        for paused in [false, true] {
+            for error in [error.to_owned(), "x".repeat(500)] {
+                let v = view(Some(&missing(Some(&error))), paused, Some(problem));
+                assert!(v.status.chars().count() <= STATUS_MAX, "{v:?}");
+                assert!(v.status.ends_with("…; config unavailable"), "{v:?}");
+                assert!(v.tooltip.contains(problem), "{v:?}");
+            }
+        }
+        let v = view(Some(&missing(Some(error))), false, Some(problem));
+        assert_eq!(v.status, "Reader not found: no USB se…; config unavailable");
+
+        // `&` would be a mnemonic in a menu label.
+        let v = view(Some(&missing(Some("Tom & Jerry"))), false, None);
+        assert_eq!(v.status, "Reader not found: Tom && Jerry");
+    }
+
+    #[test]
+    fn shorten_makes_one_short_line() {
+        assert_eq!(shorten("short", 10), "short");
+        assert_eq!(shorten("exactly 10", 10), "exactly 10");
+        assert_eq!(shorten("exactly 11!", 10), "exactly 1…");
+        // A space before the cut is dropped, not left before the `…`.
+        assert_eq!(shorten("abcd efghij", 6), "abcd…");
+        // First non-blank line only, whitespace collapsed.
+        assert_eq!(
+            shorten("\n  \r\n first   line \r\nsecond", 40),
+            "first line"
+        );
+        assert_eq!(shorten("tab\tand  spaces", 40), "tab and spaces");
+        assert_eq!(shorten("", 10), "");
+        // Multibyte characters count as one and are never split.
+        assert_eq!(shorten(&"é".repeat(20), 5), "éééé…");
+        assert_eq!(shorten(&"😀".repeat(20), 3), "😀😀…");
+        assert_eq!(shorten("日本語のエラーメッセージ", 6), "日本語のエ…");
+        for max in 1..30 {
+            let s = shorten(&"aé😀 ".repeat(20), max);
+            assert!(s.chars().count() <= max, "{max}: {s}");
+        }
     }
 
     #[test]
@@ -465,12 +579,13 @@ mod tests {
         let v = view(Some(&connected()), false, Some(problem));
         assert_eq!(
             v.tooltip,
-            format!("Mini Launcher — ready (COM7); {problem}")
+            format!("Mini Launcher — {problem}; ready (COM7)")
         );
-        assert_eq!(v.status, format!("Ready (COM7); {problem}"));
+        assert_eq!(v.status, "Ready (COM7); config unavailable");
         let v = view(Some(&connected()), true, Some(problem));
         assert!(
-            v.tooltip.starts_with("Mini Launcher — paused; config"),
+            v.tooltip
+                .starts_with(&format!("Mini Launcher — {problem}; paused")),
             "{v:?}"
         );
 

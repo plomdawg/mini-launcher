@@ -23,7 +23,7 @@ use mini_launcher_core::{instance, logs};
 use mini_launcher_ui::settings::{Host, ReaderStatus};
 use mini_launcher_ui::window::{Event as WindowEvent, SettingsWindow};
 use mini_launcher_ui::wizard::Link;
-use muda::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem};
+use muda::{CheckMenuItem, IsMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem};
 use tray_icon::{Icon, TrayIcon, TrayIconAttributes};
 use windows_sys::Win32::UI::WindowsAndMessaging as wm;
 
@@ -110,26 +110,24 @@ fn run(log_dir: Option<PathBuf>) -> Result<()> {
         })
         .context("cannot start the run loop")?;
 
-    let status = MenuItem::new("", false, None);
     let settings = MenuItem::new("Settings…", true, None);
     let pause = MenuItem::new("", true, None);
     let open_config = MenuItem::new("Open config", Config::default_dir().is_some(), None);
     let open_logs = MenuItem::new("Open logs folder", log_dir.is_some(), None);
     let start_at_login = CheckMenuItem::new("Start at login", true, starts_at_login(&exe), None);
     let quit = MenuItem::new("Quit", true, None);
-    let menu = Menu::new();
-    menu.append_items(&[
-        &status,
-        &PredefinedMenuItem::separator(),
+    let separator = PredefinedMenuItem::separator();
+    let items: [&dyn IsMenuItem; 7] = [
         &settings,
         &pause,
         &open_config,
         &open_logs,
         &start_at_login,
-        &PredefinedMenuItem::separator(),
+        &separator,
         &quit,
-    ])
-    .context("cannot build the tray menu")?;
+    ];
+    let mut shown_status = model::view(None, false, None).status;
+    let menu = tray_menu(&shown_status, &items).context("cannot build the tray menu")?;
     // The id is fixed so the icon's Win32 identity is known (see `balloon`).
     let tray = TrayIcon::with_id(
         "mini-launcher",
@@ -154,7 +152,7 @@ fn run(log_dir: Option<PathBuf>) -> Result<()> {
         .context("cannot start the settings window")?;
     let mut reader: Option<ReaderState> = None;
     let mut limiter = RateLimiter::new(NOTIFY_GAP);
-    let refresh = |reader: Option<&ReaderState>, config_problem: Option<&str>| {
+    let mut refresh = |reader: Option<&ReaderState>, config_problem: Option<&str>| {
         let is_paused = paused.load(Ordering::Relaxed);
         let (text, ready) = model::reader_cell(reader, is_paused);
         lock(&host.state).1 = ReaderStatus { text, ready };
@@ -162,8 +160,18 @@ fn run(log_dir: Option<PathBuf>) -> Result<()> {
         if let Err(e) = tray.set_tooltip(Some(&view.tooltip)) {
             tracing::warn!("cannot set the tray tooltip: {e}");
         }
-        status.set_text(&view.status);
         pause.set_text(view.pause_label);
+        // A menu can stay as wide as the widest text its status line ever
+        // had, so a changed status gets a fresh menu (see `tray_menu`).
+        if shown_status != view.status {
+            match tray_menu(&view.status, &items) {
+                Ok(menu) => {
+                    tray.set_menu(Some(Box::new(menu)));
+                    shown_status = view.status;
+                }
+                Err(e) => tracing::warn!("cannot rebuild the tray menu: {e}"),
+            }
+        }
         window.repaint();
     };
     refresh(None, None);
@@ -253,6 +261,16 @@ fn run(log_dir: Option<PathBuf>) -> Result<()> {
         loop {
             match rx.try_recv() {
                 Ok(Update::Reader(state)) => {
+                    // The menu only shows the first line of it.
+                    if let ReaderState::Reconnecting {
+                        last_error: Some(e),
+                        ..
+                    } = &state
+                    {
+                        if model::reader_error(reader.as_ref()) != Some(e) {
+                            tracing::info!("reader not found: {e}");
+                        }
+                    }
                     reader = Some(state);
                     refresh(reader.as_ref(), config.problem());
                 }
@@ -293,6 +311,21 @@ fn run(log_dir: Option<PathBuf>) -> Result<()> {
     // The worker notices `stop` within one poll (or one reopen attempt).
     let _ = worker.join();
     Ok(())
+}
+
+/// The tray menu: the (disabled) `status` line, a separator, then `items`.
+///
+/// Win32 caches a popup menu's width, and a shorter status set with
+/// `set_text` may leave it as wide as the longest text it ever had (#106).
+/// A fresh menu has nothing cached. The other items are reused, so their
+/// ids (and the event handling) stay the same; dropping the old menu (in
+/// `TrayIcon::set_menu`) detaches them from it.
+fn tray_menu(status: &str, items: &[&dyn IsMenuItem]) -> muda::Result<Menu> {
+    let menu = Menu::new();
+    menu.append(&MenuItem::new(status, false, None))?;
+    menu.append(&PredefinedMenuItem::separator())?;
+    menu.append_items(items)?;
+    Ok(menu)
 }
 
 /// What the settings window reads from the tray, and its way back.
