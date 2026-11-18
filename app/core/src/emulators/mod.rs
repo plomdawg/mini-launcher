@@ -90,7 +90,7 @@ pub struct RomScan {
     pub roms: Vec<RomFile>,
     /// The scan stopped early (the ROM limit or the entry budget was hit), so
     /// `roms` is only part of the folder, in directory-listing order rather
-    /// than the alphabetically first ones. UIs can say "showing first N".
+    /// than the alphabetically first ones. UIs can say there are more.
     pub truncated: bool,
 }
 

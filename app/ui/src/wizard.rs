@@ -7,8 +7,9 @@
 //! while the wizard holds one, and dropping it (Done, Cancel, closing the
 //! window) gives the reader back.
 
-use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::thread;
 
 use mini_launcher_core::config::{emulator_plan, format_uid, Config, Emulator, Game};
 use mini_launcher_core::emulators::{
@@ -285,8 +286,21 @@ impl Wizard {
         config.emulators.iter().find(|e| &e.id == id)
     }
 
-    /// Lists the chosen emulator's game files in `dir` and the folders in
-    /// it; nothing when its preset (and so its file types) is unknown.
+    /// Runs the emulator-game steps on emulator `id`. A scan made for
+    /// another emulator's file types is dropped.
+    pub fn choose_emulator(&mut self, id: Slug) {
+        if self.emu.emulator.as_ref() != Some(&id) {
+            self.emu.scan = None;
+            self.emu.scanning = None;
+        }
+        self.emu.emulator = Some(id);
+        self.emu.rom_error = None;
+    }
+
+    /// Starts listing the chosen emulator's game files in `dir` and the
+    /// folders in it, on a worker thread (a network share can be slow); see
+    /// [`Wizard::poll_scan`]. Nothing when its preset (and so its file
+    /// types) is unknown.
     pub fn scan(&mut self, dir: PathBuf, config: &Config) {
         let Some(preset) = self.emulator(config).and_then(preset_of) else {
             return;
@@ -295,8 +309,38 @@ impl Wizard {
             recurse_one_level: true,
             ..ScanOptions::default()
         };
-        let found = scan_roms(&dir, preset, opts);
-        self.emu.scan = Some((dir, found));
+        let (tx, rx) = mpsc::channel();
+        let worker = {
+            let dir = dir.clone();
+            // A newer scan drops `rx`: then this result goes nowhere.
+            move || drop(tx.send(scan_roms(&dir, preset, opts)))
+        };
+        self.emu.scan = None;
+        self.emu.scanning = Some((dir, rx));
+        if let Err(e) = thread::Builder::new().name("rom-scan".into()).spawn(worker) {
+            tracing::warn!("cannot start the folder scan: {e}");
+            self.emu.scanning = None;
+        }
+    }
+
+    /// Takes the folder scan's result once it is done; returns whether it
+    /// is still running.
+    pub fn poll_scan(&mut self) -> bool {
+        let Some((dir, rx)) = &self.emu.scanning else {
+            return false;
+        };
+        match rx.try_recv() {
+            Err(TryRecvError::Empty) => return true,
+            Ok(found) => self.emu.scan = Some((dir.clone(), found)),
+            Err(TryRecvError::Disconnected) => {}
+        }
+        self.emu.scanning = None;
+        false
+    }
+
+    /// The folder being scanned, if a scan is running.
+    pub fn scanning(&self) -> Option<&Path> {
+        self.emu.scanning.as_ref().map(|(dir, _)| dir.as_path())
     }
 
     /// The Rom step's Next. A file the library already has on this
@@ -316,7 +360,7 @@ impl Wizard {
         };
         let same = |g: &&Game| {
             matches!(&g.plan, LaunchPlan::Emulator { emulator: e, rom: r, .. }
-                if *e == emulator && r == Path::new(&rom))
+                if *e == emulator && same_path(r, Path::new(&rom)))
         };
         if let Some(game) = config.games.iter().find(same) {
             self.game = Some(game.clone());
@@ -624,6 +668,8 @@ pub struct EmuPick {
     pub rom_error: Option<String>,
     /// The folder scanned last, and the game files found in it.
     pub scan: Option<(PathBuf, RomScan)>,
+    /// The folder being scanned, and where its result will arrive.
+    scanning: Option<(PathBuf, Receiver<RomScan>)>,
     /// The game's name (Name step).
     pub name: String,
     pub name_error: Option<String>,
@@ -631,14 +677,34 @@ pub struct EmuPick {
     named: String,
 }
 
-/// The preset `emulator` was set up from (same name or exe name), which
-/// knows its game file types.
+/// The preset `emulator` was set up from (same name or exe file name),
+/// which knows its game file types.
 pub fn preset_of(emulator: &Emulator) -> Option<&'static EmulatorPreset> {
-    let exe = emulator.exe.file_stem().and_then(OsStr::to_str);
-    PRESETS.iter().find(|p| {
-        p.name.eq_ignore_ascii_case(emulator.name.trim())
-            || exe.is_some_and(|x| p.name.eq_ignore_ascii_case(x))
+    preset_in(PRESETS, emulator)
+}
+
+fn preset_in(presets: &'static [EmulatorPreset], e: &Emulator) -> Option<&'static EmulatorPreset> {
+    // The file name, from a path written for either OS.
+    let exe = e.exe.to_string_lossy();
+    let exe = exe.rsplit(['/', '\\']).next().unwrap_or_default();
+    presets.iter().find(|p| {
+        p.name.eq_ignore_ascii_case(e.name.trim())
+            || p.local_app_data_exes
+                .iter()
+                .filter_map(|parts| parts.last())
+                .any(|x| x.eq_ignore_ascii_case(exe))
     })
+}
+
+/// Whether `a` and `b` name the same file as far as text goes: on Windows
+/// case and `/` versus `\` don't matter. Nothing is looked up on disk.
+pub fn same_path(a: &Path, b: &Path) -> bool {
+    paths_match(a, b, cfg!(windows))
+}
+
+fn paths_match(a: &Path, b: &Path, windows: bool) -> bool {
+    let fold = |p: &Path| p.to_string_lossy().replace('/', "\\").to_lowercase();
+    a == b || (windows && fold(a) == fold(b))
 }
 
 const NO_READER: &str =
@@ -720,6 +786,7 @@ pub fn outcome_text(outcome: &Outcome, payload: Option<&Payload>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_util::TempDir;
     use mini_launcher_core::config::location::ConfigLocation;
     use std::cell::RefCell;
     use std::collections::VecDeque;
@@ -1211,19 +1278,25 @@ mod tests {
         Config::parse(&format!("{EDEN}{LIBRARY}")).unwrap()
     }
 
+    /// Waits for the folder scan to finish.
+    fn finish_scan(w: &mut Wizard) {
+        let start = std::time::Instant::now();
+        while w.poll_scan() {
+            assert!(start.elapsed().as_secs() < 10, "the scan never finished");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
     #[test]
     fn emulator_game_from_a_scanned_folder_gets_a_unique_suggested_id() {
         let config = eden_config();
-        let dir =
-            std::env::temp_dir().join(format!("mini-launcher-wizard-roms-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(dir.join("more")).unwrap();
+        let dir = TempDir::new("wizard-roms");
         for f in [
             "Tile Tumble [0100AB][v0].nsp",
             "more/Sky Drifter (USA).xci",
             "notes.txt",
         ] {
-            std::fs::write(dir.join(f), b"").unwrap();
+            dir.touch(f);
         }
         let mut w = Wizard::new(Ok(steam_games()));
         w.emulator_game(&config);
@@ -1231,7 +1304,10 @@ mod tests {
         assert_eq!(w.emu.emulator.as_ref().map(Slug::as_str), Some("eden"));
         assert!(!w.rom_next(&config));
         assert_eq!(w.emu.rom_error.as_deref(), Some("Choose the game file."));
-        w.scan(dir.clone(), &config);
+        w.scan(dir.to_path_buf(), &config);
+        assert_eq!(w.scanning(), Some(&*dir));
+        finish_scan(&mut w);
+        assert_eq!(w.scanning(), None);
         let found = w.emu.scan.clone().unwrap().1;
         let names: Vec<&str> = found.roms.iter().map(|r| r.name.as_str()).collect();
         assert_eq!(
@@ -1270,7 +1346,30 @@ mod tests {
             w.payload(),
             Some(Payload::Id(Slug::new("tile-tumble-deluxe").unwrap()))
         );
-        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn choosing_another_emulator_drops_the_scan() {
+        let mut config = eden_config();
+        let mut other = config.emulators[0].clone();
+        other.id = Slug::new("other").unwrap();
+        config.emulators.push(other);
+        let dir = TempDir::new("wizard-rescan");
+        dir.touch("Sky Drifter.nsp");
+        let mut w = Wizard::new(Ok(Vec::new()));
+        w.emulator_game(&config);
+        w.scan(dir.to_path_buf(), &config);
+        finish_scan(&mut w);
+        w.choose_emulator(Slug::new("eden").unwrap());
+        assert_eq!(w.emu.scan.as_ref().unwrap().1.roms.len(), 1, "same one");
+        w.choose_emulator(Slug::new("other").unwrap());
+        assert!(w.emu.scan.is_none());
+        // A scan still running is dropped too, and its result ignored.
+        w.scan(dir.to_path_buf(), &config);
+        w.choose_emulator(Slug::new("eden").unwrap());
+        assert_eq!(w.scanning(), None);
+        assert!(!w.poll_scan());
+        assert!(w.emu.scan.is_none());
     }
 
     #[test]
@@ -1278,25 +1377,29 @@ mod tests {
         let config = eden_config();
         let mut w = Wizard::new(Ok(Vec::new()));
         w.emulator_game(&config);
-        w.emu.rom = "\"D:\\Switch\\ゼルダ.nsp\"".into();
+        w.emu.rom = "\"D:\\Games\\ほしのゲーム.nsp\"".into();
         assert!(!w.rom_next(&config));
-        assert_eq!((w.emu.name.as_str(), w.slug.as_str()), ("ゼルダ", ""));
+        assert_eq!((w.emu.name.as_str(), w.slug.as_str()), ("ほしのゲーム", ""));
         w.emu.name.clear();
         assert!(!w.name_next(&config));
         assert!(w.emu.name_error.is_some() && w.slug_error.is_some());
-        w.emu.name = "ゼルダ".into();
+        w.emu.name = "ほしのゲーム".into();
         (w.slug, w.auto_slug) = ("tile-tumble".into(), false);
         assert!(!w.name_next(&config));
         assert_eq!(
             w.slug_error.as_deref(),
             Some("Another game already uses this ID.")
         );
-        w.slug = "my-switch-game".into();
+        w.slug = "my-game".into();
         assert!(w.name_next(&config));
         let LaunchPlan::Emulator { rom, .. } = &w.game.unwrap().plan else {
             panic!();
         };
-        assert_eq!(rom, Path::new("D:\\Switch\\ゼルダ.nsp"), "quotes trimmed");
+        assert_eq!(
+            rom,
+            Path::new("D:\\Games\\ほしのゲーム.nsp"),
+            "quotes trimmed"
+        );
     }
 
     #[test]
@@ -1319,15 +1422,47 @@ mod tests {
     }
 
     #[test]
-    fn presets_are_matched_by_name_or_exe() {
+    fn presets_are_matched_by_name_or_exe_file_name() {
         let config = eden_config();
         let mut eden = config.emulators[0].clone();
         assert_eq!(preset_of(&eden).map(|p| p.name), Some("Eden"));
         eden.name = "Nightly".into();
-        eden.exe = PathBuf::from("eden.exe");
+        eden.exe = PathBuf::from("D:\\Emu\\EDEN.EXE");
         assert!(preset_of(&eden).is_some());
+        eden.exe = PathBuf::from("eden");
+        assert_eq!(preset_of(&eden), None, "the exe file name, not the stem");
         eden.exe = PathBuf::from("other.exe");
         assert_eq!(preset_of(&eden), None);
+        // An exe named unlike the preset.
+        const QT: &[EmulatorPreset] = &[EmulatorPreset {
+            name: "Sample",
+            default_args: &["{rom}"],
+            rom_extensions: &["iso"],
+            local_app_data_exes: &[&["Sample", "sample-qt.exe"]],
+        }];
+        eden.exe = PathBuf::from("/opt/sample/sample-qt.exe");
+        assert_eq!(preset_in(QT, &eden).map(|p| p.name), Some("Sample"));
+        eden.exe = PathBuf::from("sample.exe");
+        assert_eq!(preset_in(QT, &eden), None);
+    }
+
+    #[test]
+    fn paths_differing_in_case_or_slashes_match_on_windows_only() {
+        let (a, b) = (Path::new("D:\\Games\\x.nsp"), Path::new("d:/games/X.NSP"));
+        assert!(paths_match(a, b, true));
+        assert!(!paths_match(a, b, false));
+        assert!(paths_match(a, a, false));
+        let c = Path::new("D:\\Games\\y.nsp");
+        assert!(!paths_match(a, c, true));
+    }
+
+    #[test]
+    fn a_game_file_already_in_the_library_in_another_case_reuses_it_on_windows() {
+        let config = eden_config();
+        let mut w = Wizard::new(Ok(Vec::new()));
+        w.emulator_game(&config);
+        w.emu.rom = "/ROMS/Tile-Tumble.nsp".into();
+        assert_eq!(w.rom_next(&config), cfg!(windows));
     }
 
     #[test]

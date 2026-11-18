@@ -66,7 +66,7 @@ impl Settings {
                 self.emulators.selected = at.position(|e| e.id == emulator.id);
                 self.screen = Screen::Emulators;
                 if let (true, Some(w)) = (self.emulators.for_wizard, &mut self.wizard) {
-                    (w.emu.emulator, w.emu.rom_error) = (Some(emulator.id), None);
+                    w.choose_emulator(emulator.id);
                     self.screen = Screen::Wizard;
                 }
             }

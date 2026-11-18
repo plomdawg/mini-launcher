@@ -5,6 +5,8 @@
 
 pub mod library;
 pub mod settings;
+#[cfg(test)]
+mod test_util;
 pub mod theme;
 pub mod transfer;
 #[cfg(feature = "window")]

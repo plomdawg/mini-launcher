@@ -552,7 +552,7 @@ fn wizard_adds_an_emulator_game_after_adding_eden() {
     h.run();
     h.get_by_label("Choose the game file.");
     h.state_mut().picked(Pick::GameFolder, roms.clone());
-    h.run();
+    finish_scan(&mut h);
     h.get_by_label("Sky Drifter").click();
     h.run();
     h.get_by_label("Next").click();
@@ -592,11 +592,13 @@ fn a_truncated_rom_scan_says_so() {
     h.state_mut().wizard_emulator();
     h.run();
     h.state_mut().picked(Pick::GameFolder, roms.clone());
-    h.run();
+    let w = h.state().wizard.as_ref().unwrap();
+    assert_eq!(w.scanning(), Some(roms.as_path()), "scanning on a worker");
+    finish_scan(&mut h);
     let w = h.state_mut().wizard.as_mut().unwrap();
     w.emu.scan.as_mut().unwrap().1.truncated = true;
     h.run();
-    h.get_by_label_contains("Showing the first 0 game files found.");
+    h.get_by_label_contains("Showing 0 game files; the folder has more.");
     h.get_by_label("Back").click();
     h.run();
     assert_eq!(h.state().wizard.as_ref().unwrap().step, Step::Pick);
@@ -735,20 +737,24 @@ fn design_screenshots() {
         }),
         ("wizard-1-emulator-file", |s| {
             emulator_wizard(s);
-            let roms = config_dir(s).join("Switch");
-            s.picked(Pick::GameFolder, roms.clone());
+            s.picked(Pick::GameFolder, config_dir(s).join("Games"));
             let w = s.wizard.as_mut().unwrap();
-            w.emu.rom = roms
-                .join("Sky Drifter [0100AB][v0].nsp")
-                .display()
-                .to_string();
+            while w.poll_scan() {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            // Shown as a Windows folder, whatever OS renders this.
+            let (dir, found) = w.emu.scan.as_mut().unwrap();
+            *dir = PathBuf::from(GAMES_DIR);
+            for rom in &mut found.roms {
+                let file = rom.path.file_name().unwrap().to_string_lossy();
+                rom.path = PathBuf::from(format!("{GAMES_DIR}\\{file}"));
+            }
+            w.emu.rom = format!("{GAMES_DIR}\\Sky Drifter [0100AB][v0].nsp");
         }),
         ("wizard-1-emulator-name", |s| {
             emulator_wizard(s);
-            let rom = config_dir(s)
-                .join("Switch")
-                .join("Sky Drifter [0100AB][v0].nsp");
-            s.wizard.as_mut().unwrap().emu.rom = rom.display().to_string();
+            let rom = format!("{GAMES_DIR}\\Sky Drifter [0100AB][v0].nsp");
+            s.wizard.as_mut().unwrap().emu.rom = rom;
             s.wizard_next();
         }),
         ("wizard-2-tap", |s| {
@@ -838,7 +844,7 @@ fn emulator_wizard(s: &mut Settings) {
     let eden = EmuForm::from_preset(&EDEN, Some(r"C:\Emulators\Eden\eden.exe".into()));
     let eden = eden.to_emulator(s.library.config().unwrap()).unwrap();
     s.library.save_emulator(&eden).unwrap();
-    let roms = config_dir(s).join("Switch");
+    let roms = config_dir(s).join("Games");
     std::fs::create_dir_all(&roms).unwrap();
     for name in [
         "Sky Drifter [0100AB][v0].nsp",
@@ -849,6 +855,25 @@ fn emulator_wizard(s: &mut Settings) {
     }
     s.add();
     s.wizard_emulator();
+}
+
+/// The game folder the emulator screenshots show.
+const GAMES_DIR: &str = r"D:\Games";
+
+/// Lets the wizard's folder scan finish.
+fn finish_scan(h: &mut Harness<'static, Settings>) {
+    let start = Instant::now();
+    loop {
+        h.run();
+        if h.state().wizard.as_ref().unwrap().scanning().is_none() {
+            break;
+        }
+        assert!(
+            start.elapsed() < Duration::from_secs(10),
+            "scan never ended"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
 }
 
 /// The wizard on the tap step for Vampire Survivors.
