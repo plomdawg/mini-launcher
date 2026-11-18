@@ -41,7 +41,7 @@
             <label class="field"><span>Spine art fit <small class="setting-source" id="spineArtFitSource">(default)</small></span><select id="spineArtFit"><option value="stretch">Stretch to spine</option><option value="cover">Fill spine (crop edges)</option><option value="contain">Fit whole image</option></select></label>
             <button class="button quiet remove-logo-button" id="removeSpineArt" type="button">Remove spine art</button>
           </div>
-          <p class="hint">600 × 900 SteamGridDB grids are 2:3, a little narrower than a DVD face (135 × 190 mm). <b>Fill</b> crops a few mm off the top and bottom (use crop position to keep a logo); <b>Fit + blurred extension</b> keeps the whole image and fills the sides with a blurred copy. Spine art (e.g. a scan of the original spine) replaces the spine fill, title, and logo; landscape images are rotated to match the spine direction. Drop an image on either tile or browse. Artwork stays in this browser unless you export a project file.</p>
+          <p class="hint">600 × 900 SteamGridDB grids are 2:3, a little narrower than a DVD insert face (129.5 × 183 mm). <b>Fill</b> crops a few mm off the top and bottom (use crop position to keep a logo); <b>Fit + blurred extension</b> keeps the whole image and fills the sides with a blurred copy. Spine art (e.g. a scan of the original spine) replaces the spine fill, title, and logo; landscape images are rotated to match the spine direction. Drop an image on either tile or browse. Artwork stays in this browser unless you export a project file.</p>
           <button class="button sgdb-open-button" id="openSgdbPicker" type="button">Choose art from SteamGridDB</button>
           <button class="button sgdb-open-button" id="openLaunchBoxPicker" type="button">Choose art from LaunchBox</button>
           <a class="steam-link" id="steamGridSearch" href="https://www.steamgriddb.com/search/grids?term=" target="_blank" rel="noopener noreferrer"><span>Search <b>SteamGridDB</b> for <span id="steamSearchTerm">game title</span></span><span aria-hidden="true">↗</span></a>
@@ -54,10 +54,10 @@
       <details class="section" open>
         <summary><span class="section-icon">▤</span><span><b>Case layout</b><small>Adjust to your printed case</small></span><span class="chevron">⌄</span></summary>
         <div class="section-body">
-          <label class="field"><span>Case size</span><select id="casePreset"><option value="dvd">DVD case (135 × 190 × 14 mm)</option><option value="mini">Legacy mini 2:3 (80 × 120 × 13 mm)</option><option value="custom">Custom</option></select></label>
+          <label class="field"><span>Case size</span><select id="casePreset"><option value="dvd">DVD insert (129.5 × 183 × 14 mm)</option><option value="mini">Legacy mini 2:3 (80 × 120 × 13 mm)</option><option value="custom">Custom</option></select></label>
           <div class="field-row">
-            <label class="field"><span>Face width <small class="setting-source" id="faceWidthSource">(default)</small> <i>mm</i></span><input type="number" id="faceWidth" min="30" max="300" step="0.5" value="135"></label>
-            <label class="field"><span>Face height <small class="setting-source" id="faceHeightSource">(default)</small> <i>mm</i></span><input type="number" id="faceHeight" min="40" max="350" step="0.5" value="190"></label>
+            <label class="field"><span>Face width <small class="setting-source" id="faceWidthSource">(default)</small> <i>mm</i></span><input type="number" id="faceWidth" min="30" max="300" step="0.5" value="129.5"></label>
+            <label class="field"><span>Face height <small class="setting-source" id="faceHeightSource">(default)</small> <i>mm</i></span><input type="number" id="faceHeight" min="40" max="350" step="0.5" value="183"></label>
           </div>
           <p class="hint" id="gridFitNote" aria-live="polite"></p>
           <div class="field-row">
@@ -136,7 +136,7 @@
         </div>
         <p class="case3d-hint">Drag to orbit · scroll to zoom</p>
       </div>
-      <div class="preview-foot"><div class="legend"><span><i class="legend-back"></i>Back</span><span><i class="legend-spine"></i>Spine</span><span><i class="legend-front"></i>Front</span></div><span id="exportDimensions">284 × 190 mm with bleed</span></div>
+      <div class="preview-foot"><div class="legend"><span><i class="legend-back"></i>Back</span><span><i class="legend-spine"></i>Spine</span><span><i class="legend-front"></i>Front</span></div><span id="exportDimensions">273 × 183 mm with bleed</span></div>
       <div class="disc-panel">
         <div class="disc-stage"><svg id="discPreview" role="img" aria-label="Printable disc label preview"></svg></div>
         <div class="disc-panel-info">

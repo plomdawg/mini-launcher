@@ -9,7 +9,7 @@
     disc: ['discFit','discDiameter','discHole']
   };
   const builtInDefaults = {
-    imageFit: 'cover', imageAnchor: 'center', spineArtFit: 'stretch', faceWidth: '135', faceHeight: '190', spineWidth: '14', bleed: '0', dpi: '300', cropMarks: false,
+    imageFit: 'cover', imageAnchor: 'center', spineArtFit: 'stretch', faceWidth: '129.5', faceHeight: '183', spineWidth: '14', bleed: '0', dpi: '300', cropMarks: false,
     spineDirection: '90', fontFamily: "'Rubik', sans-serif", spineFontSize: '8', spineColor: '#ffffff',
     textColor: '#000000', spineFillMode: 'back-front', spineTextOutline: 'auto', logoRotation: '0',
     discFit: 'cover', discDiameter: '50', discHole: '6.25'
@@ -22,7 +22,7 @@
   };
   const legacyDefaultValues = {spineWidth: ['12', '8']};
   const defaultsStorageKey = 'plomcase.settingDefaults.v1';
-  const casePresets = {dvd: ['135', '190', '14'], mini: ['80', '120', '13']};
+  const casePresets = {dvd: ['129.5', '183', '14'], mini: ['80', '120', '13']};
   // Faces used to be a fixed 2:3 ratio of the height; derive the width for data saved before faceWidth existed.
   const legacyFaceWidth = (height) => {
     const h = Number(height);
@@ -309,8 +309,8 @@
   }
 
   function buildSvg(s = readState(), includeGuides = false) {
-    const faceH = clampNumber('faceHeight', 190, 40, 350);
-    const faceW = clampNumber('faceWidth', 135, 30, 300);
+    const faceH = clampNumber('faceHeight', 183, 40, 350);
+    const faceW = clampNumber('faceWidth', 129.5, 30, 300);
     const spineW = clampNumber('spineWidth', 14, 3, 60);
     const bleed = clampNumber('bleed', 0, 0, 10);
     const trimW = faceW * 2 + spineW;

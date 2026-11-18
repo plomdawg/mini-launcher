@@ -115,8 +115,8 @@ export function createCasePreview(stage) {
 
   function readDims() {
     const s = api.getState() || {};
-    const H = num(s.faceHeight, 190, 40, 350);
-    const W = num(s.faceWidth, 135, 30, 300);
+    const H = num(s.faceHeight, 183, 40, 350);
+    const W = num(s.faceWidth, 129.5, 30, 300);
     const D = num(s.spineWidth, 14, 3, 60);
     const discD = num(s.discDiameter, 50, 5, 400);
     const holeD = Math.min(discD * .8, num(s.discHole, 6.25, 0, 400));

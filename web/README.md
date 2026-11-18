@@ -12,7 +12,7 @@ Then open <http://127.0.0.1:8784>. Opening `index.html` directly still allows lo
 
 ## Prototype features
 
-- Back, spine, and front cover in one spread. Face width, face height, and spine width are separate settings (DVD case 135 × 190 × 14 mm by default; a **Case size** preset also offers the legacy 80 × 120 × 13 mm 2:3 mini case). A note under the size fields shows how much a 2:3 grid loses or leaves over on the current face.
+- Back, spine, and front cover in one spread. Face width, face height, and spine width are separate settings (standard DVD insert 129.5 × 183 × 14 mm by default, which fits under a DVD case sleeve or on a DVD-sized printed case; a **Case size** preset also offers the legacy 80 × 120 × 13 mm 2:3 mini case). A note under the size fields shows how much a 2:3 grid loses or leaves over on the current face.
 - Drag and drop or browse for separate cover art, including 600 × 900 SteamGridDB images. The project name is printed vertically on the spine, with an optional rotated logo near its lower end.
 - Optional spine art upload for using a scan of the original spine: it replaces the spine fill, title, and logo. Choose stretch (default), fill, or fit; landscape images are rotated to match the spine direction.
 - Optional disc art for a round disc label: upload square art laid out like a full 120 mm CD, choose fill or fit, and set the printed diameter (50 mm default) and center hole (6.25 mm default). The art is scaled to the printed diameter and clipped to the disc; the center hole and the area outside the circle stay transparent. A small disc preview sits under the wrap preview, with **Download disc SVG** and **Export disc PNG** (selected DPI, bleed ring, and cut circles when cut guides are on).
