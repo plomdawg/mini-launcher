@@ -118,8 +118,8 @@ export function createCasePreview(stage) {
     const H = num(s.faceHeight, 120, 40, 350);
     const W = H * 2 / 3;
     const D = num(s.spineWidth, 13, 3, 60);
-    const discD = num(s.discDiameter, 31.75, 5, 400);
-    const holeD = Math.min(discD * .8, num(s.discHole, 4, 0, 400));
+    const discD = num(s.discDiameter, 50, 5, 400);
+    const holeD = Math.min(discD * .8, num(s.discHole, 6.25, 0, 400));
     return {H, W, D, discD, holeD};
   }
 
