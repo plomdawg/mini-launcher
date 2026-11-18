@@ -299,17 +299,14 @@ impl Wizard {
     }
 
     /// Starts listing the chosen emulator's game files in `dir` and the
-    /// folders in it, on a worker thread (a network share can be slow); see
+    /// folders below it, on a worker thread (a network share can be slow); see
     /// [`Wizard::poll_scan`]. Nothing when its preset (and so its file
     /// types) is unknown.
     pub fn scan(&mut self, dir: PathBuf, config: &Config) {
         let Some(preset) = self.emulator(config).and_then(preset_of) else {
             return;
         };
-        let opts = ScanOptions {
-            recurse_one_level: true,
-            ..ScanOptions::default()
-        };
+        let opts = ScanOptions::default();
         let (tx, rx) = mpsc::channel();
         let worker = {
             let dir = dir.clone();
@@ -1303,6 +1300,7 @@ mod tests {
         for f in [
             "Tile Tumble [0100AB][v0].nsp",
             "more/Sky Drifter (USA).xci",
+            "more/Sky Drifter/Update/Sky Drifter [UPD].nsp",
             "notes.txt",
         ] {
             dir.touch(f);
@@ -1320,8 +1318,8 @@ mod tests {
         let found = w.emu.scan.clone().unwrap().1;
         let names: Vec<&str> = found.roms.iter().map(|r| r.name.as_str()).collect();
         assert_eq!(
-            (names, found.truncated),
-            (vec!["Sky Drifter", "Tile Tumble"], false)
+            (names, found.truncated, found.skipped_updates),
+            (vec!["Sky Drifter", "Tile Tumble"], false, 1)
         );
         w.emu.rom = found.roms[1].path.display().to_string();
         assert!(!w.rom_next(&config));

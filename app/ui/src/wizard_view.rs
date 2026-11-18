@@ -347,6 +347,9 @@ fn rom(ui: &mut Ui, s: &mut Settings, c: &mut Clicks) {
         );
         theme::warning(ui, 0.0, &text);
     }
+    if let Some(text) = skipped_note(found.skipped_updates) {
+        ui.colored_label(SHADE, text);
+    }
     let (mut clicked, mut open) = (None, None);
     // Paths in the scan start with `dir` as given.
     let dir = dir.display().to_string();
@@ -379,6 +382,18 @@ fn rom(ui: &mut Ui, s: &mut Settings, c: &mut Clicks) {
 }
 
 /// A grey line in the first row of an empty list.
+/// What the scan says about the update and DLC files it left out.
+fn skipped_note(n: usize) -> Option<String> {
+    let files = match n {
+        0 => return None,
+        1 => "1 update/DLC file".to_owned(),
+        n => format!("{n} update/DLC files"),
+    };
+    Some(format!(
+        "Skipped {files}. Install updates in Eden once (File > Install Files to NAND) and they load with the base game."
+    ))
+}
+
 fn list_note(ui: &Ui, body: Rect, text: &str) {
     let at = pos2(body.min.x + 2.0 * U, body.min.y + ROW / 2.0);
     let row = Rect::from_center_size(at, vec2(0.0, ROW));

@@ -583,7 +583,7 @@ fn wizard_adds_an_emulator_game_after_adding_eden() {
 }
 
 #[test]
-fn a_truncated_rom_scan_says_so() {
+fn a_truncated_rom_scan_and_skipped_updates_say_so() {
     let host = host("wizard-scan");
     add_eden(&host);
     let roms = host.dir.join("roms");
@@ -599,6 +599,15 @@ fn a_truncated_rom_scan_says_so() {
     w.emu.scan.as_mut().unwrap().1.truncated = true;
     h.run();
     h.get_by_label_contains("Showing 0 game files; the folder has more.");
+    assert!(h.query_by_label_contains("update/DLC").is_none());
+    let w = h.state_mut().wizard.as_mut().unwrap();
+    w.emu.scan.as_mut().unwrap().1.skipped_updates = 1;
+    h.run();
+    h.get_by_label_contains("Skipped 1 update/DLC file. Install updates in Eden once");
+    let w = h.state_mut().wizard.as_mut().unwrap();
+    w.emu.scan.as_mut().unwrap().1.skipped_updates = 3;
+    h.run();
+    h.get_by_label_contains("Skipped 3 update/DLC files.");
     h.get_by_label("Back").click();
     h.run();
     assert_eq!(h.state().wizard.as_ref().unwrap().step, Step::Pick);
