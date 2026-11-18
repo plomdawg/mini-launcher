@@ -30,7 +30,7 @@
   };
   let settingDefaults = loadSettingDefaults();
   let settingOverrides = {};
-  const files = {back: null, front: null, logo: null, spine: null, disc: null};
+  const files = {back: null, front: null, logo: null, title: null, spine: null, disc: null};
   const changeListeners = [];
   let spineArtLandscape = false;
   let spineArtRevision = 0;
@@ -108,7 +108,7 @@
   function readState() {
     const values = {};
     ids.forEach((id) => { const el = $(id); values[id] = el.type === 'checkbox' ? el.checked : el.value; });
-    return {...values, settingOverrides: {...settingOverrides}, backImage: files.back, frontImage: files.front, logoImage: files.logo, spineImage: files.spine, discImage: files.disc, discFileName: files.disc ? $('discFileName').textContent : '', version: 1};
+    return {...values, settingOverrides: {...settingOverrides}, backImage: files.back, frontImage: files.front, logoImage: files.logo, titleImage: files.title, spineImage: files.spine, discImage: files.disc, discFileName: files.disc ? $('discFileName').textContent : '', version: 1};
   }
 
   function confirmDiscard(action) {
@@ -143,6 +143,7 @@
   async function applyState(state = {}) {
     state = normalizeState(state);
     const restoredLogo = await normalizeLogo(safeImage(state.logoImage));
+    const restoredTitle = await normalizeLogo(safeImage(state.titleImage));
     $('projectName').value = state.projectName || '';
     settingOverrides = inferSettingOverrides(state);
     settingIds.forEach((id) => {
@@ -155,6 +156,7 @@
     files.back = safeImage(state.backImage);
     files.front = safeImage(state.frontImage);
     files.logo = restoredLogo;
+    files.title = restoredTitle;
     files.spine = safeImage(state.spineImage);
     files.disc = safeImage(state.discImage);
     $('backFileName').textContent = state.backFileName || (files.back ? 'Image ready' : 'Add image');
@@ -162,6 +164,8 @@
     $('logoFileName').textContent = state.logoFileName || (files.logo ? 'Logo ready' : 'Add image');
     $('spineFileName').textContent = state.spineFileName || (files.spine ? 'Spine art ready' : 'Add image');
     $('removeSpineLogo').hidden = !files.logo;
+    $('titleFileName').textContent = state.titleFileName || (files.title ? 'Title logo ready' : 'Add image');
+    $('removeTitleLogo').hidden = !files.title;
     $('spineArtOptions').hidden = !files.spine;
     $('discFileName').textContent = (files.disc && typeof state.discFileName === 'string' && state.discFileName) || (files.disc ? 'Disc art ready' : 'Add image');
     $('removeDiscArt').hidden = !files.disc;
@@ -365,6 +369,29 @@
     const spine = s.spineImage ? '' : String(s.projectName || '').trim();
     const logoLength = Math.min(20, Math.max(10, faceH * .18));
     const spineCenterY = bleed + faceH / 2;
+    let logoMarkup = '', logoTop = null;
+    if (s.logoImage && !s.spineImage) {
+      const logoCenterX = spineX + spineW / 2;
+      const rotation = Number(s.logoRotation);
+      const dir = Number.isFinite(rotation) ? Math.max(-180, Math.min(180, rotation)) : 0;
+      const radians = dir * Math.PI / 180;
+      const cos = Math.abs(Math.cos(radians)), sin = Math.abs(Math.sin(radians));
+      const logoCross = Math.max(1, spineW - 2);
+      const vertical = sin > cos;
+      let boxW = vertical ? logoLength : logoCross;
+      let boxH = vertical ? logoCross : logoLength;
+      const projectedW = boxW * cos + boxH * sin;
+      const projectedH = boxW * sin + boxH * cos;
+      const scale = Math.min(1, logoCross / Math.max(.001, projectedW), logoLength / Math.max(.001, projectedH));
+      boxW *= scale;
+      boxH *= scale;
+      const finalProjectedH = boxW * sin + boxH * cos;
+      const bottomInset = 1;
+      logoTop = bleed + faceH - bottomInset - finalProjectedH;
+      const logoCenterY = logoTop + finalProjectedH / 2;
+      const imageAlign = !vertical && cos > .999 && dir > 90 ? 'xMidYMin meet' : (!vertical && cos > .999 ? 'xMidYMax meet' : 'xMidYMid meet');
+      logoMarkup = `<g transform="rotate(${dir} ${logoCenterX} ${logoCenterY})"><image href="${s.logoImage}" x="${logoCenterX-boxW/2}" y="${logoCenterY-boxH/2}" width="${boxW}" height="${boxH}" preserveAspectRatio="${imageAlign}"/></g>`;
+    }
     if (s.spineImage) {
       const dir = Number(s.spineDirection) === 90 ? 90 : -90;
       const cx = spineX + spineW / 2, cy = bleed + faceH / 2;
@@ -373,6 +400,16 @@
       const [w, h] = spineArtLandscape ? [faceH, spineW] : [spineW, faceH];
       const rotate = spineArtLandscape ? ` transform="rotate(${dir} ${cx} ${cy})"` : '';
       parts.push(`<image href="${s.spineImage}" x="${cx-w/2}" y="${cy-h/2}" width="${w}" height="${h}" preserveAspectRatio="${aspect}"${rotate}/>`);
+    } else if (s.titleImage) {
+      // Title logo: a stylized wordmark in place of the title text, laid along the spine like the
+      // text and kept clear of the bottom spine logo.
+      const dir = Number(s.spineDirection) === 90 ? 90 : -90;
+      const top = bleed + 8;
+      const bottom = logoTop !== null ? logoTop - 2 : bleed + faceH - 8;
+      const len = Math.max(4, bottom - top);
+      const cross = Math.max(1, spineW - 2);
+      const cx = spineX + spineW / 2, cy = top + len / 2;
+      parts.push(`<g transform="rotate(${dir} ${cx} ${cy})"><image href="${s.titleImage}" x="${cx-len/2}" y="${cy-cross/2}" width="${len}" height="${cross}" preserveAspectRatio="xMidYMid meet"/></g>`);
     } else if (spine) {
       const dir = Number(s.spineDirection) === 90 ? 90 : -90;
       const chars = Array.from(spine);
@@ -392,27 +429,7 @@
       const hintSize = Math.min(2.5, spineW * .55);
       parts.push(`<text x="${spineX+spineW/2}" y="${spineCenterY}" transform="rotate(90 ${spineX+spineW/2} ${spineCenterY})" text-anchor="middle" fill="${ink}" fill-opacity=".45" font-family="${font}" font-size="${hintSize}">PROJECT NAME</text>`);
     }
-    if (s.logoImage && !s.spineImage) {
-      const logoCenterX = spineX + spineW / 2;
-      const rotation = Number(s.logoRotation);
-      const dir = Number.isFinite(rotation) ? Math.max(-180, Math.min(180, rotation)) : 0;
-      const radians = dir * Math.PI / 180;
-      const cos = Math.abs(Math.cos(radians)), sin = Math.abs(Math.sin(radians));
-      const logoCross = Math.max(1, spineW - 2);
-      const vertical = sin > cos;
-      let boxW = vertical ? logoLength : logoCross;
-      let boxH = vertical ? logoCross : logoLength;
-      const projectedW = boxW * cos + boxH * sin;
-      const projectedH = boxW * sin + boxH * cos;
-      const scale = Math.min(1, logoCross / Math.max(.001, projectedW), logoLength / Math.max(.001, projectedH));
-      boxW *= scale;
-      boxH *= scale;
-      const finalProjectedH = boxW * sin + boxH * cos;
-      const bottomInset = 1;
-      const logoCenterY = bleed + faceH - bottomInset - finalProjectedH / 2;
-      const imageAlign = !vertical && cos > .999 && dir > 90 ? 'xMidYMin meet' : (!vertical && cos > .999 ? 'xMidYMax meet' : 'xMidYMid meet');
-      parts.push(`<g transform="rotate(${dir} ${logoCenterX} ${logoCenterY})"><image href="${s.logoImage}" x="${logoCenterX-boxW/2}" y="${logoCenterY-boxH/2}" width="${boxW}" height="${boxH}" preserveAspectRatio="${imageAlign}"/></g>`);
-    }
+    if (logoMarkup) parts.push(logoMarkup);
 
     if (s.cropMarks && bleed > 0) {
       const mark = Math.min(2.5, bleed * .8), gap = Math.min(.6, bleed * .2), x1=bleed, x2=bleed+trimW, y1=bleed, y2=bleed+faceH;
@@ -475,7 +492,7 @@
   function update() {
     const {svg, width, height, faceW, faceH, spineW, spineFit} = buildSvg(undefined, true);
     $('preview').outerHTML = svg.replace('<svg ', '<svg id="preview" role="img" aria-label="Printable back, spine, and front cover preview" ');
-    const ready = Boolean(files.back || files.front || files.spine || files.logo || files.disc || $('projectName').value.trim());
+    const ready = Boolean(files.back || files.front || files.spine || files.logo || files.title || files.disc || $('projectName').value.trim());
     $('previewStage').classList.toggle('has-art', ready);
     $('emptyHint').style.display = ready ? 'none' : '';
     const trimWidth = (faceW * 2 + spineW).toFixed(1);
@@ -498,6 +515,7 @@
     const fitNote = $('spineFitNote');
     fitNote.classList.remove('adjusted','tight');
     if (files.spine) fitNote.textContent = 'Spine art replaces the title and logo.';
+    else if (files.title) fitNote.textContent = 'Title logo replaces the project name text.';
     else if (!title) fitNote.textContent = 'Enter a project name to check fit.';
     else if (spineFit.reason) {
       fitNote.textContent = `Auto-fit to ${spineFit.effective.toFixed(1)} mm for ${spineFit.reason}.`;
@@ -551,7 +569,7 @@
   }
 
   function imageLabel(which) {
-    return {logo: 'spine logo', spine: 'spine art', disc: 'disc art'}[which] || `${which} cover`;
+    return {logo: 'spine logo', title: 'spine title logo', spine: 'spine art', disc: 'disc art'}[which] || `${which} cover`;
   }
 
   // Re-encode formats outside safeImage's allowlist (e.g. BMP) to PNG so they render in the
@@ -574,14 +592,15 @@
     });
   }
 
-  // Single entry point for putting an image on a target: front|back|spine|logo|disc.
+  // Single entry point for putting an image on a target: front|back|spine|logo|title|disc.
   async function applyImage(which, data, name) {
     if (!Object.prototype.hasOwnProperty.call(files, which)) throw new Error(`Unknown image target: ${which}`);
-    const safe = await ensureSafeImage(which === 'logo' ? await normalizeLogo(data) : data);
+    const safe = await ensureSafeImage(which === 'logo' || which === 'title' ? await normalizeLogo(data) : data);
     if (!safe) throw new Error('That image format is not supported. Try a PNG, JPEG, or WebP file.');
     files[which] = safe;
     $(`${which}FileName`).textContent = name;
     if (which === 'logo') $('removeSpineLogo').hidden = false;
+    if (which === 'title') $('removeTitleLogo').hidden = false;
     if (which === 'spine') $('spineArtOptions').hidden = false;
     if (which === 'disc') $('removeDiscArt').hidden = false;
     hasUnsavedChanges = true;
@@ -740,10 +759,12 @@
       const saved = normalizeState(record.state);
       const current = readState();
       const savedLogo = await normalizeLogo(safeImage(saved.logoImage));
+      const savedTitle = await normalizeLogo(safeImage(saved.titleImage));
       let dirty = current.projectName !== (saved.projectName || '')
         || current.backImage !== safeImage(saved.backImage)
         || current.frontImage !== safeImage(saved.frontImage)
         || current.logoImage !== savedLogo
+        || current.titleImage !== savedTitle
         || current.spineImage !== safeImage(saved.spineImage)
         || current.discImage !== safeImage(saved.discImage);
       const savedOverrides = inferSettingOverrides(saved);
@@ -925,11 +946,13 @@
   $('exportProject').addEventListener('click', exportProjectFile);
   $('newProject').addEventListener('click', async () => {
     if (hasUnsavedChanges ? !confirmDiscard('start a new case') : !confirm('Start a new case?')) return;
-    files.back = files.front = files.logo = files.spine = files.disc = null;
+    files.back = files.front = files.logo = files.title = files.spine = files.disc = null;
     activeProjectId = null;
     $('backFileName').textContent = $('frontFileName').textContent = 'Add image';
     $('logoFileName').textContent = 'Add image';
     $('removeSpineLogo').hidden = true;
+    $('titleFileName').textContent = 'Add image';
+    $('removeTitleLogo').hidden = true;
     await applyState({projectName:'',settingOverrides:{}});
   });
   $('importProject').addEventListener('click', () => $('projectFile').click());
@@ -1003,6 +1026,7 @@
   $('backFile').addEventListener('change', (e) => chooseImage('back', e.target));
   $('frontFile').addEventListener('change', (e) => chooseImage('front', e.target));
   $('logoFile').addEventListener('change', (e) => chooseImage('logo', e.target));
+  $('titleFile').addEventListener('change', (e) => chooseImage('title', e.target));
   $('spineFile').addEventListener('change', (e) => chooseImage('spine', e.target));
   $('discFile').addEventListener('change', (e) => chooseImage('disc', e.target));
   $('removeDiscArt').addEventListener('click', () => {
@@ -1030,6 +1054,14 @@
     hasUnsavedChanges = true;
     update();
   });
+  $('removeTitleLogo').addEventListener('click', () => {
+    if (!files.title || !confirm('Remove the spine title logo from this case?')) return;
+    files.title = null;
+    $('titleFileName').textContent = 'Add image';
+    $('removeTitleLogo').hidden = true;
+    hasUnsavedChanges = true;
+    update();
+  });
   document.querySelectorAll('.upload-card').forEach((card) => {
     const highlight = (e) => { e.preventDefault(); e.stopPropagation(); card.classList.add('dragging'); };
     card.addEventListener('dragenter', highlight);
@@ -1041,7 +1073,7 @@
     card.addEventListener('drop', (e) => {
       e.preventDefault(); e.stopPropagation(); card.classList.remove('dragging');
       const file = Array.from(e.dataTransfer.files || []).find((item) => item.type.startsWith('image/'));
-      if (file) addImage(({backFile:'back',frontFile:'front',logoFile:'logo',spineFile:'spine',discFile:'disc'})[card.htmlFor] || 'front', file);
+      if (file) addImage(({backFile:'back',frontFile:'front',logoFile:'logo',titleFile:'title',spineFile:'spine',discFile:'disc'})[card.htmlFor] || 'front', file);
       else toast('Drop an image file on an artwork tile.');
     });
   });
@@ -1196,6 +1228,7 @@
     sgdbMode = tab.dataset.mode;
     document.querySelectorAll('.sgdb-tab').forEach((item) => { const active = item === tab; item.classList.toggle('active', active); item.setAttribute('aria-selected', String(active)); });
     $('sgdbGridOptions').hidden = sgdbMode !== 'grid';
+    $('sgdbLogoOptions').hidden = sgdbMode !== 'logo';
     if (sgdbGame) loadSgdbAssets(0);
     else { $('sgdbContent').innerHTML = ''; sgdbStatus(`Search for a game to browse ${sgdbMode === 'grid' ? 'cover grids' : 'spine logos'}.`); }
   }));
@@ -1216,7 +1249,7 @@
     if (!asset) return;
     const assetUrl = safeAssetUrl(asset.url);
     if (!assetUrl) { sgdbStatus('This artwork has no secure download URL.', 'error'); return; }
-    const target = sgdbMode === 'logo' ? 'logo' : $('sgdbTarget').value;
+    const target = sgdbMode === 'logo' ? ($('sgdbLogoTarget').value === 'title' ? 'title' : 'logo') : $('sgdbTarget').value;
     if (files[target] && !confirm(`Replace the current ${imageLabel(target)} with this SteamGridDB image?`)) return;
     assetButton.disabled = true;
     sgdbStatus('Downloading artwork into this project…');
@@ -1228,7 +1261,7 @@
       const mime = source.type.startsWith('image/') ? source.type : 'image/png';
       await applyImage(target, await imageData(new Blob([source], {type: mime})), `SteamGridDB · ${sgdbGame.name}`);
       sgdbStatus(`Added ${sgdbMode === 'grid' ? 'cover grid' : 'logo'} for ${sgdbGame.name}.`);
-      toast(sgdbMode === 'grid' ? `Grid added to ${target} cover.` : 'Logo added to the spine.');
+      toast(sgdbMode === 'grid' ? `Grid added to ${target} cover.` : target === 'title' ? 'Logo added as the spine title.' : 'Logo added to the spine.');
     } catch (error) {
       const networkMessage = error instanceof TypeError ? 'Could not reach Plomcase’s image proxy. Start the app with “python server.py” and open it at http://127.0.0.1:8787.' : error.message;
       sgdbStatus(networkMessage, 'error');
@@ -1241,7 +1274,7 @@
   // No API key. The server reads a game's public images page on demand and relays images
   // from images.launchbox-app.com only. Applying goes through applyImage() (see below).
   const launchBoxTypeTargets = {'Box - Front': 'front', 'Box - Back': 'back', 'Box - Spine': 'spine', 'Disc': 'disc', 'Square': 'disc', 'Clear Logo': 'logo'};
-  const launchBoxTargetNames = {front: 'front', back: 'back', spine: 'spine', logo: 'spine logo', disc: 'disc'};
+  const launchBoxTargetNames = {front: 'front', back: 'back', spine: 'spine', logo: 'spine logo', title: 'spine title', disc: 'disc'};
   const launchBoxImagePattern = /^https:\/\/images\.launchbox-app\.com\/(?:r2_)?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.(?:jpe?g|png)$/i;
   // Types listed first (in this order) when the picker was opened from the disc section.
   // Square art is the fallback for cart-only games that have no disc scans.
