@@ -1,19 +1,19 @@
 (() => {
   const $ = (id) => document.getElementById(id);
-  const ids = ['projectName','imageFit','faceHeight','spineWidth','bleed','dpi','cropMarks','spineDirection','fontFamily','spineFontSize','spineColor','textColor','spineFillMode','spineTextOutline','logoRotation'];
+  const ids = ['projectName','imageFit','spineArtFit','faceHeight','spineWidth','bleed','dpi','cropMarks','spineDirection','fontFamily','spineFontSize','spineColor','textColor','spineFillMode','spineTextOutline','logoRotation'];
   const settingIds = ids.filter((id) => id !== 'projectName');
   const settingGroups = {
-    artwork: ['imageFit'],
+    artwork: ['imageFit','spineArtFit'],
     layout: ['faceHeight','spineWidth','bleed','dpi','cropMarks'],
     theme: ['spineDirection','fontFamily','spineFontSize','spineColor','textColor','spineFillMode','spineTextOutline','logoRotation']
   };
   const builtInDefaults = {
-    imageFit: 'cover', faceHeight: '120', spineWidth: '13', bleed: '0', dpi: '300', cropMarks: false,
+    imageFit: 'cover', spineArtFit: 'stretch', faceHeight: '120', spineWidth: '13', bleed: '0', dpi: '300', cropMarks: false,
     spineDirection: '90', fontFamily: "'Rubik', sans-serif", spineFontSize: '8', spineColor: '#ffffff',
     textColor: '#000000', spineFillMode: 'back-front', spineTextOutline: 'auto', logoRotation: '0'
   };
   const legacyDefaults = {
-    imageFit: 'cover', faceHeight: '120', spineWidth: '12', bleed: '3', dpi: '300', cropMarks: true,
+    imageFit: 'cover', spineArtFit: 'stretch', faceHeight: '120', spineWidth: '12', bleed: '3', dpi: '300', cropMarks: true,
     spineDirection: '90', fontFamily: "'Rubik', sans-serif", spineFontSize: '6', spineColor: '#ffffff',
     textColor: '#000000', spineFillMode: 'back-front', spineTextOutline: 'auto', logoRotation: '0'
   };
@@ -21,7 +21,9 @@
   const defaultsStorageKey = 'plomcase.settingDefaults.v1';
   let settingDefaults = loadSettingDefaults();
   let settingOverrides = {};
-  const files = {back: null, front: null, logo: null};
+  const files = {back: null, front: null, logo: null, spine: null};
+  let spineArtLandscape = false;
+  let spineArtRevision = 0;
   const artworkEdgeCache = new Map();
   let spineEdgeColors = {back: null, front: null};
   let spinePaletteRevision = 0;
@@ -50,7 +52,7 @@
     if (id === 'cropMarks') return typeof value === 'boolean' ? value : fallback;
     if (id === 'spineColor' || id === 'textColor') return safeColor(value, fallback);
     const choices = {
-      imageFit: ['cover', 'contain'], dpi: ['150', '300', '600'], spineDirection: ['90', '-90'],
+      imageFit: ['cover', 'contain'], spineArtFit: ['stretch', 'cover', 'contain'], dpi: ['150', '300', '600'], spineDirection: ['90', '-90'],
       fontFamily: ["'Rubik', sans-serif", "Impact, Haettenschweiler, 'Arial Narrow Bold', sans-serif"],
       spineFillMode: ['back-front','front-back','dark-blend','light-blend','back-edge','front-edge','center-mix','solid'],
       spineTextOutline: ['auto','none','white','black']
@@ -95,7 +97,7 @@
   function readState() {
     const values = {};
     ids.forEach((id) => { const el = $(id); values[id] = el.type === 'checkbox' ? el.checked : el.value; });
-    return {...values, settingOverrides: {...settingOverrides}, backImage: files.back, frontImage: files.front, logoImage: files.logo, version: 1};
+    return {...values, settingOverrides: {...settingOverrides}, backImage: files.back, frontImage: files.front, logoImage: files.logo, spineImage: files.spine, version: 1};
   }
 
   function confirmDiscard(action) {
@@ -137,11 +139,15 @@
     files.back = safeImage(state.backImage);
     files.front = safeImage(state.frontImage);
     files.logo = restoredLogo;
+    files.spine = safeImage(state.spineImage);
     $('backFileName').textContent = state.backFileName || (files.back ? 'Image ready' : 'Add image');
     $('frontFileName').textContent = state.frontFileName || (files.front ? 'Image ready' : 'Add image');
     $('logoFileName').textContent = state.logoFileName || (files.logo ? 'Logo ready' : 'Add image');
+    $('spineFileName').textContent = state.spineFileName || (files.spine ? 'Spine art ready' : 'Add image');
     $('removeSpineLogo').hidden = !files.logo;
+    $('spineArtOptions').hidden = !files.spine;
     hasUnsavedChanges = false;
+    refreshSpineArt();
     refreshSpinePalette();
     update();
   }
@@ -208,6 +214,19 @@
       spineEdgeColors = {back: back?.right || null, front: front?.left || null};
       update();
     });
+  }
+
+  function refreshSpineArt() {
+    const revision = ++spineArtRevision;
+    spineArtLandscape = false;
+    if (!files.spine) return;
+    const image = new Image();
+    image.onload = () => {
+      if (revision !== spineArtRevision) return;
+      spineArtLandscape = (image.naturalWidth || image.width) > (image.naturalHeight || image.height);
+      update();
+    };
+    image.src = files.spine;
   }
 
   function mixColor(start, end, amount) {
@@ -313,10 +332,18 @@
       imageMarkup(s.frontImage, frontX, 0, faceW + bleed, faceH + 2 * bleed, fit, 'Front cover artwork', '#30382f'),
       `<rect x="${spineX}" y="${bleed}" width="${spineW}" height="${faceH}" fill="${spinePaint}"/>`];
 
-    const spine = String(s.projectName || '').trim();
+    const spine = s.spineImage ? '' : String(s.projectName || '').trim();
     const logoLength = Math.min(20, Math.max(10, faceH * .18));
     const spineCenterY = bleed + faceH / 2;
-    if (spine) {
+    if (s.spineImage) {
+      const dir = Number(s.spineDirection) === 90 ? 90 : -90;
+      const cx = spineX + spineW / 2, cy = bleed + faceH / 2;
+      const artFit = s.spineArtFit || 'stretch';
+      const aspect = artFit === 'stretch' ? 'none' : artFit === 'contain' ? 'xMidYMid meet' : 'xMidYMid slice';
+      const [w, h] = spineArtLandscape ? [faceH, spineW] : [spineW, faceH];
+      const rotate = spineArtLandscape ? ` transform="rotate(${dir} ${cx} ${cy})"` : '';
+      parts.push(`<image href="${s.spineImage}" x="${cx-w/2}" y="${cy-h/2}" width="${w}" height="${h}" preserveAspectRatio="${aspect}"${rotate}/>`);
+    } else if (spine) {
       const dir = Number(s.spineDirection) === 90 ? 90 : -90;
       const chars = Array.from(spine);
       const units = chars.reduce((sum, ch) => sum + (ch === ' ' ? .36 : /[il.,'!|]/.test(ch) ? .34 : /[MW@#]/.test(ch) ? .86 : .63), 0);
@@ -335,7 +362,7 @@
       const hintSize = Math.min(2.5, spineW * .55);
       parts.push(`<text x="${spineX+spineW/2}" y="${spineCenterY}" transform="rotate(90 ${spineX+spineW/2} ${spineCenterY})" text-anchor="middle" fill="${ink}" fill-opacity=".45" font-family="${font}" font-size="${hintSize}">PROJECT NAME</text>`);
     }
-    if (s.logoImage) {
+    if (s.logoImage && !s.spineImage) {
       const logoCenterX = spineX + spineW / 2;
       const rotation = Number(s.logoRotation);
       const dir = Number.isFinite(rotation) ? Math.max(-180, Math.min(180, rotation)) : 0;
@@ -392,7 +419,8 @@
     $('steamSearchTerm').textContent = title || 'game title';
     const fitNote = $('spineFitNote');
     fitNote.classList.remove('adjusted','tight');
-    if (!title) fitNote.textContent = 'Enter a project name to check fit.';
+    if (files.spine) fitNote.textContent = 'Spine art replaces the title and logo.';
+    else if (!title) fitNote.textContent = 'Enter a project name to check fit.';
     else if (spineFit.reason) {
       fitNote.textContent = `Auto-fit to ${spineFit.effective.toFixed(1)} mm for ${spineFit.reason}.`;
       fitNote.classList.add('adjusted');
@@ -445,7 +473,8 @@
     const isIcoFile = /\.ico$/i.test(file.name || '');
     if (!file.type.startsWith('image/') && !isIcoFile) { toast('Choose an image file.'); return; }
     if (file.size > 40 * 1024 * 1024) { toast('Please choose an image under 40 MB.'); return; }
-    if (files[which] && !confirm(`Replace the current ${which === 'logo' ? 'spine logo' : `${which} cover`} with this image?`)) return;
+    const label = {logo: 'spine logo', spine: 'spine art'}[which] || `${which} cover`;
+    if (files[which] && !confirm(`Replace the current ${label} with this image?`)) return;
     try {
       const iconMimeKnown = /^image\/(?:x-icon|vnd\.microsoft\.icon)$/i.test(file.type);
       const source = isIcoFile && !iconMimeKnown ? new Blob([file], {type: 'image/x-icon'}) : file;
@@ -453,8 +482,10 @@
       files[which] = which === 'logo' ? await normalizeLogo(data) : data;
       $(`${which}FileName`).textContent = file.name;
       if (which === 'logo') $('removeSpineLogo').hidden = false;
+      if (which === 'spine') $('spineArtOptions').hidden = false;
       hasUnsavedChanges = true;
       if (which === 'back' || which === 'front') refreshSpinePalette();
+      else if (which === 'spine') { refreshSpineArt(); update(); }
       else update();
     } catch { toast('Could not load that image.'); }
   }
@@ -587,7 +618,8 @@
       let dirty = current.projectName !== (saved.projectName || '')
         || current.backImage !== safeImage(saved.backImage)
         || current.frontImage !== safeImage(saved.frontImage)
-        || current.logoImage !== savedLogo;
+        || current.logoImage !== savedLogo
+        || current.spineImage !== safeImage(saved.spineImage);
       const savedOverrides = inferSettingOverrides(saved);
       for (const id of settingIds) {
         if (Boolean(current.settingOverrides[id]) !== Boolean(savedOverrides[id])) { dirty = true; break; }
@@ -703,7 +735,7 @@
   $('exportProject').addEventListener('click', exportProjectFile);
   $('newProject').addEventListener('click', async () => {
     if (hasUnsavedChanges ? !confirmDiscard('start a new case') : !confirm('Start a new case?')) return;
-    files.back = files.front = files.logo = null;
+    files.back = files.front = files.logo = files.spine = null;
     activeProjectId = null;
     $('backFileName').textContent = $('frontFileName').textContent = 'Add image';
     $('logoFileName').textContent = 'Add image';
@@ -752,6 +784,16 @@
   $('backFile').addEventListener('change', (e) => chooseImage('back', e.target));
   $('frontFile').addEventListener('change', (e) => chooseImage('front', e.target));
   $('logoFile').addEventListener('change', (e) => chooseImage('logo', e.target));
+  $('spineFile').addEventListener('change', (e) => chooseImage('spine', e.target));
+  $('removeSpineArt').addEventListener('click', () => {
+    if (!files.spine || !confirm('Remove the spine art from this case?')) return;
+    files.spine = null;
+    $('spineFileName').textContent = 'Add image';
+    $('spineArtOptions').hidden = true;
+    hasUnsavedChanges = true;
+    refreshSpineArt();
+    update();
+  });
   $('removeSpineLogo').addEventListener('click', () => {
     if (!files.logo || !confirm('Remove the spine logo from this case?')) return;
     files.logo = null;
@@ -771,7 +813,7 @@
     card.addEventListener('drop', (e) => {
       e.preventDefault(); e.stopPropagation(); card.classList.remove('dragging');
       const file = Array.from(e.dataTransfer.files || []).find((item) => item.type.startsWith('image/'));
-      if (file) addImage(({backFile:'back',frontFile:'front',logoFile:'logo'})[card.htmlFor] || 'front', file);
+      if (file) addImage(({backFile:'back',frontFile:'front',logoFile:'logo',spineFile:'spine'})[card.htmlFor] || 'front', file);
       else toast('Drop an image file on an artwork tile.');
     });
   });
