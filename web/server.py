@@ -60,7 +60,7 @@ LAUNCHBOX_MAX_QUERY = 100
 LAUNCHBOX_MAX_QUERY_PATH = LAUNCHBOX_MAX_QUERY * 4 * 3
 LAUNCHBOX_MAX_RESULTS = 50
 # Image types offered in the picker, in display order. Add a type here to offer it.
-LAUNCHBOX_IMAGE_TYPES = ("Box - Front", "Box - Back", "Box - Spine", "Disc", "Clear Logo")
+LAUNCHBOX_IMAGE_TYPES = ("Box - Front", "Box - Back", "Box - Spine", "Disc", "Square", "Clear Logo")
 _LAUNCHBOX_GUID = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
 _LAUNCHBOX_IMAGE_PATH = re.compile(rf"/(?:r2_)?{_LAUNCHBOX_GUID}\.(?:jpg|jpeg|png)", re.IGNORECASE)
 _LAUNCHBOX_PAGE_PATH = re.compile(r"/games/(?:images|details)/\d{1,10}(?:-[a-z0-9-]{0,200})?|/games/results/[^/?#]{1,%d}" % LAUNCHBOX_MAX_QUERY_PATH, re.IGNORECASE)
