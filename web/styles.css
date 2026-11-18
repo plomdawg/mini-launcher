@@ -20,3 +20,4 @@ body{font-size:15px}.brand{font-size:17px}.topbar-meta,.button{font-size:13px}.e
 .spine-art-upload{height:64px;margin-top:7px}
 .spine-art-options{display:grid;gap:7px;margin-top:7px}
 .spine-art-options[hidden]{display:none}
+.disc-panel{display:flex;align-items:center;gap:18px;border:1px solid #242b25;border-radius:9px;background:#131714;padding:12px 16px;margin-bottom:12px}.disc-stage{flex:none;width:128px;height:128px;display:grid;place-items:center;background-color:#131714;background-image:radial-gradient(#2b332c 1px,transparent 1px);background-size:12px 12px;border-radius:7px}.disc-stage svg{width:112px;height:112px;filter:drop-shadow(0 6px 14px #0009);overflow:visible}.disc-panel-info{display:grid;gap:6px;min-width:0}.disc-panel h3{font-size:15px;font-weight:600;margin:0;letter-spacing:-.3px}.disc-panel .eyebrow{margin:0}.disc-dimensions{color:#768176;font:11px var(--mono)}.disc-panel .preview-actions{flex-wrap:wrap}.disc-art-upload{height:76px}
