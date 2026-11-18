@@ -176,10 +176,11 @@ fn pick(ui: &mut Ui, s: &mut Settings, c: &mut Clicks) {
     let games = w.filtered();
     let mut clicked = None;
     let mut open = None;
-    let body = theme::list(
+    let body = theme::sortable_list(
         ui,
         &[0.0, 0.62, 0.84],
         &["INSTALLED GAME", "STORE", "LIBRARY"],
+        (&mut w.sort, &[0, 1]),
         games.len(),
         |ui, i, row, cols| {
             let game = &games[i];
