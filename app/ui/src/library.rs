@@ -421,7 +421,7 @@ impl EmuForm {
 }
 
 /// Trims spaces and the quotes Explorer's "Copy as path" adds.
-fn unquote(s: &str) -> &str {
+pub(crate) fn unquote(s: &str) -> &str {
     let s = s.trim();
     s.strip_prefix('"')
         .and_then(|s| s.strip_suffix('"'))
@@ -435,7 +435,7 @@ pub fn new_id(name: &str, config: &Config) -> Slug {
 
 /// `name` as a slug (`fallback` if nothing is left), made unique: not
 /// `taken`.
-fn free_id(name: &str, fallback: &str, taken: impl Fn(&Slug) -> bool) -> Slug {
+pub(crate) fn free_id(name: &str, fallback: &str, taken: impl Fn(&Slug) -> bool) -> Slug {
     let mut base = String::new();
     for c in name.chars().flat_map(char::to_lowercase) {
         if c.is_ascii_alphanumeric() {

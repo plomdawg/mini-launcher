@@ -7,7 +7,13 @@
 //! while the wizard holds one, and dropping it (Done, Cancel, closing the
 //! window) gives the reader back.
 
-use mini_launcher_core::config::{format_uid, Config, Game};
+use std::ffi::OsStr;
+use std::path::{Path, PathBuf};
+
+use mini_launcher_core::config::{emulator_plan, format_uid, Config, Emulator, Game};
+use mini_launcher_core::emulators::{
+    display_name, scan_roms, suggest_slug, EmulatorPreset, RomScan, ScanOptions, PRESETS,
+};
 use mini_launcher_core::launch::LaunchPlan;
 use mini_launcher_core::payload::{Payload, Slug};
 use mini_launcher_core::reader::Uid;
@@ -16,7 +22,7 @@ use mini_launcher_core::steam::SteamGame;
 
 #[cfg(test)]
 use crate::library::Field;
-use crate::library::{new_id, Form, Library};
+use crate::library::{free_id, new_id, unquote, Form, Library};
 
 /// The wizard's line to the reader (see [`mini_launcher_core::session`]).
 pub trait Link {
@@ -46,10 +52,14 @@ impl Link for SessionClient {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Step {
-    /// Choose an installed Steam game, or Program...
+    /// Choose an installed Steam game, Program... or Emulator game...
     Pick,
     /// The program form (exe, args, working dir, id).
     Program,
+    /// An emulator game: the emulator and the game file.
+    Rom,
+    /// An emulator game's name and tag ID.
+    Name,
     /// Waiting for a tag on the reader.
     Tap,
     /// The tag holds another game or is bound to one: ask first.
@@ -64,7 +74,7 @@ impl Step {
     /// Position in the step bar: pick, tag, write, test.
     pub fn number(&self) -> usize {
         match self {
-            Step::Pick | Step::Program => 0,
+            Step::Pick | Step::Program | Step::Rom | Step::Name => 0,
             Step::Tap | Step::Overwrite { .. } => 1,
             Step::Writing { .. } => 2,
             Step::Test { .. } => 3,
@@ -101,6 +111,8 @@ pub struct Wizard {
     pub slug_error: Option<String>,
     /// The game being added or tagged.
     pub game: Option<Game>,
+    /// The emulator-game steps' choices.
+    pub emu: EmuPick,
     /// A warning for the current step (failed write, reader gone, ...).
     pub problem: Option<String>,
     /// Whether the reader is connected; `None` until the run loop says.
@@ -132,6 +144,7 @@ impl Wizard {
             auto_slug: true,
             slug_error: None,
             game: None,
+            emu: EmuPick::default(),
             problem: None,
             reader: None,
             launched: None,
@@ -220,19 +233,7 @@ impl Wizard {
     /// (then call [`Wizard::begin`]).
     pub fn program_next(&mut self, form: &mut Form, config: &Config) -> bool {
         form.problem = None;
-        self.slug_error = None;
-        let slug = match Slug::new(self.slug.trim()) {
-            Ok(slug) if config.by_id(&slug).is_some() => {
-                self.slug_error = Some("Another game already uses this ID.".to_owned());
-                None
-            }
-            Ok(slug) => Some(slug),
-            Err(_) => {
-                let e = "Use 1-64 lowercase letters, digits and dashes, e.g. my-game.";
-                self.slug_error = Some(e.to_owned());
-                None
-            }
-        };
+        let slug = self.checked_slug(config);
         form.id = slug.clone();
         let game = form.to_game(config);
         form.id = None;
@@ -251,6 +252,124 @@ impl Wizard {
                 false
             }
         }
+    }
+
+    /// The typed tag ID if it is valid and no other game has it; else
+    /// `None`, with `slug_error` saying why.
+    fn checked_slug(&mut self, config: &Config) -> Option<Slug> {
+        let error = match Slug::new(self.slug.trim()) {
+            Ok(slug) if config.by_id(&slug).is_none() => {
+                self.slug_error = None;
+                return Some(slug);
+            }
+            Ok(_) => "Another game already uses this ID.",
+            Err(_) => "Use 1-64 lowercase letters, digits and dashes, e.g. my-game.",
+        };
+        self.slug_error = Some(error.to_owned());
+        None
+    }
+
+    /// Opens the emulator-game steps, on the first configured emulator.
+    pub fn emulator_game(&mut self, config: &Config) {
+        let first = config.emulators.first().map(|e| e.id.clone());
+        self.emu = EmuPick {
+            emulator: first,
+            ..EmuPick::default()
+        };
+        self.step = Step::Rom;
+    }
+
+    /// The chosen emulator, if it is (still) in `config`.
+    pub fn emulator<'c>(&self, config: &'c Config) -> Option<&'c Emulator> {
+        let id = self.emu.emulator.as_ref()?;
+        config.emulators.iter().find(|e| &e.id == id)
+    }
+
+    /// Lists the chosen emulator's game files in `dir` and the folders in
+    /// it; nothing when its preset (and so its file types) is unknown.
+    pub fn scan(&mut self, dir: PathBuf, config: &Config) {
+        let Some(preset) = self.emulator(config).and_then(preset_of) else {
+            return;
+        };
+        let opts = ScanOptions {
+            recurse_one_level: true,
+            ..ScanOptions::default()
+        };
+        let found = scan_roms(&dir, preset, opts);
+        self.emu.scan = Some((dir, found));
+    }
+
+    /// The Rom step's Next. A file the library already has on this
+    /// emulator reuses that entry and moves on to the tag (returns `true`:
+    /// then call [`Wizard::begin`]); else on to the Name step, with a name
+    /// and tag ID made from the file name.
+    pub fn rom_next(&mut self, config: &Config) -> bool {
+        let rom = unquote(&self.emu.rom).to_owned();
+        let emulator = self.emulator(config).map(|e| e.id.clone());
+        self.emu.rom_error = match (&emulator, rom.is_empty()) {
+            (None, _) => Some("Choose an emulator, or add Eden.".to_owned()),
+            (_, true) => Some("Choose the game file.".to_owned()),
+            _ => None,
+        };
+        let Some(emulator) = emulator.filter(|_| !rom.is_empty()) else {
+            return false;
+        };
+        let same = |g: &&Game| {
+            matches!(&g.plan, LaunchPlan::Emulator { emulator: e, rom: r, .. }
+                if *e == emulator && r == Path::new(&rom))
+        };
+        if let Some(game) = config.games.iter().find(same) {
+            self.game = Some(game.clone());
+            return true;
+        }
+        if self.emu.named != rom {
+            // The file name, from a path typed for either OS.
+            let file = rom.rsplit(['/', '\\']).next().unwrap_or_default();
+            let stem = Path::new(file).file_stem().unwrap_or_default();
+            self.emu.name = display_name(&stem.to_string_lossy());
+            self.emu.named = rom;
+            self.auto_slug = true;
+        }
+        self.emu.name_error = None;
+        self.slug_error = None;
+        self.follow_rom_name(config);
+        self.step = Step::Name;
+        false
+    }
+
+    /// Keeps the tag ID in step with the emulator game's name until the
+    /// user edits it: the name's slug, made unique; empty (so one must be
+    /// typed) when the name has nothing to make one from.
+    pub fn follow_rom_name(&mut self, config: &Config) {
+        if self.auto_slug {
+            let taken = |id: &Slug| config.by_id(id).is_some();
+            let slug = suggest_slug(&self.emu.name).map(|s| free_id(s.as_str(), "game", taken));
+            self.slug = slug.map(|s| s.as_str().to_owned()).unwrap_or_default();
+        }
+    }
+
+    /// The Name step's Next; returns whether the wizard moved on (then call
+    /// [`Wizard::begin`]).
+    pub fn name_next(&mut self, config: &Config) -> bool {
+        let name = self.emu.name.trim().to_owned();
+        self.emu.name_error = name.is_empty().then(|| "Enter a name.".to_owned());
+        let slug = self.checked_slug(config);
+        let Some(emulator) = self.emulator(config) else {
+            // Removed outside the app meanwhile.
+            self.step = Step::Rom;
+            return self.rom_next(config);
+        };
+        let (Some(id), false) = (slug, name.is_empty()) else {
+            return false;
+        };
+        let rom = PathBuf::from(unquote(&self.emu.rom));
+        self.game = Some(Game {
+            id,
+            name,
+            uid: None,
+            plan: emulator_plan(emulator, rom),
+        });
+        true
     }
 
     /// Goes to the tap step with `link` to the reader (`None`: this app has
@@ -391,13 +510,18 @@ impl Wizard {
         }
     }
 
-    /// Back from the program form to the list.
+    /// Back from the program form or the emulator-game steps.
     pub fn back(&mut self, form: &mut Form) {
-        if self.step == Step::Program {
-            form.errors.clear();
-            self.slug_error = None;
-            self.step = Step::Pick;
-        }
+        self.step = match self.step {
+            Step::Program => {
+                form.errors.clear();
+                Step::Pick
+            }
+            Step::Rom => Step::Pick,
+            Step::Name => Step::Rom,
+            _ => return,
+        };
+        self.slug_error = None;
     }
 
     /// The test step's "Save again", after saving failed.
@@ -489,6 +613,32 @@ impl Wizard {
     pub fn armed(&self) -> bool {
         self.has_reader() && self.reader.is_some()
     }
+}
+
+/// The emulator-game steps' choices, as typed or picked.
+#[derive(Debug, Default)]
+pub struct EmuPick {
+    pub emulator: Option<Slug>,
+    /// The game file.
+    pub rom: String,
+    pub rom_error: Option<String>,
+    /// The folder scanned last, and the game files found in it.
+    pub scan: Option<(PathBuf, RomScan)>,
+    /// The game's name (Name step).
+    pub name: String,
+    pub name_error: Option<String>,
+    /// The file `name` was made from, so Back then Next keeps an edit.
+    named: String,
+}
+
+/// The preset `emulator` was set up from (same name or exe name), which
+/// knows its game file types.
+pub fn preset_of(emulator: &Emulator) -> Option<&'static EmulatorPreset> {
+    let exe = emulator.exe.file_stem().and_then(OsStr::to_str);
+    PRESETS.iter().find(|p| {
+        p.name.eq_ignore_ascii_case(emulator.name.trim())
+            || exe.is_some_and(|x| p.name.eq_ignore_ascii_case(x))
+    })
 }
 
 const NO_READER: &str =
@@ -1053,6 +1203,131 @@ mod tests {
         // No reader in this host: only Skip.
         w.begin(None);
         assert_eq!(w.problem.as_deref(), Some(NO_READER));
+    }
+
+    const EDEN: &str = "[[emulators]]\nid = \"eden\"\nname = \"Eden\"\nexe = 'C:\\Eden\\eden.exe'\nargs = [\"-g\", \"{rom}\"]\n\n[[games]]\nid = \"tile-tumble\"\nname = \"Tile Tumble\"\nemulator = \"eden\"\nrom = '/roms/tile-tumble.nsp'\n\n";
+
+    fn eden_config() -> Config {
+        Config::parse(&format!("{EDEN}{LIBRARY}")).unwrap()
+    }
+
+    #[test]
+    fn emulator_game_from_a_scanned_folder_gets_a_unique_suggested_id() {
+        let config = eden_config();
+        let dir =
+            std::env::temp_dir().join(format!("mini-launcher-wizard-roms-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("more")).unwrap();
+        for f in [
+            "Tile Tumble [0100AB][v0].nsp",
+            "more/Sky Drifter (USA).xci",
+            "notes.txt",
+        ] {
+            std::fs::write(dir.join(f), b"").unwrap();
+        }
+        let mut w = Wizard::new(Ok(steam_games()));
+        w.emulator_game(&config);
+        assert_eq!(w.step, Step::Rom);
+        assert_eq!(w.emu.emulator.as_ref().map(Slug::as_str), Some("eden"));
+        assert!(!w.rom_next(&config));
+        assert_eq!(w.emu.rom_error.as_deref(), Some("Choose the game file."));
+        w.scan(dir.clone(), &config);
+        let found = w.emu.scan.clone().unwrap().1;
+        let names: Vec<&str> = found.roms.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(
+            (names, found.truncated),
+            (vec!["Sky Drifter", "Tile Tumble"], false)
+        );
+        w.emu.rom = found.roms[1].path.display().to_string();
+        assert!(!w.rom_next(&config));
+        assert_eq!(w.step, Step::Name);
+        assert_eq!(w.emu.name, "Tile Tumble");
+        assert_eq!(w.slug, "tile-tumble-2", "the suggestion, made unique");
+        // An edited name is kept across Back and Next; the id follows it.
+        w.emu.name = "Tile Tumble Deluxe".into();
+        w.follow_rom_name(&config);
+        w.back(&mut Form::new());
+        assert_eq!(w.step, Step::Rom);
+        assert!(!w.rom_next(&config));
+        assert_eq!(
+            (w.emu.name.as_str(), w.slug.as_str()),
+            ("Tile Tumble Deluxe", "tile-tumble-deluxe")
+        );
+        assert!(w.name_next(&config));
+        let game = w.game.clone().unwrap();
+        let LaunchPlan::Emulator {
+            emulator,
+            rom,
+            args,
+            ..
+        } = &game.plan
+        else {
+            panic!("{game:?}");
+        };
+        assert_eq!((emulator.as_str(), rom), ("eden", &found.roms[1].path));
+        assert_eq!(args, &["-g".to_owned(), rom.display().to_string()]);
+        assert_eq!(
+            w.payload(),
+            Some(Payload::Id(Slug::new("tile-tumble-deluxe").unwrap()))
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn emulator_game_ids_are_required_when_nothing_can_be_suggested() {
+        let config = eden_config();
+        let mut w = Wizard::new(Ok(Vec::new()));
+        w.emulator_game(&config);
+        w.emu.rom = "\"D:\\Switch\\ゼルダ.nsp\"".into();
+        assert!(!w.rom_next(&config));
+        assert_eq!((w.emu.name.as_str(), w.slug.as_str()), ("ゼルダ", ""));
+        w.emu.name.clear();
+        assert!(!w.name_next(&config));
+        assert!(w.emu.name_error.is_some() && w.slug_error.is_some());
+        w.emu.name = "ゼルダ".into();
+        (w.slug, w.auto_slug) = ("tile-tumble".into(), false);
+        assert!(!w.name_next(&config));
+        assert_eq!(
+            w.slug_error.as_deref(),
+            Some("Another game already uses this ID.")
+        );
+        w.slug = "my-switch-game".into();
+        assert!(w.name_next(&config));
+        let LaunchPlan::Emulator { rom, .. } = &w.game.unwrap().plan else {
+            panic!();
+        };
+        assert_eq!(rom, Path::new("D:\\Switch\\ゼルダ.nsp"), "quotes trimmed");
+    }
+
+    #[test]
+    fn a_game_file_already_in_the_library_reuses_its_entry() {
+        let config = eden_config();
+        let mut w = Wizard::new(Ok(Vec::new()));
+        w.emulator_game(&config);
+        w.emu.rom = "/roms/tile-tumble.nsp".into();
+        assert!(w.rom_next(&config), "straight to the tag");
+        assert_eq!(w.game.unwrap().id.as_str(), "tile-tumble");
+        // No emulator set up: Next says so.
+        let empty = Config::parse(LIBRARY).unwrap();
+        let mut w = Wizard::new(Ok(Vec::new()));
+        w.emulator_game(&empty);
+        w.emu.rom = "/roms/x.nsp".into();
+        assert!(!w.rom_next(&empty));
+        assert!(w.emu.rom_error.as_deref().unwrap().contains("add Eden"));
+        w.back(&mut Form::new());
+        assert_eq!(w.step, Step::Pick);
+    }
+
+    #[test]
+    fn presets_are_matched_by_name_or_exe() {
+        let config = eden_config();
+        let mut eden = config.emulators[0].clone();
+        assert_eq!(preset_of(&eden).map(|p| p.name), Some("Eden"));
+        eden.name = "Nightly".into();
+        eden.exe = PathBuf::from("eden.exe");
+        assert!(preset_of(&eden).is_some());
+        eden.exe = PathBuf::from("other.exe");
+        assert_eq!(preset_of(&eden), None);
     }
 
     #[test]

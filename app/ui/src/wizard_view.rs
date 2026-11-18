@@ -36,6 +36,8 @@ pub fn show(ui: &mut Ui, s: &mut Settings) {
         ui.with_layout(Layout::top_down(Align::Min), |ui| match &step {
             Step::Pick => pick(ui, s, &mut c),
             Step::Program => program(ui, s),
+            // Their screens come with the next change.
+            Step::Rom | Step::Name => {}
             Step::Tap | Step::Overwrite { .. } | Step::Writing { .. } => tap(ui, s),
             Step::Test { outcome } => test(ui, s, outcome),
         });
@@ -121,7 +123,7 @@ fn buttons(ui: &mut Ui, step: &Step, s: &Settings, c: &mut Clicks) {
                 c.save_again = theme::button(ui, "Save again", true, false).clicked();
             }
         }
-        Step::Pick | Step::Program => {
+        Step::Pick | Step::Program | Step::Rom | Step::Name => {
             c.cancel = theme::button(ui, "Cancel", true, false).clicked();
             let ready = step == &Step::Program || w.is_some_and(|w| w.selected.is_some());
             c.next = theme::button(ui, "Next", ready, true).clicked();
