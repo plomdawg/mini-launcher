@@ -341,6 +341,7 @@ fn browse(
             .add_filter("All files", &["*"])
             .pick_file(),
         settings::Pick::Cwd => dialog.set_title("Choose the working folder").pick_folder(),
+        settings::Pick::Rom => dialog.set_title("Choose the game file").pick_file(),
     }
 }
 

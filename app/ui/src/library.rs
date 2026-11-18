@@ -7,7 +7,7 @@ use std::time::SystemTime;
 
 use mini_launcher_core::config::edit::ConfigDocument;
 use mini_launcher_core::config::location::ConfigLocation;
-use mini_launcher_core::config::{check_rom_arg, Config, Emulator, Game};
+use mini_launcher_core::config::{check_rom_arg, emulator_plan, Config, Emulator, Game};
 use mini_launcher_core::emulators::EmulatorPreset;
 use mini_launcher_core::launch::LaunchPlan;
 use mini_launcher_core::payload::Slug;
@@ -220,6 +220,8 @@ pub enum Field {
     Exe,
     Args,
     Cwd,
+    /// An emulator game's ROM file.
+    Rom,
 }
 
 /// The edit form: text as typed, turned into a [`Game`] on save.
@@ -234,6 +236,9 @@ pub struct Form {
     pub exe: String,
     pub args: String,
     pub cwd: String,
+    /// The emulator an emulator game runs on (then `steam` is ignored).
+    pub emulator: Option<Slug>,
+    pub rom: String,
     /// The bound tag UID; cleared by Unbind.
     pub uid: Option<Vec<u8>>,
     /// Errors from the last save attempt, shown next to their fields.
@@ -270,8 +275,10 @@ impl Form {
                     .map(|c| c.display().to_string())
                     .unwrap_or_default();
             }
-            // Not editable in the form yet (Settings::edit refuses them).
-            LaunchPlan::Emulator { .. } => {}
+            LaunchPlan::Emulator { emulator, rom, .. } => {
+                form.emulator = Some(emulator.clone());
+                form.rom = rom.display().to_string();
+            }
         }
         form
     }
@@ -291,7 +298,22 @@ impl Form {
         if name.is_empty() {
             errors.push((Field::Name, "Enter a name.".to_owned()));
         }
-        let plan = if self.steam {
+        let plan = if let Some(id) = &self.emulator {
+            let rom = unquote(&self.rom);
+            let emulator = config.emulators.iter().find(|e| &e.id == id);
+            match (emulator, rom.is_empty()) {
+                (None, _) => {
+                    let e = "This emulator is no longer in the library.";
+                    errors.push((Field::Rom, e.to_owned()));
+                    None
+                }
+                (_, true) => {
+                    errors.push((Field::Rom, "Choose the game file.".to_owned()));
+                    None
+                }
+                (Some(e), false) => Some(emulator_plan(e, PathBuf::from(rom))),
+            }
+        } else if self.steam {
             match self.app_id.trim().parse::<u32>() {
                 Ok(appid) if appid > 0 => Some(LaunchPlan::Steam { appid }),
                 _ => {

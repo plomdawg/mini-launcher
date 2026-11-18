@@ -376,7 +376,7 @@ fn add_eden(host: &TestHost) {
 }
 
 #[test]
-fn emulator_games_are_labelled_and_point_to_config_toml() {
+fn emulator_games_are_labelled_and_edited_in_the_form() {
     let host = host("emulator-game");
     add_eden(&host);
     let mut h = harness(host.clone(), 1.0);
@@ -391,12 +391,32 @@ fn emulator_games_are_labelled_and_point_to_config_toml() {
     h.run();
     h.get_by_label("Edit").click();
     h.run();
-    assert_eq!(h.state().screen, Screen::Library);
-    h.get_by_label("\"MK8\" uses an emulator; edit it in config.toml for now.");
-    // Selecting another game clears it.
-    h.get_by_label("Hades").click();
+    assert_eq!(h.state().screen, Screen::Edit);
+    h.get_by_label("Runs on");
+    h.state_mut().form.rom = String::new();
+    h.get_by_label("Save").click();
     h.run();
-    assert!(h.state().problem.is_none());
+    h.get_by_label("Choose the game file.");
+    h.state_mut().form.rom = "E:\\mk8 v2.nsp".into();
+    h.get_by_label("Save").click();
+    h.run();
+    assert_eq!(h.state().screen, Screen::Library);
+    let text = host.config();
+    assert!(text.contains("rom = 'E:\\mk8 v2.nsp'"), "{text}");
+
+    // A Steam game can be moved onto the emulator.
+    h.state_mut().edit(0);
+    h.run();
+    h.get_by_label("Emulator").click();
+    h.run();
+    h.state_mut().form.rom = "D:\\hades.nsp".into();
+    h.get_by_label("Save").click();
+    h.run();
+    let hades = h.state().library.games()[0].clone();
+    assert!(
+        matches!(hades.plan, LaunchPlan::Emulator { .. }),
+        "{hades:?}"
+    );
 }
 
 #[test]
