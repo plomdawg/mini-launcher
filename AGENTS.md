@@ -107,8 +107,9 @@ Tag contents are untrusted input.
   their own SteamGridDB API key; the server only proxies SteamGridDB and LaunchBox Games DB
   (keyless, allowlisted hosts, on demand) and stores nothing. Tests: `python -m unittest discover -s web/tests`.
 - The server listens on `PLOMCASE_HOST` (default 0.0.0.0) and `PORT` (default 8787).
-- Planned rework: templates per printed part (case wrap, cart label, CD label/insert), split
-  `app.js` into modules, tests for layout math.
+- Printed parts today: case wrap (DVD insert default, mini-case preset) and round disc label.
+  Deferred ideas: a cart-label template, splitting `app.js` into modules with layout-math tests,
+  and per-client rate limits on the art proxies for public deployments.
 
 ## Selling guardrails
 
@@ -134,7 +135,8 @@ Tag contents are untrusted input.
    backup and optional synced config folder.
 5. **M5 Emulators** — generic emulator + ROM launch type (tag only names a configured entry),
    starting with a Switch emulator.
-6. **M6 Box-art generator** — rework `web/`, deploy on a `*.plom.one` subdomain.
+6. **M6 Box-art generator** — done: case wrap + disc label, SteamGridDB/LaunchBox art, 3D
+   preview; deployed at case.plom.one.
 7. **M7 Shop** — BOM, assembly guide, name/trademark check, listings, code signing.
 
 - Later: Linux parity (udev rule, `systemd --user` unit, Linux release asset).
