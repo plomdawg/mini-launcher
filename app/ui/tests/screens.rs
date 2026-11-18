@@ -9,12 +9,14 @@ use std::time::{Duration, Instant};
 use egui_kittest::{kittest::Queryable, Harness};
 use mini_launcher_core::config::location::ConfigLocation;
 use mini_launcher_core::config::Config;
+use mini_launcher_core::emulators::EDEN;
 use mini_launcher_core::launch::LaunchPlan;
 use mini_launcher_core::reader::{Simulated, Uid};
 use mini_launcher_core::reconnect::{Backoff, Reconnector};
 use mini_launcher_core::runner::{Notice, Runner};
 use mini_launcher_core::session::{self, SessionServer, Sessions, WriteFailure};
 use mini_launcher_core::steam::SteamGame;
+use mini_launcher_ui::library::EmuForm;
 use mini_launcher_ui::settings::{self, Host, ReaderStatus, Screen, Settings};
 use mini_launcher_ui::theme;
 use mini_launcher_ui::wizard::{Link, Outcome, Step};
@@ -367,6 +369,93 @@ fn remove_targets_the_game_by_id_after_outside_edits() {
     assert_eq!(host.config(), "");
 }
 
+/// Adds Eden and an "MK8" game on it to the host's config.
+fn add_eden(host: &TestHost) {
+    let eden = "\n[[emulators]]\nid = \"eden\"\nname = \"Eden\"\nexe = 'C:\\Eden\\eden.exe'\nargs = [\"-g\", \"{rom}\"]\n\n[[games]]\nid = \"mk8\"\nname = \"MK8\"\nemulator = \"eden\"\nrom = 'D:\\mk8.nsp'\n";
+    std::fs::write(host.dir.join("config.toml"), host.config() + eden).unwrap();
+}
+
+#[test]
+fn emulator_games_are_labelled_and_point_to_config_toml() {
+    let host = host("emulator-game");
+    add_eden(&host);
+    let mut h = harness(host.clone(), 1.0);
+    h.run();
+    let mk8 = h.state().library.games().last().unwrap().clone();
+    assert_eq!(settings::launch_label(&mk8.plan), "Emulator");
+    assert_eq!(
+        settings::launch_label(&LaunchPlan::Steam { appid: 620 }),
+        "Steam 620"
+    );
+    h.get_by_label("MK8").click();
+    h.run();
+    h.get_by_label("Edit").click();
+    h.run();
+    assert_eq!(h.state().screen, Screen::Library);
+    h.get_by_label("\"MK8\" uses an emulator; edit it in config.toml for now.");
+    // Selecting another game clears it.
+    h.get_by_label("Hades").click();
+    h.run();
+    assert!(h.state().problem.is_none());
+}
+
+#[test]
+fn emulators_are_added_edited_and_removed() {
+    let host = host("emulators");
+    let mut h = harness(host.clone(), 1.0);
+    h.run();
+    h.get_by_label("Emulators").click();
+    h.run();
+    assert_eq!(h.state().screen, Screen::Emulators);
+    h.get_by_label("Add Eden").click();
+    h.run();
+    assert_eq!(h.state().screen, Screen::EditEmulator);
+    let form = &mut h.state_mut().emulators.form;
+    assert_eq!(
+        (form.name.as_str(), form.args.as_str()),
+        ("Eden", "-f -g {rom}")
+    );
+    form.exe = "C:\\Eden\\eden.exe".into();
+    form.args = "-f -g".into();
+    h.get_by_label("Save").click();
+    h.run();
+    // The core's {rom} rule, next to the field; nothing is saved.
+    h.get_by_label("args must contain \"{rom}\" exactly once");
+    assert!(!host.config().contains("[[emulators]]"));
+    h.state_mut().emulators.form.args = "-f -g {rom}".into();
+    h.get_by_label("Save").click();
+    h.run();
+    assert_eq!(h.state().screen, Screen::Emulators);
+    h.get_by_label("Edit").click();
+    h.run();
+    h.state_mut().emulators.form.name = "Eden Nightly".into();
+    h.get_by_label("Save").click();
+    h.run();
+    let text = host.config();
+    assert!(
+        text.contains("id = \"eden\"") && text.contains("\"Eden Nightly\""),
+        "{text}"
+    );
+    h.get_by_label("Remove").click();
+    h.run();
+    h.get_all_by_label("Remove").last().unwrap().click();
+    h.run();
+    assert!(!host.config().contains("[[emulators]]"));
+    assert_eq!(host.saves.load(Ordering::SeqCst), 3);
+
+    // Still used by a game: says which, and asks nothing.
+    add_eden(&host);
+    h.run();
+    h.get_by_label("Remove").click();
+    h.run();
+    let problem = h.state().emulators.problem.clone().unwrap();
+    assert!(problem.contains("still used by \"mk8\""), "{problem}");
+    assert!(h.state().emulators.confirm_remove.is_none());
+    h.get_by_label("Back").click();
+    h.run();
+    assert_eq!(h.state().screen, Screen::Library);
+}
+
 #[test]
 fn wizard_adds_a_steam_game_by_writing_the_tag_while_launches_wait() {
     let (host, mut run_loop) = host_with_loop("wizard");
@@ -525,7 +614,7 @@ fn design_screenshots() {
     let out = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/design");
     std::fs::create_dir_all(&out).unwrap();
     type Setup = fn(&mut Settings);
-    let shots: [(&str, Setup); 14] = [
+    let shots: [(&str, Setup); 16] = [
         ("library", |_| {}),
         ("edit-game", |s| s.edit(0)),
         ("add-game-errors", |s| {
@@ -591,6 +680,18 @@ fn design_screenshots() {
             let out = dir.join("mini-launcher-backup-2026-11-17.toml");
             s.export_to(out.clone());
             s.import_from(out);
+        }),
+        ("emulators", |s| {
+            let eden = EmuForm::from_preset(&EDEN, Some(r"C:\Emulators\Eden\eden.exe".into()));
+            let eden = eden.to_emulator(s.library.config().unwrap()).unwrap();
+            s.library.save_emulator(&eden).unwrap();
+            s.open_emulators();
+        }),
+        ("edit-emulator", |s| {
+            s.add_emulator();
+            s.emulators.form.exe.clear();
+            s.emulators.form.args = "-f -g".into();
+            s.save_emulator();
         }),
         ("config-folder", |s| s.open_folder()),
         ("config-folder-existing", |s| {
