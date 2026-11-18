@@ -118,8 +118,10 @@ Tag contents are untrusted input.
 - Never sell items printed with commercial game art or publisher logos; never ship art presets.
 - No console names or logos in product names, SKUs, or listings. Sold shells are "inspired-by"
   designs.
-- Software is dual-licensed MIT OR Apache-2.0 (`LICENSE-MIT`, `LICENSE-APACHE`). Hardware
-  license still TBD (leaning CERN-OHL-W or CC BY-SA 4.0 — no NC licenses).
+- Software is GPL-3.0-or-later (`LICENSE`), copyright plomdawg and Mini Launcher contributors
+  (releases up to `app-v0.4.0` were MIT OR Apache-2.0). New dependencies must be
+  GPL-3.0-compatible (MIT, Apache-2.0, BSD, ISC, Zlib, MPL-2.0 are fine). Hardware license still
+  TBD (leaning CERN-OHL-W or CC BY-SA 4.0 — no NC licenses).
 
 ## Milestones
 

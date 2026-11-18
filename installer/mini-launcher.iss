@@ -55,8 +55,7 @@ Name: "autostart"; Description: "Start {#AppName} when I sign in"
 [Files]
 Source: "{#PayloadDir}\{#TrayExe}"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#PayloadDir}\mini-launcher.exe"; DestDir: "{app}"; Flags: ignoreversion
-Source: "..\LICENSE-MIT"; DestDir: "{app}"; Flags: ignoreversion
-Source: "..\LICENSE-APACHE"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\LICENSE"; DestDir: "{app}"; DestName: "LICENSE.txt"; Flags: ignoreversion
 ; The settings window embeds Departure Mono; the OFL travels with it.
 Source: "..\app\assets\fonts\DepartureMono-OFL.txt"; DestDir: "{app}"; Flags: ignoreversion
 

@@ -6,7 +6,7 @@ members = ["core", "cli", "ui"]
 version = "0.4.0"
 edition = "2021"
 publish = false
-license = "MIT OR Apache-2.0"
+license = "GPL-3.0-or-later"
 rust-version = "1.100.0"
 
 # Release builds (release.yml): `cargo build --profile dist` → target/dist/.
