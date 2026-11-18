@@ -119,7 +119,7 @@ Tag contents are untrusted input.
 - No console names or logos in product names, SKUs, or listings. Sold shells are "inspired-by"
   designs.
 - Software is GPL-3.0-or-later (`LICENSE`), copyright plomdawg and Mini Launcher contributors
-  (releases up to `app-v0.4.0` were MIT OR Apache-2.0). New dependencies must be
+  (pre-0.5.0 builds were MIT OR Apache-2.0; those releases were withdrawn). New dependencies must be
   GPL-3.0-compatible (MIT, Apache-2.0, BSD, ISC, Zlib, MPL-2.0 are fine). Hardware license still
   TBD (leaning CERN-OHL-W or CC BY-SA 4.0 — no NC licenses).
 

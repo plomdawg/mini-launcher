@@ -23,8 +23,9 @@ published by the Free Software Foundation, either version 3 of the License, or (
 any later version. See [LICENSE](LICENSE).
 
 In short: you may use, change, share and sell it, but anything you distribute that is based on it
-must stay open source under the same license and keep this copyright notice. Releases up to
-`app-v0.4.0` were published under MIT OR Apache-2.0 and stay available under those terms.
+must stay open source under the same license and keep this copyright notice. Builds before
+`app-v0.5.0` were MIT OR Apache-2.0; they are no longer published, and every release from
+`app-v0.5.0` on is GPL-3.0-or-later.
 
 Bundled third-party parts keep their own licenses: Departure Mono (SIL OFL 1.1,
 `app/assets/fonts/DepartureMono-OFL.txt`) and three.js (MIT, `web/vendor/three/LICENSE`).

@@ -120,8 +120,9 @@ jobs:
           base="mini-launcher-${VERSION}-windows-x86_64"
           mkdir -p "../stage/$base"
           cp target/dist/mini-launcher.exe target/dist/mini-launcher-tray.exe \
-            ../LICENSE ../README.md \
+            ../README.md \
             assets/fonts/DepartureMono-OFL.txt "../stage/$base/"
+          cp ../LICENSE "../stage/$base/LICENSE.txt"
           (cd ../stage && 7z a -tzip -bd "../dist/$base.zip" "$base")
           cd ../dist
           sha256sum --text "$base-setup.exe" "$base.zip" > SHA256SUMS
