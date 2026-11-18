@@ -288,7 +288,8 @@ steam_appid = 400
 Rules:
 
 - Each game is a `[[games]]` block with an `id` and a `name`, plus **exactly one** of
-  `steam_appid`, `exe`, or `emulator` + `rom` (see [Emulator games](#emulator-games)).
+  `steam_appid`, `battlenet` (see [Battle.net games](#battlenet-games)), `exe`, or
+  `emulator` + `rom` (see [Emulator games](#emulator-games)).
 - `id`: lowercase letters, digits and `-`, starting with a letter or digit (up to 64 characters).
   Every `id` must be different.
 - `exe`: use the **full path**. Put Windows paths in single quotes (`'C:\...'`) so the
@@ -302,6 +303,41 @@ Rules:
   **always wins** over what the tag says.
 - `args` and `cwd` are only allowed with `exe`. Unknown keys are an error, so typos show up right
   away.
+
+### Battle.net games
+
+**Add game** lists installed Battle.net games next to your Steam games, marked
+`Battle.net <code>` in the **Store** column. Pick one and write the tag as usual; the tag gets
+`id:<id>`, and the config entry holds the game's Battle.net *launch code*:
+
+```toml
+[[games]]
+id = "world-of-warcraft-forever"
+name = "World of Warcraft: Forever"
+battlenet = "WoWF"
+```
+
+A tag for it runs `Battle.net.exe --exec="launch WoWF"`, which opens Battle.net if it isn't
+running and starts the game once you're logged in. The main codes Mini Launcher detects:
+
+| Game | Code | | Game | Code |
+|---|---|---|---|---|
+| World of Warcraft | `WoW` | | Hearthstone | `WTCG` |
+| World of Warcraft Classic | `WoWC` | | Heroes of the Storm | `Hero` |
+| World of Warcraft: Forever | `WoWF` | | StarCraft II | `S2` |
+| Overwatch | `Pro` | | StarCraft: Remastered | `S1` |
+| Diablo IV | `Fen` | | Warcraft III: Reforged | `W3` |
+| Diablo III | `D3` | | Diablo II: Resurrected | `OSI` |
+| Diablo Immortal | `ANBS` | | Diablo | `D1` |
+
+The game list and launch codes are in `app/core/src/battlenet.rs`. Detection reads Blizzard's
+uninstall entries and the usual install folders; `mini-launcher battlenet list` shows what it
+found. A game it misses can still be added by hand: **Edit → Launch with: Battle.net**, then
+type its code. The code is letters, digits and `_` only (case matters: `WoWF`, not `wowf`).
+
+WoW Classic, Classic Era and Season of Discovery all use `WoWC`: Battle.net starts whichever
+Classic version was last selected in its **Game Version** menu, so Mini Launcher only lists
+Classic itself.
 
 ### Emulator games
 
@@ -432,7 +468,7 @@ Backups, export/import and keeping the config in a synced folder are covered in
 
 Restart `run` after you edit the config. If the file has a mistake, `run` stops with
 `error: cannot load ...config.toml: ...` and the message names the problem, e.g.
-`games[1]: "my-game": set one of steam_appid, exe or emulator`. `games[1]` is the second block (counting
+`games[1]: "my-game": set one of steam_appid, battlenet, exe or emulator`. `games[1]` is the second block (counting
 starts at 0).
 
 ### Mapping an unknown tag

@@ -8,6 +8,11 @@
 //! steam_appid = 220
 //!
 //! [[games]]
+//! id = "wow-forever"
+//! name = "World of Warcraft: Forever"
+//! battlenet = "WoWF"               # Battle.net launch code (Windows only)
+//!
+//! [[games]]
 //! id = "my-game"
 //! name = "My Game"
 //! exe = 'C:\Games\MyGame\game.exe'
@@ -27,7 +32,8 @@
 //! rom = 'D:\Switch\kart-racer.nsp'
 //! ```
 //!
-//! Each game has exactly one of `steam_appid`, `exe` or `emulator` + `rom`;
+//! Each game has exactly one of `steam_appid`, `battlenet`, `exe` or
+//! `emulator` + `rom`;
 //! `args` and `cwd` are only allowed with `exe`. An emulator's `args` must
 //! contain `{rom}` as one whole argument exactly once; it is replaced by the
 //! ROM path as a single argument when the config is loaded. Unknown keys are
@@ -43,6 +49,7 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
+use crate::battlenet::Code;
 use crate::launch::LaunchPlan;
 use crate::payload::Slug;
 
@@ -125,6 +132,7 @@ struct RawGame {
     name: String,
     uid: Option<String>,
     steam_appid: Option<i64>,
+    battlenet: Option<String>,
     exe: Option<PathBuf>,
     args: Option<Vec<String>>,
     cwd: Option<PathBuf>,
@@ -285,8 +293,27 @@ fn validate(raw: RawGame, emulators: &[Emulator]) -> Result<Game, String> {
     if raw.rom.is_some() && raw.emulator.is_none() {
         return Err(ctx("rom is only allowed with emulator"));
     }
+    if let Some(code) = raw.battlenet {
+        if raw.steam_appid.is_some() || raw.exe.is_some() || raw.emulator.is_some() {
+            return Err(ctx(
+                "set only one of steam_appid, battlenet, exe or emulator",
+            ));
+        }
+        if raw.args.is_some() || raw.cwd.is_some() {
+            return Err(ctx("args and cwd are only allowed with exe"));
+        }
+        let code = Code::new(&code).map_err(|e| ctx(&format!("battlenet \"{code}\": {e}")))?;
+        return Ok(Game {
+            id,
+            name: raw.name,
+            uid,
+            plan: LaunchPlan::BattleNet { code },
+        });
+    }
     let plan = match (raw.steam_appid, raw.exe, raw.emulator) {
-        (None, None, None) => return Err(ctx("set one of steam_appid, exe or emulator")),
+        (None, None, None) => {
+            return Err(ctx("set one of steam_appid, battlenet, exe or emulator"))
+        }
         (Some(_), Some(_), _) | (Some(_), _, Some(_)) | (_, Some(_), Some(_)) => {
             return Err(ctx("set only one of steam_appid, exe or emulator"))
         }
@@ -410,6 +437,10 @@ mod tests {
             id = "bare"
             name = "Bare"
             exe = "game"
+            [[games]]
+            id = "wow-forever"
+            name = "WoW Forever"
+            battlenet = "WoWF"
             "#,
         )
         .unwrap();
@@ -429,6 +460,9 @@ mod tests {
                     args: vec![],
                     cwd
                 },
+                LaunchPlan::BattleNet {
+                    code: Code::new("WoWF").unwrap()
+                },
             ]
         );
         assert_eq!(
@@ -445,6 +479,12 @@ mod tests {
         let two = |a: &str, b: &str| format!("{}\n{}", h(a), h(b));
         let cases = [
             (g("steam_appid = 1\nexe = \"a\""), "only one of"),
+            (g("battlenet = \"WoW\"\nsteam_appid = 1"), "only one of"),
+            (g("battlenet = \"WoW\"\nexe = \"a\""), "only one of"),
+            (g("battlenet = \"WoW\"\nargs = []"), "only allowed with exe"),
+            (g("battlenet = \"launch WoW\""), "invalid Battle.net code"),
+            (g("battlenet = \"\""), "invalid Battle.net code"),
+            (g("battlenet = 1"), "invalid type"),
             (g(""), "set one of"),
             (g("steam_appid = 0"), "must be 1 to"),
             (g("steam_appid = -1"), "must be 1 to"),
