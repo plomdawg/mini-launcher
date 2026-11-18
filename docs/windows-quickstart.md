@@ -330,9 +330,12 @@ running and starts the game once you're logged in. The main codes Mini Launcher 
 | Diablo III | `D3` | | Diablo II: Resurrected | `OSI` |
 | Diablo Immortal | `ANBS` | | Diablo | `D1` |
 
-The game list and launch codes are in `app/core/src/battlenet.rs`. Detection reads Blizzard's
-uninstall entries and the usual install folders; `mini-launcher battlenet list` shows what it
-found. A game it misses can still be added by hand: **Edit → Launch with: Battle.net**, then
+The game list and launch codes are in `app/core/src/battlenet.rs`. Detection reads Battle.net's
+own install list (`C:\ProgramData\Battle.net\Agent\product.db`), Blizzard's uninstall entries and
+the usual install folders. WoW versions are found by their subfolders (`_retail_`, `_classic_`,
+`_forever_`); a version counts only when its subfolder has the game in it. Click a column header in
+**Add game** to sort by name or store. `mini-launcher battlenet list` shows what it found, and
+`mini-launcher battlenet list -v` also shows everything it looked at. A game it misses can still be added by hand: **Edit → Launch with: Battle.net**, then
 type its code. The code is letters, digits and `_` only (case matters: `WoWF`, not `wowf`).
 
 WoW Classic, Classic Era and Season of Discovery all use `WoWC`: Battle.net starts whichever

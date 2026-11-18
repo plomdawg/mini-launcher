@@ -25,6 +25,7 @@ use mini_launcher_core::steam::SteamGame;
 #[cfg(test)]
 use crate::library::Field;
 use crate::library::{free_id, new_id, unquote, Form, Library};
+use crate::theme::Sort;
 
 /// The wizard's line to the reader (see [`mini_launcher_core::session`]).
 pub trait Link {
@@ -116,6 +117,8 @@ pub struct Wizard {
     /// Installed Battle.net games (empty when there is no Battle.net).
     pub battlenet: Vec<BattleNetGame>,
     pub search: String,
+    /// The pick list's order: by name (column 0) or store (column 1).
+    pub sort: Sort,
     /// The chosen installed game's plan on the pick step.
     pub selected: Option<LaunchPlan>,
     /// The program's id (`id:<slug>` on its tag), as typed.
@@ -154,6 +157,7 @@ impl Wizard {
             steam,
             battlenet: Vec::new(),
             search: String::new(),
+            sort: Sort::default(),
             selected: None,
             slug: String::new(),
             auto_slug: true,
@@ -212,7 +216,15 @@ impl Wizard {
             };
             g.name.to_lowercase().contains(&needle) || key == needle
         });
-        games.sort_by_cached_key(|g| g.name.to_lowercase());
+        // By store groups Battle.net and Steam games, each by name.
+        let by_store = self.sort.column == 1;
+        games.sort_by_cached_key(|g| {
+            let store = by_store.then(|| g.store.split(' ').next().unwrap_or_default().to_owned());
+            (store, g.name.to_lowercase())
+        });
+        if self.sort.descending {
+            games.reverse();
+        }
         games
     }
 
@@ -1570,6 +1582,18 @@ mod tests {
         // Sorted by name across stores.
         let names: Vec<_> = all.iter().map(|g| g.name.to_lowercase()).collect();
         assert!(names.windows(2).all(|p| p[0] <= p[1]), "{names:?}");
+        // By store: Battle.net before Steam; reversed on a second click.
+        w.sort.click(1);
+        let stores: Vec<_> = w.filtered().iter().map(|g| g.store.clone()).collect();
+        assert_eq!(stores.first().map(String::as_str), Some("Battle.net WoWF"));
+        assert!(
+            stores[1..].iter().all(|s| s.starts_with("Steam ")),
+            "{stores:?}"
+        );
+        w.sort.click(1);
+        assert_eq!(w.filtered().last().unwrap().store, "Battle.net WoWF");
+        w.sort.click(0);
+        assert_eq!(w.sort, Sort::default());
         w.search = "wowf".into();
         assert_eq!(w.filtered().len(), 1);
         w.search = "forever".into();

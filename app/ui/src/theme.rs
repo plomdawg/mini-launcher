@@ -368,6 +368,53 @@ pub fn list(
     cols: &[f32],
     headers: &[&str],
     rows: usize,
+    row: impl FnMut(&mut Ui, usize, Rect, &[f32]),
+) -> Rect {
+    list_with(ui, cols, headers, None, rows, row)
+}
+
+/// How a sortable list is sorted: by column `column` (an index into its
+/// headers), A to Z unless `descending`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Sort {
+    pub column: usize,
+    pub descending: bool,
+}
+
+impl Sort {
+    /// A header click: sort by `column`, or reverse if it already is.
+    pub fn click(&mut self, column: usize) {
+        if self.column == column {
+            self.descending = !self.descending;
+        } else {
+            *self = Sort {
+                column,
+                descending: false,
+            };
+        }
+    }
+}
+
+/// Like [`list`], but the headers of the columns in `sortable` are buttons
+/// that change `sort`; the sorted column shows an arrow. The caller sorts
+/// the rows.
+pub fn sortable_list(
+    ui: &mut Ui,
+    cols: &[f32],
+    headers: &[&str],
+    sort: (&mut Sort, &[usize]),
+    rows: usize,
+    row: impl FnMut(&mut Ui, usize, Rect, &[f32]),
+) -> Rect {
+    list_with(ui, cols, headers, Some(sort), rows, row)
+}
+
+fn list_with(
+    ui: &mut Ui,
+    cols: &[f32],
+    headers: &[&str],
+    sort: Option<(&mut Sort, &[usize])>,
+    rows: usize,
     mut row: impl FnMut(&mut Ui, usize, Rect, &[f32]),
 ) -> Rect {
     let rect = snap(ui.available_rect_before_wrap());
@@ -396,7 +443,47 @@ pub fn list(
         },
     );
     column_headers(ui, header, &x, headers);
+    if let Some((sort, sortable)) = sort {
+        sort_headers(ui, header, &x, headers, sort, sortable);
+    }
     body
+}
+
+/// Makes the `sortable` headers clickable and marks the sorted one.
+fn sort_headers(
+    ui: &Ui,
+    row: Rect,
+    cols: &[f32],
+    labels: &[&str],
+    sort: &mut Sort,
+    sortable: &[usize],
+) {
+    for &i in sortable.iter().filter(|&&i| i < labels.len()) {
+        let end = cols.get(i + 1).copied().unwrap_or(row.max.x);
+        let cell = Rect::from_min_max(pos2(cols[i], row.min.y), pos2(end, row.max.y));
+        let resp = ui.interact(cell, ui.scope_id().with(("sort", i)), Sense::click());
+        resp.widget_info(|| WidgetInfo::labeled(Role::Button, true, labels[i]));
+        if resp.clicked() {
+            sort.click(i);
+        }
+        if sort.column == i {
+            // A small triangle after the label: up for A-Z, down for Z-A.
+            let w = galley(ui, labels[i], TEXT, INK).size().x;
+            let c = pos2(cell.min.x + 2.0 * U + w + 2.0 * U + 4.0, cell.center().y);
+            let (tip, base) = if sort.descending {
+                (4.0, -3.0)
+            } else {
+                (-4.0, 3.0)
+            };
+            let points = vec![
+                pos2(c.x - 4.0, c.y + base),
+                pos2(c.x + 4.0, c.y + base),
+                pos2(c.x, c.y + tip),
+            ];
+            ui.painter()
+                .add(egui::Shape::convex_polygon(points, INK, Stroke::NONE));
+        }
+    }
 }
 
 /// A warning line: a small yellow "!" box, then `text`, `indent` points in.
