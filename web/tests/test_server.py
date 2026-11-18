@@ -62,6 +62,11 @@ IMAGES_PAGE = """<!doctype html><html><head><title>Example Quest &amp; Co Images
      data-title="Example Quest &amp; Co - Box - Spine Image (Japan)" data-footer="60 x 1100 JPEG">
     <img class="imageCard" src="https://images.launchbox-app.com/00000000-0000-0000-0000-0000000000a7.jpg" />
   </a>
+  <a href="https://images.launchbox-app.com/00000000-0000-0000-0000-000000000009.png" data-toggle="lightbox"
+     data-title="Example Quest &amp; Co - Square Image" data-footer="1000 x 1000 PNG">
+    <img class="imageCard" src="https://images.launchbox-app.com/00000000-0000-0000-0000-0000000000a9.png" />
+    <div class="imgCardText"><p>Square - 1000 x 1000</p></div>
+  </a>
   <a href="https://evil.example.com/00000000-0000-0000-0000-000000000008.jpg" data-toggle="lightbox">
     <div class="imgCardText"><p>Box - Front (Evil) - 1 x 1</p></div>
   </a>
@@ -174,6 +179,7 @@ class LaunchBoxParserTest(unittest.TestCase):
             ("Box - Back", "Europe", 800, 1098, "03.jpg"),
             ("Box - Spine", "Japan", 60, 1100, "07.jpg"),  # no caption: falls back to data-title/footer
             ("Disc", "North America", 720, 720, "04.png"),
+            ("Square", "", 1000, 1000, "09.png"),
             ("Clear Logo", "", 400, 200, "06.png"),
         ])
         self.assertTrue(result["images"][0]["thumb"].endswith("0000000000a1.jpg"))

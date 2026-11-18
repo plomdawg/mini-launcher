@@ -1171,11 +1171,22 @@
   // ---- LaunchBox Games DB picker ------------------------------------------------------
   // No API key. The server reads a game's public images page on demand and relays images
   // from images.launchbox-app.com only. Applying goes through applyImage() (see below).
-  const launchBoxTypeTargets = {'Box - Front': 'front', 'Box - Back': 'back', 'Box - Spine': 'spine', 'Disc': 'disc', 'Clear Logo': 'logo'};
+  const launchBoxTypeTargets = {'Box - Front': 'front', 'Box - Back': 'back', 'Box - Spine': 'spine', 'Disc': 'disc', 'Square': 'disc', 'Clear Logo': 'logo'};
   const launchBoxTargetNames = {front: 'front', back: 'back', spine: 'spine', logo: 'spine logo', disc: 'disc'};
   const launchBoxImagePattern = /^https:\/\/images\.launchbox-app\.com\/(?:r2_)?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.(?:jpe?g|png)$/i;
+  // Types listed first (in this order) when the picker was opened from the disc section.
+  // Square art is the fallback for cart-only games that have no disc scans.
+  const launchBoxDiscTypes = ['Disc', 'Square'];
+  let launchBoxFocusTypes = [];
   let launchBoxGame = null;
   let launchBoxRequestId = 0;
+
+  function setLaunchBoxGameHeading(title = '', id = '') {
+    $('launchBoxGameName').textContent = title;
+    const link = $('launchBoxGameLink');
+    link.hidden = !id;
+    link.href = id ? `https://gamesdb.launchbox-app.com/games/details/${encodeURIComponent(id)}` : 'https://gamesdb.launchbox-app.com/';
+  }
 
   // A target is usable when `files` has the slot and its `<target>FileName` upload tile exists.
   function artworkSlotAvailable(target) {
@@ -1237,7 +1248,7 @@
     const pastedId = launchBoxGameId(term);
     if (pastedId) { await loadLaunchBoxGame(pastedId); return; }
     launchBoxGame = null;
-    $('launchBoxGameName').textContent = '';
+    setLaunchBoxGameHeading();
     const requestId = ++launchBoxRequestId;
     $('launchBoxContent').innerHTML = '';
     launchBoxStatus('Searching LaunchBox…');
@@ -1255,16 +1266,21 @@
   }
 
   function showLaunchBoxImages() {
-    const {title, images} = launchBoxGame;
-    $('launchBoxGameName').textContent = title;
-    if (!images.length) { $('launchBoxContent').innerHTML = ''; launchBoxStatus(`LaunchBox has no box, disc or logo images for ${title}.`, 'empty'); return; }
-    launchBoxStatus(`${images.length} images for ${title}. Select one to add it to the case.`);
+    const {id, title, images} = launchBoxGame;
+    setLaunchBoxGameHeading(title, id);
+    if (!images.length) { $('launchBoxContent').innerHTML = ''; launchBoxStatus(`LaunchBox has no box, disc, square or logo images for ${title}.`, 'empty'); return; }
     const groups = [];
     images.forEach((image, index) => {
       let group = groups.find((item) => item.type === image.type);
       if (!group) groups.push(group = {type: image.type, items: []});
       group.items.push({image, index});
     });
+    const focusRank = (type) => { const rank = launchBoxFocusTypes.indexOf(type); return rank < 0 ? launchBoxFocusTypes.length : rank; };
+    groups.sort((a, b) => focusRank(a.type) - focusRank(b.type));  // stable: other groups keep server order
+    const focused = groups.filter((group) => launchBoxFocusTypes.includes(group.type));
+    if (!launchBoxFocusTypes.length) launchBoxStatus(`${images.length} images for ${title}. Select one to add it to the case.`);
+    else if (focused.length) launchBoxStatus(`${focused.map(({type, items}) => `${items.length} ${type.toLowerCase()}`).join(' + ')} image${focused.reduce((n, g) => n + g.items.length, 0) === 1 ? '' : 's'} for ${title}, listed first. Select one to add it to the case.`);
+    else launchBoxStatus(`No ${launchBoxFocusTypes.join(' or ').toLowerCase()} images for ${title} on LaunchBox — other artwork is below.`, 'empty');
     $('launchBoxContent').innerHTML = groups.map(({type, items}) => `<section class="lb-group"><h3>${esc(type)}<small>${items.length}</small></h3><div class="sgdb-assets">${items.map(({image, index}) => {
       const thumb = launchBoxImagePattern.test(image.thumb || '') ? image.thumb : image.url;
       const detail = [image.region || 'No region', image.width && image.height ? `${image.width} × ${image.height}` : ''].filter(Boolean).join(' · ');
@@ -1275,7 +1291,7 @@
   async function loadLaunchBoxGame(id) {
     const requestId = ++launchBoxRequestId;
     launchBoxGame = null;
-    $('launchBoxGameName').textContent = '';
+    setLaunchBoxGameHeading();
     $('launchBoxContent').innerHTML = '';
     launchBoxStatus(`Loading LaunchBox game #${id}…`);
     try {
@@ -1296,13 +1312,19 @@
     loadLaunchBoxGame(id);
   }
 
-  function showLaunchBoxPicker() {
+  // focusTypes: image types to list first (the disc section passes launchBoxDiscTypes).
+  function showLaunchBoxPicker(focusTypes = []) {
+    launchBoxFocusTypes = focusTypes;
+    if (focusTypes.length) $('launchBoxTarget').value = launchBoxTypeTargets[focusTypes[0]] || 'auto';
+    else if ($('launchBoxTarget').value === 'disc') $('launchBoxTarget').value = 'auto';
+    if (launchBoxGame) showLaunchBoxImages();
     if (!$('launchBoxSearchTerm').value.trim()) $('launchBoxSearchTerm').value = $('projectName').value.trim();
     if (!launchBoxGame) launchBoxStatus('Search for a game or paste its LaunchBox Games DB link.');
     $('launchBoxDialog').showModal();
   }
 
-  $('openLaunchBoxPicker').addEventListener('click', showLaunchBoxPicker);
+  $('openLaunchBoxPicker').addEventListener('click', () => showLaunchBoxPicker());
+  $('openLaunchBoxDiscPicker').addEventListener('click', () => showLaunchBoxPicker(launchBoxDiscTypes));
   $('closeLaunchBoxPicker').addEventListener('click', () => $('launchBoxDialog').close());
   $('launchBoxDialog').addEventListener('click', (event) => { if (event.target === $('launchBoxDialog')) $('launchBoxDialog').close(); });
   $('launchBoxSearch').addEventListener('click', searchLaunchBoxGames);
