@@ -5,7 +5,7 @@
 //! anything missing or unreadable is skipped quietly. File names are
 //! untrusted: names are display-only and suggested slugs are validated.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -148,8 +148,9 @@ fn scan_roms_with_budget(
         budget: max_entries,
         found: RomScan::default(),
         seen: HashMap::new(),
+        skipped: HashSet::new(),
     };
-    // (folder, depth below `dir`, whether it is an update/DLC folder)
+    // (folder, depth below `dir`, whether it is in an update/DLC folder)
     let mut queue = VecDeque::from([(dir.to_path_buf(), 0, false)]);
     while let Some((folder, depth, updates)) = queue.pop_front() {
         let mut subdirs = Vec::new();
@@ -160,7 +161,7 @@ fn scan_roms_with_budget(
         }
         subdirs.sort();
         queue.extend(subdirs.into_iter().map(|sub| {
-            let updates = is_update_folder(&sub);
+            let updates = updates || is_update_folder(&sub);
             (sub, depth + 1, updates)
         }));
     }
@@ -180,6 +181,8 @@ struct Scan<'a> {
     found: RomScan,
     /// Canonical target -> (index in `found.roms`, listed via a symlink).
     seen: HashMap<PathBuf, (usize, bool)>,
+    /// Canonical targets of the skipped update/DLC files.
+    skipped: HashSet<PathBuf>,
 }
 
 impl Scan<'_> {
@@ -223,7 +226,10 @@ impl Scan<'_> {
                 fs::canonicalize(&path).unwrap_or_else(|_| path.clone())
             };
             if updates || is_update_or_dlc(&path) {
-                self.found.skipped_updates += 1;
+                // Counted once however many names reach it.
+                if self.skipped.insert(target) {
+                    self.found.skipped_updates += 1;
+                }
                 continue;
             }
             if !self.add(path, target, kind.is_symlink()) {
@@ -261,9 +267,9 @@ impl Scan<'_> {
 
 /// Whether a game file is an update or DLC rather than a base game, from its
 /// name: an `[UPD]`, `[Update]` or `[DLC]` tag (any case), or a bracketed
-/// 16-hex-digit title ID that isn't a base game's (those end in `000`;
-/// updates end in `800`, anything else is DLC). Files in an update/DLC
-/// folder are caught by the scan's folder check instead.
+/// title ID (16 hex digits starting with `01`) that isn't a base game's
+/// (those end in `000`; updates end in `800`, anything else is DLC). Files
+/// anywhere under an update/DLC folder are caught by the scan instead.
 pub fn is_update_or_dlc(path: &Path) -> bool {
     let stem = path.file_stem().unwrap_or_default().to_string_lossy();
     stem.split('[')
@@ -275,12 +281,13 @@ pub fn is_update_or_dlc(path: &Path) -> bool {
                 .iter()
                 .any(|t| tag.eq_ignore_ascii_case(t))
                 || (tag.len() == 16
+                    && tag.starts_with("01")
                     && tag.bytes().all(|b| b.is_ascii_hexdigit())
                     && !tag.ends_with("000"))
         })
 }
 
-/// Whether a folder's name marks the files in it as updates or DLC.
+/// Whether a folder's name marks the files under it as updates or DLC.
 fn is_update_folder(path: &Path) -> bool {
     let name = path.file_name().unwrap_or_default().to_string_lossy();
     ["update", "updates", "dlc", "add-on"]
@@ -489,6 +496,9 @@ mod tests {
             "ADD-ON/Pack.nsp",
             "add-ons/Not Skipped.nsp",
             "Update Disc/Also Kept.nsp",
+            "Update/v1.0.1/Deep Patch.nsp",
+            "DLC/Pack 1/Deep Pack.nsp",
+            "Kart Hash [DEADBEEFCAFEBABE].nsp",
         ] {
             dir.touch(f);
         }
@@ -496,9 +506,17 @@ mod tests {
         let roms: Vec<_> = scan.roms.iter().map(|r| r.name.as_str()).collect();
         assert_eq!(
             roms,
-            ["Also Kept", "Kart", "Kart", "Kart Updates", "Not Skipped"]
+            [
+                "Also Kept",
+                "Kart",
+                "Kart",
+                "Kart Hash",
+                "Kart Updates",
+                "Not Skipped"
+            ]
         );
-        assert_eq!(scan.skipped_updates, 8);
+        // Including everything below an update/DLC folder, at any depth.
+        assert_eq!(scan.skipped_updates, 10);
 
         let upd = |f: &str| is_update_or_dlc(Path::new(f));
         assert!(upd("Game [0100000000010800].nsp"));
@@ -508,6 +526,9 @@ mod tests {
         assert!(!upd("Game [0100000000010000].nsp"));
         assert!(!upd("Game [010000000001080].nsp")); // 15 digits
         assert!(!upd("Game [010000000001080G].nsp"));
+        // Real title IDs start with `01`; other hex is just a hash.
+        assert!(!upd("Game [DEADBEEFCAFEBABE].nsp"));
+        assert!(!upd("Game [0200000000010800].nsp"));
         assert!(!upd("Game (DLC Edition).nsp"));
         assert!(!upd("DLC/Game.nsp"), "folders are the scan's job");
     }
@@ -612,6 +633,18 @@ mod tests {
         let roms = scan_roms(&other, &EDEN, opts).roms;
         assert_eq!(names(&roms), [("deep", Some("deep"))]);
         assert_eq!(roms[0].path, deep);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_linked_update_is_skipped_once() {
+        use std::os::unix::fs::symlink;
+        let dir = TempDir::new("links-upd");
+        let patch = dir.touch("Game [UPD].nsp");
+        symlink(&patch, dir.join("Alias [UPD].nsp")).unwrap();
+        dir.touch("Game.nsp");
+        let scan = scan_roms(&dir, &EDEN, ScanOptions::default());
+        assert_eq!((scan.roms.len(), scan.skipped_updates), (1, 1));
     }
 
     #[test]

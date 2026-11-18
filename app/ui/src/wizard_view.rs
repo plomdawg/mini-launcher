@@ -381,7 +381,6 @@ fn rom(ui: &mut Ui, s: &mut Settings, c: &mut Clicks) {
     c.next |= open.is_some();
 }
 
-/// A grey line in the first row of an empty list.
 /// What the scan says about the update and DLC files it left out.
 fn skipped_note(n: usize) -> Option<String> {
     let files = match n {
@@ -390,10 +389,11 @@ fn skipped_note(n: usize) -> Option<String> {
         n => format!("{n} update/DLC files"),
     };
     Some(format!(
-        "Skipped {files}. Install updates in Eden once (File > Install Files to NAND) and they load with the base game."
+        "Skipped {files}. Install updates and DLC in Eden once (File > Install Files to NAND) and they load with the base game."
     ))
 }
 
+/// A grey line in the first row of an empty list.
 fn list_note(ui: &Ui, body: Rect, text: &str) {
     let at = pos2(body.min.x + 2.0 * U, body.min.y + ROW / 2.0);
     let row = Rect::from_center_size(at, vec2(0.0, ROW));

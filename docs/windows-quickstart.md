@@ -405,10 +405,11 @@ A tag launches a base game; updates and DLC aren't games of their own, so **Scan
 leaves them out of the list and says how many it skipped. A file counts as an update or DLC when:
 
 - its name has an `[UPD]`, `[Update]` or `[DLC]` tag (any case);
-- its name has a 16-character hex title ID in brackets that isn't a base game's (base game IDs end in
-  `000`, updates in `800`, and anything else is DLC), e.g. `[0100152000022800]`;
-- it is in a folder named `Update`, `Updates`, `DLC` or `Add-On` (any case) inside the scanned
-  folder.
+- its name has a title ID in brackets (16 hex characters starting with `01`) that isn't a base
+  game's (base game IDs end in `000`, updates in `800`, and anything else is DLC), e.g.
+  `[0100152000022800]`;
+- it is anywhere under a folder named `Update`, `Updates`, `DLC` or `Add-On` (any case) inside
+  the scanned folder, e.g. `Update\v1.0.1\Game.nsp`.
 
 So a library laid out like this lists one game, *Super Mario Party*, and skips one update:
 

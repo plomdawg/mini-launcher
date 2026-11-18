@@ -603,7 +603,7 @@ fn a_truncated_rom_scan_and_skipped_updates_say_so() {
     let w = h.state_mut().wizard.as_mut().unwrap();
     w.emu.scan.as_mut().unwrap().1.skipped_updates = 1;
     h.run();
-    h.get_by_label_contains("Skipped 1 update/DLC file. Install updates in Eden once");
+    h.get_by_label_contains("Skipped 1 update/DLC file. Install updates and DLC in Eden once");
     let w = h.state_mut().wizard.as_mut().unwrap();
     w.emu.scan.as_mut().unwrap().1.skipped_updates = 3;
     h.run();
