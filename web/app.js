@@ -475,7 +475,7 @@
   function update() {
     const {svg, width, height, faceW, faceH, spineW, spineFit} = buildSvg(undefined, true);
     $('preview').outerHTML = svg.replace('<svg ', '<svg id="preview" role="img" aria-label="Printable back, spine, and front cover preview" ');
-    const ready = Boolean(files.back || files.front || $('projectName').value.trim());
+    const ready = Boolean(files.back || files.front || files.spine || files.logo || files.disc || $('projectName').value.trim());
     $('previewStage').classList.toggle('has-art', ready);
     $('emptyHint').style.display = ready ? 'none' : '';
     const trimWidth = (faceW * 2 + spineW).toFixed(1);
