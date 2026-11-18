@@ -12,7 +12,7 @@
     imageFit: 'cover', spineArtFit: 'stretch', faceHeight: '120', spineWidth: '13', bleed: '0', dpi: '300', cropMarks: false,
     spineDirection: '90', fontFamily: "'Rubik', sans-serif", spineFontSize: '8', spineColor: '#ffffff',
     textColor: '#000000', spineFillMode: 'back-front', spineTextOutline: 'auto', logoRotation: '0',
-    discFit: 'cover', discDiameter: '31.75', discHole: '4'
+    discFit: 'cover', discDiameter: '50', discHole: '6.25'
   };
   const legacyDefaults = {
     imageFit: 'cover', spineArtFit: 'stretch', faceHeight: '120', spineWidth: '12', bleed: '3', dpi: '300', cropMarks: true,
@@ -474,7 +474,7 @@
     } else fitNote.textContent = `Fits at ${spineFit.effective.toFixed(1)} mm.`;
     const disc = buildDiscSvg(undefined, true);
     $('discPreview').outerHTML = disc.svg.replace('<svg ', '<svg id="discPreview" role="img" aria-label="Printable disc label preview" ');
-    $('discDimensions').textContent = `${disc.width.toFixed(2)} mm${disc.bleed > 0 ? ' with bleed' : ''} · ${disc.hole.toFixed(1)} mm hole`;
+    $('discDimensions').textContent = `${disc.width.toFixed(2)} mm${disc.bleed > 0 ? ' with bleed' : ''} · ${+disc.hole.toFixed(2)} mm hole`;
     clearTimeout(saveTimer);
     saveTimer = setTimeout(renderProjectList, 700);
     changeListeners.forEach((listener) => { try { listener(); } catch (error) { console.error(error); } });

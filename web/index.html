@@ -100,8 +100,8 @@
           <button class="button quiet remove-logo-button" id="removeDiscArt" type="button" hidden>Remove disc art</button>
           <label class="field"><span>Disc art fit <small class="setting-source" id="discFitSource">(default)</small></span><select id="discFit"><option value="cover">Fill disc (crop edges)</option><option value="contain">Fit whole image</option></select></label>
           <div class="field-row">
-            <label class="field"><span>Printed diameter <small class="setting-source" id="discDiameterSource">(default)</small> <i>mm</i></span><input type="number" id="discDiameter" min="10" max="130" step="0.05" value="31.75"></label>
-            <label class="field"><span>Center hole <small class="setting-source" id="discHoleSource">(default)</small> <i>mm</i></span><input type="number" id="discHole" min="0" max="40" step="0.5" value="4"></label>
+            <label class="field"><span>Printed diameter <small class="setting-source" id="discDiameterSource">(default)</small> <i>mm</i></span><input type="number" id="discDiameter" min="10" max="130" step="0.05" value="50"></label>
+            <label class="field"><span>Center hole <small class="setting-source" id="discHoleSource">(default)</small> <i>mm</i></span><input type="number" id="discHole" min="0" max="40" step="0.05" value="6.25"></label>
           </div>
           <p class="hint">Use square art laid out like a full 120 mm CD with a 15 mm hole; it is scaled to the printed diameter. The center hole stays transparent. Bleed, cut guides, and export resolution come from Case layout.</p>
           <div class="default-actions"><button class="button" type="button" data-default-action="save" data-default-group="disc">Save as default</button><button class="button quiet" type="button" data-default-action="reset" data-default-group="disc">Use default</button></div>
@@ -135,7 +135,7 @@
         <div class="disc-stage"><svg id="discPreview" role="img" aria-label="Printable disc label preview"></svg></div>
         <div class="disc-panel-info">
           <p class="eyebrow">DISC LABEL</p><h3>Disc preview</h3>
-          <span class="disc-dimensions" id="discDimensions">31.75 mm · 4.0 mm hole</span>
+          <span class="disc-dimensions" id="discDimensions">50.00 mm · 6.25 mm hole</span>
           <div class="preview-actions"><button class="button quiet" id="downloadDiscSvg">Download disc SVG</button><button class="button" id="downloadDiscPng">Export disc PNG</button></div>
         </div>
       </div>
