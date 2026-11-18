@@ -166,6 +166,7 @@ fn read_vdf(path: &Path) -> io::Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_util::TempDir;
 
     fn fixture(rel: &str) -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -199,12 +200,12 @@ mod tests {
     fn reads_libraryfolders_and_tolerates_missing_or_bad_files() {
         let root = fixture("root");
         assert_eq!(libraries(&root), std::slice::from_ref(&root));
-        let dir = std::env::temp_dir().join(format!("mini-launcher-steam-{}", std::process::id()));
+        let dir = TempDir::new("steam");
         let file = dir.join("steamapps/libraryfolders.vdf");
         std::fs::create_dir_all(dir.join("steamapps")).unwrap();
         std::fs::copy(fixture("libraryfolders.vdf"), &file).unwrap();
         let want = [
-            dir.as_path(),
+            &*dir,
             Path::new(r"C:\Program Files (x86)\Steam"),
             Path::new(r"D:\SteamLibrary"),
         ];
@@ -218,10 +219,9 @@ mod tests {
             format!("libraryfolders {{ x y 1 \"{lib2}\" 2 \"\" }}"),
         )
         .unwrap();
-        assert_eq!(libraries(&dir), [dir.clone(), fixture("library2")]);
+        assert_eq!(libraries(&dir), [dir.to_path_buf(), fixture("library2")]);
         std::fs::write(&file, "\"libraryfolders\" {").unwrap();
-        assert_eq!(libraries(&dir), std::slice::from_ref(&dir));
-        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(libraries(&dir), [dir.to_path_buf()]);
     }
 
     #[test]

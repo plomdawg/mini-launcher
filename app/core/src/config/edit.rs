@@ -568,6 +568,7 @@ pub fn saved_by_this_process(text: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_util::TempDir;
 
     const COMMENTED: &str = r#"# My library
 # (hand-written)
@@ -585,14 +586,6 @@ name = "My Game"
 exe = 'C:\Games\MyGame\game.exe'
 args = ["--fullscreen"]
 "#;
-
-    fn temp(name: &str) -> PathBuf {
-        let dir =
-            std::env::temp_dir().join(format!("mini-launcher-edit-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
-    }
 
     fn slug(s: &str) -> Slug {
         Slug::new(s).unwrap()
@@ -927,7 +920,7 @@ args = [
     /// Saves `doc`, then checks the file is valid and reloads to the same
     /// config, also through export and import. Returns the saved text.
     fn saved(doc: &ConfigDocument, name: &str) -> String {
-        let dir = temp(name);
+        let dir = TempDir::new(name);
         let (path, export) = (dir.join("config.toml"), dir.join("export.toml"));
         doc.save(&path).unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
@@ -1089,7 +1082,7 @@ args = ["--fullscreen"]
 
     #[test]
     fn atomic_save_replaces_and_keeps_one_backup() {
-        let dir = temp("save");
+        let dir = TempDir::new("save");
         let path = dir.join("config.toml");
         let bak = dir.join("config.toml.bak");
         let mut doc = ConfigDocument::load_or_empty(&path).unwrap();
@@ -1115,7 +1108,7 @@ args = ["--fullscreen"]
 
     #[test]
     fn export_import_round_trip() {
-        let dir = temp("export");
+        let dir = TempDir::new("export");
         let (export, config) = (dir.join("backup.toml"), dir.join("config.toml"));
         let doc = ConfigDocument::parse(COMMENTED).unwrap();
         doc.export(&export).unwrap();
@@ -1146,7 +1139,7 @@ args = ["--fullscreen"]
 
     #[test]
     fn corrupted_imports_are_rejected_before_touching_the_config() {
-        let dir = temp("import");
+        let dir = TempDir::new("import");
         let (export, config) = (dir.join("backup.toml"), dir.join("config.toml"));
         std::fs::write(&config, COMMENTED).unwrap();
         let body = "[[games]]\nid = \"a\"\nname = \"A\"\nsteam_appid = 1\n";
@@ -1186,7 +1179,7 @@ args = ["--fullscreen"]
 
     #[test]
     fn unavailable_location_refuses_saves_and_imports() {
-        let dir = temp("unavailable");
+        let dir = TempDir::new("unavailable");
         let missing = dir.join("not-mounted");
         let export = dir.join("backup.toml");
         let doc = ConfigDocument::parse(COMMENTED).unwrap();
@@ -1216,7 +1209,7 @@ args = ["--fullscreen"]
 
     #[test]
     fn temp_names_are_unique_within_the_process() {
-        let dir = temp("concurrent");
+        let dir = TempDir::new("concurrent");
         let path = dir.join("config.toml");
         let threads: Vec<_> = (0..8)
             .map(|i| {
@@ -1253,7 +1246,7 @@ args = ["--fullscreen"]
     #[test]
     fn save_keeps_permissions_and_symlinks() {
         use std::os::unix::fs::PermissionsExt;
-        let dir = temp("unix");
+        let dir = TempDir::new("unix");
         let (real, link) = (dir.join("real.toml"), dir.join("config.toml"));
         std::fs::write(&real, "").unwrap();
         std::fs::set_permissions(&real, std::fs::Permissions::from_mode(0o600)).unwrap();

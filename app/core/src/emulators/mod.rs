@@ -311,31 +311,7 @@ fn fold_accent(c: char) -> char {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    struct TempDir(PathBuf);
-
-    impl TempDir {
-        fn new(name: &str) -> TempDir {
-            let dir = std::env::temp_dir()
-                .join(format!("mini-launcher-roms-{name}-{}", std::process::id()));
-            let _ = fs::remove_dir_all(&dir);
-            fs::create_dir_all(&dir).unwrap();
-            TempDir(dir)
-        }
-
-        fn touch(&self, rel: &str) -> PathBuf {
-            let path = self.0.join(rel);
-            fs::create_dir_all(path.parent().unwrap()).unwrap();
-            fs::write(&path, b"").unwrap();
-            path
-        }
-    }
-
-    impl Drop for TempDir {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.0);
-        }
-    }
+    use crate::test_util::TempDir;
 
     fn names(roms: &[RomFile]) -> Vec<(&str, Option<&str>)> {
         roms.iter()
@@ -357,22 +333,22 @@ mod tests {
     #[test]
     fn detects_the_exe_in_usual_locations_only() {
         let dir = TempDir::new("detect");
-        assert_eq!(EDEN.detect_exe_in(&dir.0), None);
-        fs::create_dir_all(dir.0.join("Programs/eden/eden.exe")).unwrap(); // a folder
-        assert_eq!(EDEN.detect_exe_in(&dir.0), None);
+        assert_eq!(EDEN.detect_exe_in(&dir), None);
+        fs::create_dir_all(dir.join("Programs/eden/eden.exe")).unwrap(); // a folder
+        assert_eq!(EDEN.detect_exe_in(&dir), None);
         dir.touch("eden/eden.exe");
-        let fallback = dir.0.join("eden").join("eden.exe");
-        assert_eq!(EDEN.detect_exe_in(&dir.0), Some(fallback));
-        fs::remove_dir(dir.0.join("Programs/eden/eden.exe")).unwrap();
+        let fallback = dir.join("eden").join("eden.exe");
+        assert_eq!(EDEN.detect_exe_in(&dir), Some(fallback));
+        fs::remove_dir(dir.join("Programs/eden/eden.exe")).unwrap();
         dir.touch("Programs/eden/eden.exe");
         // Joined per component, so the separators are native on Windows.
-        let installed = dir.0.join("Programs").join("eden").join("eden.exe");
-        let found = EDEN.detect_exe_in(&dir.0).unwrap();
+        let installed = dir.join("Programs").join("eden").join("eden.exe");
+        let found = EDEN.detect_exe_in(&dir).unwrap();
         assert_eq!(found.as_os_str(), installed.as_os_str());
         if cfg!(windows) {
             assert!(!found.to_string_lossy().contains('/'), "{found:?}");
         }
-        assert_eq!(EDEN.detect_exe_in(&dir.0.join("missing")), None);
+        assert_eq!(EDEN.detect_exe_in(&dir.join("missing")), None);
     }
 
     #[test]
@@ -386,9 +362,9 @@ mod tests {
         dir.touch("save.nsp.bak");
         dir.touch("noext");
         dir.touch("sub/Zelda [01007EF00011E000].nsp");
-        fs::create_dir(dir.0.join("folder.nsp")).unwrap();
+        fs::create_dir(dir.join("folder.nsp")).unwrap();
 
-        let roms = scan_roms(&dir.0, &EDEN, ScanOptions::default()).roms;
+        let roms = scan_roms(&dir, &EDEN, ScanOptions::default()).roms;
         let want = [
             ("[0100ABCD00000000]", Some("0100abcd00000000")),
             ("homebrew", Some("homebrew")),
@@ -402,11 +378,11 @@ mod tests {
             recurse_one_level: true,
             ..ScanOptions::default()
         };
-        let roms = scan_roms(&dir.0, &EDEN, opts).roms;
+        let roms = scan_roms(&dir, &EDEN, opts).roms;
         assert_eq!(roms.len(), 5);
         assert_eq!(roms[4].name, "Zelda");
         assert_eq!(
-            scan_roms(&dir.0.join("missing"), &EDEN, opts),
+            scan_roms(&dir.join("missing"), &EDEN, opts),
             RomScan::default()
         );
     }
@@ -421,7 +397,7 @@ mod tests {
             ..ScanOptions::default()
         };
         assert_eq!(
-            names(&scan_roms(&dir.0, &EDEN, opts).roms),
+            names(&scan_roms(&dir, &EDEN, opts).roms),
             [("one", Some("one"))]
         );
     }
@@ -438,7 +414,7 @@ mod tests {
             limit,
         };
         let scan = |limit| {
-            let s = scan_roms(&dir.0, &EDEN, opts(limit));
+            let s = scan_roms(&dir, &EDEN, opts(limit));
             (s.roms.len(), s.truncated)
         };
         assert_eq!(scan(4), (4, true));
@@ -460,12 +436,12 @@ mod tests {
             ..ScanOptions::default()
         };
         // 3 top-level folders + 6 files = 9 entries in total.
-        let full = scan_roms_with_budget(&dir.0, &EDEN, opts, 9);
+        let full = scan_roms_with_budget(&dir, &EDEN, opts, 9);
         assert_eq!((full.roms.len(), full.truncated), (6, false));
         // A per-folder cap of 3 would still find all 6.
-        let cut = scan_roms_with_budget(&dir.0, &EDEN, opts, 6);
+        let cut = scan_roms_with_budget(&dir, &EDEN, opts, 6);
         assert_eq!((cut.roms.len(), cut.truncated), (3, true));
-        let none = scan_roms_with_budget(&dir.0, &EDEN, opts, 0);
+        let none = scan_roms_with_budget(&dir, &EDEN, opts, 0);
         assert_eq!((none.roms.len(), none.truncated), (0, true));
     }
 
@@ -480,7 +456,7 @@ mod tests {
             recurse_one_level: true,
             ..ScanOptions::default()
         };
-        let roms = scan_roms(&dir.0, &EDEN, opts).roms;
+        let roms = scan_roms(&dir, &EDEN, opts).roms;
         assert_eq!(names(&roms), [("Game", Some("game"))]);
     }
 
@@ -493,14 +469,14 @@ mod tests {
         outside.touch("dir/inner.nsp");
         let dir = TempDir::new("links");
         let real = dir.touch("real.nsp");
-        symlink(&target, dir.0.join("escape.nsp")).unwrap();
-        symlink(&real, dir.0.join("alias.nsp")).unwrap();
-        symlink(outside.0.join("dir"), dir.0.join("linked")).unwrap();
+        symlink(&target, dir.join("escape.nsp")).unwrap();
+        symlink(&real, dir.join("alias.nsp")).unwrap();
+        symlink(outside.join("dir"), dir.join("linked")).unwrap();
         let opts = ScanOptions {
             recurse_one_level: true,
             ..ScanOptions::default()
         };
-        let roms = scan_roms(&dir.0, &EDEN, opts).roms;
+        let roms = scan_roms(&dir, &EDEN, opts).roms;
         // `alias` is the same file as `real`, so it is listed once, as `real`.
         assert_eq!(names(&roms), [("real", Some("real"))]);
         assert_eq!(roms[0].path, real);
@@ -508,8 +484,8 @@ mod tests {
         // A link to a ROM in a subfolder counts once too, as the real file.
         let other = TempDir::new("links-sub");
         let deep = other.touch("sub/deep.nsp");
-        symlink(&deep, other.0.join("shortcut.nsp")).unwrap();
-        let roms = scan_roms(&other.0, &EDEN, opts).roms;
+        symlink(&deep, other.join("shortcut.nsp")).unwrap();
+        let roms = scan_roms(&other, &EDEN, opts).roms;
         assert_eq!(names(&roms), [("deep", Some("deep"))]);
         assert_eq!(roms[0].path, deep);
     }

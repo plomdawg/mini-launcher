@@ -21,6 +21,8 @@ pub mod reconnect;
 pub mod runner;
 pub mod session;
 pub mod steam;
+#[cfg(test)]
+mod test_util;
 
 /// Version of the core library, taken from `Cargo.toml`.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

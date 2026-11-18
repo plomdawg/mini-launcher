@@ -175,16 +175,7 @@ fn read_pointer(default_dir: &Path) -> Result<Option<PathBuf>, LocationError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn temp(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "mini-launcher-location-{name}-{}",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
-    }
+    use crate::test_util::TempDir;
 
     fn pointer(default: &Path, dir: &Path) {
         let text = format!("dir = '{}'\n", dir.display());
@@ -197,18 +188,18 @@ mod tests {
 
     #[test]
     fn no_pointer_means_default_dir() {
-        let default = temp("none");
+        let default = TempDir::new("none");
         let loc = ConfigLocation::resolve(&default);
-        assert_eq!(loc, ConfigLocation::Default(default.clone()));
+        assert_eq!(loc, ConfigLocation::Default(default.to_path_buf()));
         assert_eq!(loc.writable_file().unwrap(), default.join(CONFIG_FILE));
     }
 
     #[test]
     fn pointer_to_existing_absolute_folder() {
-        let (default, synced) = (temp("ok"), temp("ok-synced"));
+        let (default, synced) = (TempDir::new("ok"), TempDir::new("ok-synced"));
         pointer(&default, &synced);
         let loc = ConfigLocation::resolve(&default);
-        assert_eq!(loc, ConfigLocation::Override(synced.clone()));
+        assert_eq!(loc, ConfigLocation::Override(synced.to_path_buf()));
         assert_eq!(loc.config_file().unwrap(), synced.join(CONFIG_FILE));
         // The folder goes away after resolving: saves refuse to recreate it.
         std::fs::remove_dir_all(&synced).unwrap();
@@ -223,7 +214,7 @@ mod tests {
 
     #[test]
     fn missing_folder_is_unavailable_not_the_default() {
-        let default = temp("missing");
+        let default = TempDir::new("missing");
         let missing = default.join("not-mounted");
         pointer(&default, &missing);
         let loc = ConfigLocation::resolve(&default);
@@ -247,7 +238,7 @@ mod tests {
 
     #[test]
     fn set_pointer_round_trips() {
-        let (default, synced) = (temp("set"), temp("set-synced"));
+        let (default, synced) = (TempDir::new("set"), TempDir::new("set-synced"));
         let odd = synced.join("it's odd");
         std::fs::create_dir(&odd).unwrap();
         set_pointer(&default, Some(&odd)).unwrap();
@@ -260,13 +251,13 @@ mod tests {
         set_pointer(&default, None).unwrap();
         assert_eq!(
             ConfigLocation::resolve(&default),
-            ConfigLocation::Default(default)
+            ConfigLocation::Default(default.to_path_buf())
         );
     }
 
     #[test]
     fn rejects_bad_pointers() {
-        let default = temp("bad");
+        let default = TempDir::new("bad");
         let missing = default.join("does-not-exist");
         let file = default.join("a-file");
         std::fs::write(&file, "").unwrap();
