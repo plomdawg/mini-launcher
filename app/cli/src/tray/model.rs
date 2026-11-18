@@ -296,6 +296,11 @@ pub const CONFIG_TEMPLATE: &str = r#"# Mini Launcher library. Changes are picked
 # steam_appid = 220
 #
 # [[games]]
+# id = "wow-forever"
+# name = "World of Warcraft: Forever"
+# battlenet = "WoWF"              # Battle.net launch code
+#
+# [[games]]
 # id = "my-game"
 # name = "My Game"
 # exe = 'C:\Games\MyGame\game.exe'

@@ -12,6 +12,7 @@ use std::time::{Duration, Instant, SystemTime};
 use anyhow::{Context, Result};
 use mini_launcher_cli::{logging, port};
 use mini_launcher_core::autostart::{self, Status};
+use mini_launcher_core::battlenet::{self, BattleNetGame};
 use mini_launcher_core::config::edit::saved_by_this_process;
 use mini_launcher_core::config::location::{ConfigLocation, POINTER_FILE};
 use mini_launcher_core::config::{self, Config};
@@ -420,6 +421,10 @@ impl Host for TrayHost {
 
     fn steam_games(&self) -> Result<Vec<SteamGame>, String> {
         steam::installed_games().map_err(|e| e.to_string())
+    }
+
+    fn battlenet_games(&self) -> Vec<BattleNetGame> {
+        battlenet::installed_games()
     }
 
     fn launch(&self, plan: &LaunchPlan) -> Result<(), String> {

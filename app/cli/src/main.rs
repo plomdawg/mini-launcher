@@ -6,6 +6,7 @@ use clap::{Args, Parser, Subcommand};
 use mini_launcher_cli::{logging, port};
 
 mod autostart;
+mod battlenet;
 mod diagnose;
 mod run;
 mod scan;
@@ -78,11 +79,17 @@ enum Command {
         #[command(subcommand)]
         action: SteamAction,
     },
+    /// Installed Battle.net games (Windows only).
+    #[command(name = "battlenet")]
+    BattleNet {
+        #[command(subcommand)]
+        action: SteamAction,
+    },
 }
 
 #[derive(Debug, Subcommand)]
 enum SteamAction {
-    /// List installed games (appid and name), sorted by name.
+    /// List installed games (appid or launch code, and name), sorted by name.
     List,
 }
 
@@ -186,6 +193,9 @@ fn main() -> ExitCode {
         Command::Steam {
             action: SteamAction::List,
         } => steam::list(&mut out),
+        Command::BattleNet {
+            action: SteamAction::List,
+        } => battlenet::list(&mut out),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -293,6 +303,13 @@ mod tests {
             }
         ));
         assert!(Cli::try_parse_from(["mini-launcher", "steam"]).is_err());
+        let cli = Cli::try_parse_from(["mini-launcher", "battlenet", "list"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::BattleNet {
+                action: SteamAction::List
+            }
+        ));
     }
 
     #[test]

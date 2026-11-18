@@ -1,8 +1,8 @@
 # Mini Launcher
 
 Put an NFC tag in a 3D-printed game cartridge or disc, slot it into a 3D-printed console-style
-reader, and the game launches on your PC (Steam, any executable, or an emulator with your own
-_legally_ dumped games).
+reader, and the game launches on your PC (Steam, Battle.net, any executable, or an emulator with
+your own _legally_ dumped games).
 
 **Status:** early development. See [AGENTS.md](AGENTS.md) for the design and roadmap.
 Windows builds are on the [Releases page](https://github.com/plomdawg/mini-launcher/releases);

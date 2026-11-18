@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::thread;
 
+use mini_launcher_core::battlenet::BattleNetGame;
 use mini_launcher_core::config::{emulator_plan, format_uid, Config, Emulator, Game};
 use mini_launcher_core::emulators::{
     display_name, scan_roms, suggest_slug, EmulatorPreset, RomScan, ScanOptions, PRESETS,
@@ -51,9 +52,19 @@ impl Link for SessionClient {
     }
 }
 
+/// A game found installed, as the pick step lists it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Installed {
+    pub name: String,
+    pub plan: LaunchPlan,
+    /// The STORE column: `Steam 620`, `Battle.net WoWF`.
+    pub store: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Step {
-    /// Choose an installed Steam game, Program... or Emulator game...
+    /// Choose an installed Steam or Battle.net game, Program... or
+    /// Emulator game...
     Pick,
     /// The program form (exe, args, working dir, id).
     Program,
@@ -102,9 +113,11 @@ pub struct Wizard {
     pub from_edit: bool,
     /// Installed Steam games, or why they can't be listed.
     pub steam: Result<Vec<SteamGame>, String>,
+    /// Installed Battle.net games (empty when there is no Battle.net).
+    pub battlenet: Vec<BattleNetGame>,
     pub search: String,
-    /// The chosen Steam appid on the pick step.
-    pub selected: Option<u32>,
+    /// The chosen installed game's plan on the pick step.
+    pub selected: Option<LaunchPlan>,
     /// The program's id (`id:<slug>` on its tag), as typed.
     pub slug: String,
     /// Whether `slug` still follows the name.
@@ -139,6 +152,7 @@ impl Wizard {
             step: Step::Pick,
             from_edit: false,
             steam,
+            battlenet: Vec::new(),
             search: String::new(),
             selected: None,
             slug: String::new(),
@@ -167,41 +181,63 @@ impl Wizard {
         }
     }
 
-    /// The Steam games matching the search, case-insensitively.
-    pub fn filtered(&self) -> Vec<&SteamGame> {
+    /// Every installed game (Steam, then Battle.net), unfiltered.
+    pub fn installed(&self) -> Vec<Installed> {
+        let steam = self.steam.as_deref().unwrap_or_default();
+        let steam = steam.iter().map(|g| Installed {
+            name: g.name.clone(),
+            plan: LaunchPlan::Steam { appid: g.appid },
+            store: format!("Steam {}", g.appid),
+        });
+        let battlenet = self.battlenet.iter().map(|g| Installed {
+            name: g.name.clone(),
+            plan: LaunchPlan::BattleNet {
+                code: g.code.clone(),
+            },
+            store: format!("Battle.net {}", g.code),
+        });
+        steam.chain(battlenet).collect()
+    }
+
+    /// The installed games matching the search, case-insensitively, by
+    /// name, Steam appid or Battle.net code.
+    pub fn filtered(&self) -> Vec<Installed> {
         let needle = self.search.trim().to_lowercase();
-        let games = self.steam.as_deref().unwrap_or_default();
+        let mut games = self.installed();
+        games.retain(|g| {
+            let key = match &g.plan {
+                LaunchPlan::Steam { appid } => appid.to_string(),
+                LaunchPlan::BattleNet { code } => code.as_str().to_lowercase(),
+                _ => String::new(),
+            };
+            g.name.to_lowercase().contains(&needle) || key == needle
+        });
+        games.sort_by_cached_key(|g| g.name.to_lowercase());
         games
-            .iter()
-            .filter(|g| g.name.to_lowercase().contains(&needle) || g.appid.to_string() == needle)
-            .collect()
     }
 
-    /// The library entry that launches Steam app `appid`, if any.
-    pub fn in_library(config: Option<&Config>, appid: u32) -> Option<&Game> {
-        config?
-            .games
-            .iter()
-            .find(|g| g.plan == LaunchPlan::Steam { appid })
+    /// The library entry that launches `plan`, if any.
+    pub fn in_library<'c>(config: Option<&'c Config>, plan: &LaunchPlan) -> Option<&'c Game> {
+        config?.games.iter().find(|g| &g.plan == plan)
     }
 
-    /// Takes the selected Steam game: its library entry if it has one, else
-    /// a new one. Returns whether the wizard moved on (then call
+    /// Takes the selected installed game: its library entry if it has one,
+    /// else a new one. Returns whether the wizard moved on (then call
     /// [`Wizard::begin`]).
-    pub fn pick_steam(&mut self, config: &Config) -> bool {
-        let Some(appid) = self.selected else {
+    pub fn pick_installed(&mut self, config: &Config) -> bool {
+        let Some(plan) = &self.selected else {
             return false;
         };
-        let Some(steam) = self.filtered().into_iter().find(|g| g.appid == appid) else {
+        let Some(installed) = self.filtered().into_iter().find(|g| &g.plan == plan) else {
             return false;
         };
-        let game = match Wizard::in_library(Some(config), appid) {
+        let game = match Wizard::in_library(Some(config), plan) {
             Some(game) => game.clone(),
             None => Game {
-                id: new_id(&steam.name, config),
-                name: steam.name.clone(),
+                id: new_id(&installed.name, config),
+                name: installed.name,
                 uid: None,
-                plan: LaunchPlan::Steam { appid },
+                plan: installed.plan,
             },
         };
         self.game = Some(game);
@@ -430,12 +466,13 @@ impl Wizard {
         }
     }
 
-    /// What goes on the tag: `steam://<appid>`, or `id:<slug>` for programs.
+    /// What goes on the tag: `steam://<appid>`, or `id:<slug>` for
+    /// everything else (programs, emulator and Battle.net games).
     pub fn payload(&self) -> Option<Payload> {
         let game = self.game.as_ref()?;
         Some(match &game.plan {
             LaunchPlan::Steam { appid } => Payload::Steam(*appid),
-            LaunchPlan::Exe { .. } | LaunchPlan::Emulator { .. } => Payload::Id(game.id.clone()),
+            _ => Payload::Id(game.id.clone()),
         })
     }
 
@@ -731,7 +768,7 @@ fn describe(
     steam: &Result<Vec<SteamGame>, String>,
 ) -> String {
     let name = match payload {
-        Payload::Steam(appid) => Wizard::in_library(config, *appid)
+        Payload::Steam(appid) => Wizard::in_library(config, &LaunchPlan::Steam { appid: *appid })
             .map(|g| g.name.clone())
             .or_else(|| {
                 let games = steam.as_deref().unwrap_or_default();
@@ -917,8 +954,8 @@ mod tests {
         let mut wizard = Wizard::new(Ok(steam_games()));
         wizard.search = "cel".into();
         assert_eq!(wizard.filtered().len(), 1);
-        wizard.selected = Some(504230);
-        assert!(wizard.pick_steam(library.config().unwrap()));
+        wizard.selected = Some(LaunchPlan::Steam { appid: 504230 });
+        assert!(wizard.pick_installed(library.config().unwrap()));
         let link = Fake::default();
         wizard.begin(Some(Box::new(Tracked(link.clone()))));
         let rig = Rig {
@@ -1503,14 +1540,55 @@ mod tests {
         let r = rig("existing");
         let config = r.library.config().unwrap();
         let mut w = Wizard::new(Ok(steam_games()));
-        w.selected = Some(620);
-        assert!(w.pick_steam(config));
+        w.selected = Some(LaunchPlan::Steam { appid: 620 });
+        assert!(w.pick_installed(config));
         let game = w.game.unwrap();
         assert_eq!(game.id.as_str(), "portal-2");
         assert!(game.uid.is_some());
         let mut w = Wizard::new(Ok(steam_games()));
-        assert!(!w.pick_steam(config), "nothing selected");
+        assert!(!w.pick_installed(config), "nothing selected");
         w.search = "620".into();
+        assert_eq!(w.filtered().len(), 1);
+    }
+
+    #[test]
+    fn battlenet_games_are_listed_and_tagged_by_id() {
+        use mini_launcher_core::battlenet::Code;
+        let r = rig("battlenet");
+        let config = r.library.config().unwrap();
+        let mut w = Wizard::new(Ok(steam_games()));
+        let forever = Code::new("WoWF").unwrap();
+        w.battlenet = vec![BattleNetGame {
+            code: forever.clone(),
+            name: "World of Warcraft: Forever".into(),
+            location: r"C:\Games\World of Warcraft\_forever_".into(),
+        }];
+        let plan = LaunchPlan::BattleNet { code: forever };
+        let all = w.filtered();
+        assert!(all
+            .iter()
+            .any(|g| g.plan == plan && g.store == "Battle.net WoWF"));
+        // Sorted by name across stores.
+        let names: Vec<_> = all.iter().map(|g| g.name.to_lowercase()).collect();
+        assert!(names.windows(2).all(|p| p[0] <= p[1]), "{names:?}");
+        w.search = "wowf".into();
+        assert_eq!(w.filtered().len(), 1);
+        w.search = "forever".into();
+        w.selected = Some(plan.clone());
+        assert!(w.pick_installed(config));
+        let game = w.game.clone().unwrap();
+        assert_eq!(
+            (game.id.as_str(), &game.plan),
+            ("world-of-warcraft-forever", &plan)
+        );
+        assert_eq!(w.payload(), Some(Payload::Id(game.id)));
+        // No Steam: the Battle.net games are still listed.
+        let mut w = Wizard::new(Err("Steam is not installed".into()));
+        w.battlenet = vec![BattleNetGame {
+            code: Code::new("Pro").unwrap(),
+            name: "Overwatch".into(),
+            location: "C:\\OW".into(),
+        }];
         assert_eq!(w.filtered().len(), 1);
     }
 }

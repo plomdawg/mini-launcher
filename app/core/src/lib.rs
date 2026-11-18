@@ -5,6 +5,7 @@
 //! to be testable without hardware.
 
 pub mod autostart;
+pub mod battlenet;
 pub mod config;
 pub mod debounce;
 pub mod emulators;

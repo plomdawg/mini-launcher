@@ -5,6 +5,7 @@
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
+use mini_launcher_core::battlenet::Code;
 use mini_launcher_core::config::edit::ConfigDocument;
 use mini_launcher_core::config::location::ConfigLocation;
 use mini_launcher_core::config::{check_rom_arg, emulator_plan, Config, Emulator, Game};
@@ -215,6 +216,8 @@ fn chain(e: &dyn std::error::Error) -> String {
 pub enum Field {
     Name,
     AppId,
+    /// A Battle.net launch code.
+    Code,
     /// The id a new program gets (`id:<slug>` on its tag).
     Id,
     Exe,
@@ -233,6 +236,10 @@ pub struct Form {
     pub name: String,
     pub steam: bool,
     pub app_id: String,
+    /// Launch with Battle.net (wins over `steam`; the emulator wins over it).
+    pub battlenet: bool,
+    /// The Battle.net launch code, as typed.
+    pub code: String,
     pub exe: String,
     pub args: String,
     pub cwd: String,
@@ -266,6 +273,10 @@ impl Form {
             LaunchPlan::Steam { appid } => {
                 form.steam = true;
                 form.app_id = appid.to_string();
+            }
+            LaunchPlan::BattleNet { code } => {
+                form.battlenet = true;
+                form.code = code.to_string();
             }
             LaunchPlan::Exe { path, args, cwd } => {
                 form.exe = path.display().to_string();
@@ -312,6 +323,15 @@ impl Form {
                     None
                 }
                 (Some(e), false) => Some(emulator_plan(e, PathBuf::from(rom))),
+            }
+        } else if self.battlenet {
+            match Code::new(self.code.trim()) {
+                Ok(code) => Some(LaunchPlan::BattleNet { code }),
+                Err(_) => {
+                    let e = "Enter the Battle.net launch code (letters, digits or _, e.g. WoWF).";
+                    errors.push((Field::Code, e.to_owned()));
+                    None
+                }
             }
         } else if self.steam {
             match self.app_id.trim().parse::<u32>() {
@@ -591,6 +611,30 @@ mod tests {
         form.steam = true;
         form.app_id = "0".into();
         assert_eq!(form.to_game(&config).unwrap_err()[0].0, Field::AppId);
+    }
+
+    #[test]
+    fn battlenet_form_round_trips() {
+        let config = Config::default();
+        let mut form = Form::new();
+        form.name = "WoW Forever".into();
+        form.battlenet = true;
+        for bad in ["", "launch WoWF", "WoWF\""] {
+            form.code = bad.into();
+            assert_eq!(
+                form.to_game(&config).unwrap_err()[0].0,
+                Field::Code,
+                "{bad:?}"
+            );
+        }
+        form.code = " WoWF ".into();
+        let game = form.to_game(&config).unwrap();
+        let code = Code::new("WoWF").unwrap();
+        assert_eq!(game.plan, LaunchPlan::BattleNet { code });
+        let back = Form::from_game(&game);
+        assert!(back.battlenet && !back.steam);
+        assert_eq!(back.code, "WoWF");
+        assert_eq!(back.to_game(&config).unwrap().plan, game.plan);
     }
 
     #[test]
