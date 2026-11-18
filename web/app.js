@@ -414,21 +414,29 @@
     return `M${c-r} ${c}a${r} ${r} 0 1 0 ${r*2} 0a${r} ${r} 0 1 0 ${-r*2} 0Z`;
   }
 
-  // Disc label: art authored in full-CD proportions, scaled to the printed diameter and
-  // clipped to a ring (outer edge incl. bleed, center hole left transparent).
+  // Disc label: art authored in full-CD proportions, scaled so its CD edge sits on the trim
+  // circle (the printed diameter). Bleed extends outward via a larger copy confined to the
+  // bleed ring, and inward by cutting the art's hole smaller than the punched hole; the
+  // hole itself stays transparent.
   function buildDiscSvg(s = readState(), includeGuides = false) {
     const diameter = Number(normalizeSettingValue('discDiameter', s.discDiameter));
     const hole = Math.min(Number(normalizeSettingValue('discHole', s.discHole)), diameter * .8);
     const bleed = Number(normalizeSettingValue('bleed', s.bleed));
     const total = diameter + bleed * 2;
     const c = total / 2, trimR = diameter / 2, holeR = hole / 2;
-    const ring = circlePath(c, c) + (holeR > 0 ? circlePath(c, holeR) : '');
+    const artHoleR = Math.max(0, holeR - bleed);
+    const holePath = artHoleR > 0 ? circlePath(c, artHoleR) : '';
+    const disc = circlePath(c, c) + holePath;
     const image = safeImage(s.discImage);
     const aspect = s.discFit === 'contain' ? 'xMidYMid meet' : 'xMidYMid slice';
+    const defs = [`<clipPath id="discArtClip"><path d="${circlePath(c, trimR) + holePath}" clip-rule="evenodd"/></clipPath>`];
+    // Bleed ring starts slightly inside the trim circle so no seam shows where the layers meet.
+    if (bleed > 0) defs.push(`<clipPath id="discBleedClip"><path d="${circlePath(c, c) + circlePath(c, Math.max(0, trimR - .05))}" clip-rule="evenodd"/></clipPath>`);
     const parts = [`<svg xmlns="http://www.w3.org/2000/svg" width="${total}mm" height="${total}mm" viewBox="0 0 ${total} ${total}">`,
-      `<defs><clipPath id="discArtClip"><path d="${ring}" clip-rule="evenodd"/></clipPath></defs>`,
-      `<path d="${ring}" fill="#eef0ea" fill-rule="evenodd"/>`];
-    if (image) parts.push(`<image href="${image}" x="0" y="0" width="${total}" height="${total}" preserveAspectRatio="${aspect}" clip-path="url(#discArtClip)"/>`);
+      `<defs>${defs.join('')}</defs>`,
+      `<path d="${disc}" fill="#eef0ea" fill-rule="evenodd"/>`];
+    if (image && bleed > 0) parts.push(`<image href="${image}" x="0" y="0" width="${total}" height="${total}" preserveAspectRatio="${aspect}" clip-path="url(#discBleedClip)"/>`);
+    if (image) parts.push(`<image href="${image}" x="${bleed}" y="${bleed}" width="${diameter}" height="${diameter}" preserveAspectRatio="${aspect}" clip-path="url(#discArtClip)"/>`);
     if (s.cropMarks) {
       const stroke = Math.min(.18, diameter / 200);
       parts.push(`<circle cx="${c}" cy="${c}" r="${trimR}" fill="none" stroke="#111" stroke-width="${stroke}"/>`);
@@ -514,10 +522,32 @@
     return {logo: 'spine logo', spine: 'spine art', disc: 'disc art'}[which] || `${which} cover`;
   }
 
+  // Re-encode formats outside safeImage's allowlist (e.g. BMP) to PNG so they render in the
+  // SVG and survive a save/reload; resolves null if the browser cannot decode the image.
+  function ensureSafeImage(data) {
+    if (safeImage(data)) return Promise.resolve(data);
+    return new Promise((resolve) => {
+      const image = new Image();
+      image.onload = () => {
+        try {
+          const canvas = document.createElement('canvas');
+          canvas.width = Math.max(1, image.naturalWidth || image.width);
+          canvas.height = Math.max(1, image.naturalHeight || image.height);
+          canvas.getContext('2d').drawImage(image, 0, 0);
+          resolve(safeImage(canvas.toDataURL('image/png')));
+        } catch { resolve(null); }
+      };
+      image.onerror = () => resolve(null);
+      image.src = data;
+    });
+  }
+
   // Single entry point for putting an image on a target: front|back|spine|logo|disc.
   async function applyImage(which, data, name) {
     if (!Object.prototype.hasOwnProperty.call(files, which)) throw new Error(`Unknown image target: ${which}`);
-    files[which] = which === 'logo' ? await normalizeLogo(data) : data;
+    const safe = await ensureSafeImage(which === 'logo' ? await normalizeLogo(data) : data);
+    if (!safe) throw new Error('That image format is not supported. Try a PNG, JPEG, or WebP file.');
+    files[which] = safe;
     $(`${which}FileName`).textContent = name;
     if (which === 'logo') $('removeSpineLogo').hidden = false;
     if (which === 'spine') $('spineArtOptions').hidden = false;
@@ -538,7 +568,7 @@
       const iconMimeKnown = /^image\/(?:x-icon|vnd\.microsoft\.icon)$/i.test(file.type);
       const source = isIcoFile && !iconMimeKnown ? new Blob([file], {type: 'image/x-icon'}) : file;
       await applyImage(which, await imageData(source), file.name);
-    } catch { toast('Could not load that image.'); }
+    } catch (error) { toast(error && /not supported/.test(error.message) ? error.message : 'Could not load that image.'); }
   }
 
   function safeFilename(name) {
