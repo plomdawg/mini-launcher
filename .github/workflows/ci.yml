@@ -242,6 +242,46 @@ jobs:
               Get-ChildItem $env:MINI_LAUNCHER_LOG_DIR -File -ErrorAction SilentlyContinue | Get-Content -Tail 60
           }
 
+      # `--quit` (what setup does before an upgrade): quits an idle tray, never
+      # one with Settings open (it may hold unsaved edits), and is a no-op when
+      # nothing runs. Exit code 0 = nothing running any more, 1 = still running.
+      - name: Tray --quit (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          MINI_LAUNCHER_LOG_DIR: ${{ runner.temp }}/tray-quit-logs
+        run: |
+          Add-Type -Path ../.github/ci/TrayWindows.cs
+          $exe = Resolve-Path target/release/mini-launcher-tray.exe
+          function Quit {
+              $q = Start-Process $exe -ArgumentList '--quit' -PassThru
+              $null = $q.Handle  # keeps ExitCode readable after exit
+              $q.WaitForExit(); $q.ExitCode
+          }
+          try {
+              if ((Quit) -ne 0) { throw "--quit with nothing running did not exit 0" }
+              $p = Start-Process $exe -PassThru
+              Start-Sleep 3
+              if ((Quit) -ne 0) { throw "--quit did not report the idle tray gone" }
+              if (-not $p.WaitForExit(5000)) { throw "the idle tray did not quit" }
+              $p = Start-Process $exe -ArgumentList '--settings' -PassThru
+              $hwnd = [IntPtr]::Zero
+              for ($i = 0; $i -lt 60 -and $hwnd -eq [IntPtr]::Zero; $i++) {
+                  Start-Sleep -Milliseconds 500; $hwnd = [TrayThreads]::SettingsWindow($p.Id)
+              }
+              if ($hwnd -eq [IntPtr]::Zero) { throw "the settings window did not open" }
+              if ((Quit) -ne 1) { throw "--quit with Settings open did not exit 1" }
+              if ($p.HasExited) { throw "the tray quit while Settings was open" }
+              if ([TrayThreads]::SettingsWindow($p.Id) -eq [IntPtr]::Zero) { throw "the settings window closed" }
+              [void][TrayThreads]::Close($hwnd)
+              for ($i = 0; $i -lt 20 -and [TrayThreads]::SettingsWindow($p.Id) -ne [IntPtr]::Zero; $i++) { Start-Sleep -Milliseconds 500 }
+              if ((Quit) -ne 0) { throw "--quit after Settings closed did not exit 0" }
+              if (-not $p.WaitForExit(5000)) { throw "the tray did not quit after Settings closed" }
+          } finally {
+              if ($p -and -not $p.HasExited) { Stop-Process $p -ErrorAction SilentlyContinue }
+              Get-ChildItem $env:MINI_LAUNCHER_LOG_DIR -File -ErrorAction SilentlyContinue | Get-Content -Tail 40
+          }
+
       - name: Upload binary
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:

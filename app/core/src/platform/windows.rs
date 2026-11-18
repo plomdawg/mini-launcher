@@ -5,6 +5,7 @@ use std::io;
 use std::path::PathBuf;
 use std::ptr;
 
+use windows_sys::Win32::Foundation::WAIT_OBJECT_0;
 use windows_sys::Win32::Foundation::{
     CloseHandle, GetLastError, ERROR_ACCESS_DENIED, ERROR_ALREADY_EXISTS, ERROR_FILE_NOT_FOUND,
     ERROR_MORE_DATA, ERROR_SUCCESS, HANDLE,
@@ -14,7 +15,8 @@ use windows_sys::Win32::System::Registry::{
     REG_EXPAND_SZ, REG_SZ, RRF_NOEXPAND, RRF_RT_ANY,
 };
 use windows_sys::Win32::System::Threading::{
-    CreateMutexW, OpenMutexW, SYNCHRONIZATION_SYNCHRONIZE,
+    CreateEventW, CreateMutexW, OpenEventW, OpenMutexW, SetEvent, WaitForSingleObject,
+    EVENT_MODIFY_STATE, SYNCHRONIZATION_SYNCHRONIZE,
 };
 
 const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
@@ -81,6 +83,62 @@ impl NamedMutex {
 }
 
 impl Drop for NamedMutex {
+    fn drop(&mut self) {
+        // SAFETY: we own the handle and close it exactly once.
+        unsafe { CloseHandle(self.0) };
+    }
+}
+
+/// A named auto-reset event: one process waits on it, others signal it.
+pub(crate) struct NamedEvent(HANDLE);
+
+// A plain kernel object reference, usable from any thread.
+unsafe impl Send for NamedEvent {}
+
+impl NamedEvent {
+    /// Creates `name` (or opens it if it exists), unsignaled.
+    pub(crate) fn create(name: &str) -> io::Result<Self> {
+        let name = wide(name);
+        // SAFETY: `name` is NUL-terminated and outlives the call; null
+        // attributes = default security; auto-reset, initially unsignaled.
+        let handle = unsafe { CreateEventW(ptr::null(), 0, 0, name.as_ptr()) };
+        if handle.is_null() {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(Self(handle))
+    }
+
+    /// Whether the event was signaled since the last call (that resets it).
+    pub(crate) fn take(&self) -> bool {
+        // SAFETY: we own the handle; a zero timeout never blocks.
+        unsafe { WaitForSingleObject(self.0, 0) == WAIT_OBJECT_0 }
+    }
+
+    /// Signals `name`; `Ok(false)` if no process has it open.
+    pub(crate) fn signal(name: &str) -> io::Result<bool> {
+        let name = wide(name);
+        // SAFETY: `name` is NUL-terminated and outlives the call.
+        let handle = unsafe { OpenEventW(EVENT_MODIFY_STATE, 0, name.as_ptr()) };
+        if handle.is_null() {
+            return match io::Error::last_os_error() {
+                e if e.raw_os_error() == Some(ERROR_FILE_NOT_FOUND as i32) => Ok(false),
+                e => Err(e),
+            };
+        }
+        // SAFETY: the handle was just opened with EVENT_MODIFY_STATE.
+        let ok = unsafe { SetEvent(handle) } != 0;
+        let result = if ok {
+            Ok(true)
+        } else {
+            Err(io::Error::last_os_error())
+        };
+        // SAFETY: we own the handle just opened and close it once.
+        unsafe { CloseHandle(handle) };
+        result
+    }
+}
+
+impl Drop for NamedEvent {
     fn drop(&mut self) {
         // SAFETY: we own the handle and close it exactly once.
         unsafe { CloseHandle(self.0) };

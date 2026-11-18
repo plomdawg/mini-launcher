@@ -197,6 +197,67 @@ impl RateLimiter {
     }
 }
 
+/// What the command line asks for.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Mode {
+    /// Run the tray app; open the settings window this many times
+    /// (`--settings`, repeatable: each opens it again after it closes).
+    Run { settings: usize },
+    /// `--quit`: ask the running tray app to quit, then exit.
+    Quit,
+}
+
+pub fn mode<A: AsRef<std::ffi::OsStr>>(args: impl IntoIterator<Item = A>) -> Mode {
+    let mut settings = 0;
+    for arg in args {
+        match arg.as_ref().to_str() {
+            Some("--quit") => return Mode::Quit,
+            Some("--settings") => settings += 1,
+            _ => {}
+        }
+    }
+    Mode::Run { settings }
+}
+
+/// What a quit request from outside (setup, `--quit`) does.
+#[derive(Debug, PartialEq, Eq)]
+pub enum QuitAction {
+    /// Same as the Quit menu item.
+    Quit,
+    /// The settings window is open and may hold unsaved edits: keep
+    /// running, bring it to the front and say why.
+    CloseSettingsFirst,
+    /// Already asked recently (setup repeats its request while it waits).
+    Ignore,
+}
+
+pub const CLOSE_SETTINGS_TITLE: &str = "Update waiting";
+pub const CLOSE_SETTINGS_TEXT: &str = "Close Settings to finish updating Mini Launcher.";
+
+/// Decides [`QuitAction`]s; asks at most once per gap to close Settings.
+#[derive(Debug)]
+pub struct QuitRequests(RateLimiter);
+
+impl Default for QuitRequests {
+    fn default() -> Self {
+        Self(RateLimiter::new(Self::GAP))
+    }
+}
+
+impl QuitRequests {
+    pub const GAP: Duration = Duration::from_secs(30);
+
+    pub fn handle(&mut self, settings_open: bool, now: Instant) -> QuitAction {
+        if !settings_open {
+            QuitAction::Quit
+        } else if self.0.allow(now) {
+            QuitAction::CloseSettingsFirst
+        } else {
+            QuitAction::Ignore
+        }
+    }
+}
+
 /// Written by "Open config" when there is no config file yet.
 pub const CONFIG_TEMPLATE: &str = r#"# Mini Launcher library. Changes are picked up automatically.
 #
@@ -607,6 +668,33 @@ mod tests {
             notification(&failed, Some(problem)).unwrap().1,
             "Could not start the game"
         );
+    }
+
+    #[test]
+    fn mode_parses_quit_and_counts_settings() {
+        assert_eq!(mode::<&str>([]), Mode::Run { settings: 0 });
+        assert_eq!(
+            mode(["--settings", "--other", "--settings"]),
+            Mode::Run { settings: 2 }
+        );
+        assert_eq!(mode(["--quit"]), Mode::Quit);
+        assert_eq!(mode(["--settings", "--quit"]), Mode::Quit);
+        assert_eq!(mode(["quit", "-quit"]), Mode::Run { settings: 0 });
+    }
+
+    #[test]
+    fn quit_requests_quit_unless_settings_is_open() {
+        let mut q = QuitRequests::default();
+        let t0 = Instant::now();
+        assert_eq!(q.handle(false, t0), QuitAction::Quit);
+        // Settings open: ask once, then stay quiet while setup repeats it.
+        assert_eq!(q.handle(true, t0), QuitAction::CloseSettingsFirst);
+        let soon = t0 + Duration::from_secs(1);
+        assert_eq!(q.handle(true, soon), QuitAction::Ignore);
+        // Closing Settings lets the next request through at once.
+        assert_eq!(q.handle(false, soon), QuitAction::Quit);
+        let later = t0 + QuitRequests::GAP;
+        assert_eq!(q.handle(true, later), QuitAction::CloseSettingsFirst);
     }
 
     #[test]

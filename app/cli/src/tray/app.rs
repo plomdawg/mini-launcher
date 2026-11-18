@@ -39,6 +39,8 @@ const CONFIG_CHECK_POLLS: u32 = 10;
 const CONFIG_RETRY: Duration = Duration::from_secs(30);
 /// How long the UI thread waits for window messages between other checks.
 const UI_WAIT_MS: u32 = 50;
+/// How long `--quit` waits for the running app to exit.
+const QUIT_WAIT: Duration = Duration::from_secs(10);
 /// Placeholder port name until auto-detection finds the reader.
 const AUTO_PORT: &str = "auto-detected port";
 
@@ -62,6 +64,10 @@ pub fn main() -> ExitCode {
         tracing::error!("panic: {info}");
         default_hook(info);
     }));
+    let settings = match model::mode(std::env::args_os().skip(1)) {
+        model::Mode::Quit => return quit_running(),
+        model::Mode::Run { settings } => settings,
+    };
     let _instance = match instance::acquire() {
         Ok(Some(guard)) => guard,
         Ok(None) => {
@@ -75,7 +81,7 @@ pub fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    match run(log_dir) {
+    match run(log_dir, settings) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             tracing::error!("{e:#}");
@@ -85,7 +91,7 @@ pub fn main() -> ExitCode {
     }
 }
 
-fn run(log_dir: Option<PathBuf>) -> Result<()> {
+fn run(log_dir: Option<PathBuf>, mut reopen: usize) -> Result<()> {
     let mut config = model::ConfigStatus::default();
     let exe = std::env::current_exe().context("cannot find this program's path")?;
     let stop = Arc::new(AtomicBool::new(false));
@@ -101,6 +107,11 @@ fn run(log_dir: Option<PathBuf>) -> Result<()> {
         relocate: AtomicBool::new(false),
         sessions,
     });
+    // Setup signals this to close the app before it upgrades it.
+    let quit_listener = instance::QuitListener::create()
+        .inspect_err(|e| tracing::warn!("cannot listen for quit requests from setup: {e}"))
+        .ok();
+    let mut quit_requests = model::QuitRequests::default();
     let worker = thread::Builder::new()
         .name("run-loop".into())
         .spawn({
@@ -178,10 +189,6 @@ fn run(log_dir: Option<PathBuf>) -> Result<()> {
 
     // Each `--settings` opens the window once more after the previous one
     // closes (CI repeats it to check re-opening on the kept event loop).
-    let mut reopen = std::env::args_os()
-        .skip(1)
-        .filter(|a| a == "--settings")
-        .count();
     if reopen > 0 {
         reopen -= 1;
         window.show();
@@ -241,6 +248,25 @@ fn run(log_dir: Option<PathBuf>) -> Result<()> {
             } else if id == start_at_login.id() {
                 toggle_start_at_login(&exe);
                 start_at_login.set_checked(starts_at_login(&exe));
+            }
+        }
+        if quit_listener.as_ref().is_some_and(|q| q.requested()) {
+            match quit_requests.handle(window.is_open(), Instant::now()) {
+                model::QuitAction::Quit => {
+                    tracing::info!("quit requested by setup or --quit");
+                    break 'ui;
+                }
+                model::QuitAction::CloseSettingsFirst => {
+                    // It may hold unsaved edits: never close it from outside.
+                    tracing::info!("quit requested while Settings is open; not quitting");
+                    window.show();
+                    balloon(
+                        Level::Info,
+                        model::CLOSE_SETTINGS_TITLE,
+                        model::CLOSE_SETTINGS_TEXT,
+                    );
+                }
+                model::QuitAction::Ignore => {}
             }
         }
         while let Ok(event) = window_rx.try_recv() {
@@ -311,6 +337,29 @@ fn run(log_dir: Option<PathBuf>) -> Result<()> {
     // The worker notices `stop` within one poll (or one reopen attempt).
     let _ = worker.join();
     Ok(())
+}
+
+/// `--quit`: asks the running tray app to quit and waits for it to exit.
+/// Fails if it is still running (Settings open, or a `mini-launcher run` or
+/// an older version that does not listen).
+fn quit_running() -> ExitCode {
+    match instance::request_quit() {
+        Ok(true) => {
+            tracing::info!("asked the running tray app to quit");
+            let start = Instant::now();
+            while instance::is_running() && start.elapsed() < QUIT_WAIT {
+                thread::sleep(Duration::from_millis(100));
+            }
+        }
+        Ok(false) => {}
+        Err(e) => tracing::warn!("cannot ask the running tray app to quit: {e}"),
+    }
+    if instance::is_running() {
+        tracing::info!("--quit: Mini Launcher is still running");
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    }
 }
 
 /// The tray menu: the (disabled) `status` line, a separator, then `items`.

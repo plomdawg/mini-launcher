@@ -87,12 +87,29 @@ Check ($null -eq (RunValue)) 'unticking the task on upgrade removes the Run valu
 Invoke $Setup ($quiet + '/LOG=upgrade-off.log')
 Check ($null -eq (RunValue)) 'upgrade keeps start at login off'
 
-# 4. Uninstall removes a CLI-style Run value (`autostart enable`) for this install.
+# 4. Upgrading over a running tray app closes it and starts the new one. Waits for
+# setup.exe only: Start-Process -Wait would also wait for the started tray.
+function Trays { @(Get-Process mini-launcher-tray -ErrorAction SilentlyContinue | Where-Object Path -eq $tray) }
+$old = Start-Process $tray -PassThru
+Start-Sleep 3
+$p = Start-Process $Setup -ArgumentList ($quiet + '/LOG=upgrade-running.log') -PassThru
+$null = $p.Handle  # keeps ExitCode readable after exit
+$p.WaitForExit()
+Check ($p.ExitCode -eq 0) "upgrade over the running app exited with $($p.ExitCode)"
+Check $old.HasExited 'upgrade closed the running tray app'
+for ($i = 0; $i -lt 20 -and (Trays).Count -eq 0; $i++) { Start-Sleep -Milliseconds 500 }
+$new = Trays
+Check ($new.Count -eq 1 -and $new[0].Id -ne $old.Id) 'upgrade started the tray app again'
+Start-Sleep 3
+
+# 5. Uninstall closes the running tray app (and doesn't restart it) and removes a
+# CLI-style Run value (`autostart enable`) for this install.
 SetRunValue "`"$(Join-Path $dir 'mini-launcher.exe')`" run"
 Uninstall 'uninstall.log' $false
+Check ($new[0].HasExited -and (Trays).Count -eq 0) 'uninstall closed the tray app'
 Check ($null -eq (RunValue)) 'CLI-style Run value removed'
 
-# 5. ... but leaves one that starts another copy (a sibling dir must not match).
+# 6. ... but leaves one that starts another copy (a sibling dir must not match).
 Invoke $Setup ($quiet + '/MERGETASKS=!autostart', '/LOG=install-again.log')
 $foreign = "`"${dir}2\mini-launcher-tray.exe`""
 SetRunValue $foreign

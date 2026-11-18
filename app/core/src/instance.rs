@@ -2,6 +2,9 @@
 //!
 //! On Windows this is the named mutex `Local\mini-launcher` (per login
 //! session). Other OSes have no lock yet, so every acquire succeeds.
+//!
+//! On Windows the tray app also listens on the auto-reset event
+//! [`QUIT_EVENT`]: setup signals it to close the app before an upgrade.
 
 use std::io;
 
@@ -31,6 +34,33 @@ pub fn is_running() -> bool {
     NamedMutex::exists(NAME).unwrap_or(false)
 }
 
+/// Named event the tray app watches for quit requests (setup, `--quit`).
+/// Must match `QuitEvent` in `installer/mini-launcher.iss`.
+#[cfg(windows)]
+pub const QUIT_EVENT: &str = r"Local\mini-launcher-quit";
+
+/// The tray app's end of [`QUIT_EVENT`]; the event exists while it lives.
+#[cfg(windows)]
+pub struct QuitListener(crate::platform::NamedEvent);
+
+#[cfg(windows)]
+impl QuitListener {
+    pub fn create() -> io::Result<Self> {
+        crate::platform::NamedEvent::create(QUIT_EVENT).map(Self)
+    }
+
+    /// Whether a quit was requested since the last call.
+    pub fn requested(&self) -> bool {
+        self.0.take()
+    }
+}
+
+/// Asks the running tray app to quit; `Ok(false)` if none is listening.
+#[cfg(windows)]
+pub fn request_quit() -> io::Result<bool> {
+    crate::platform::NamedEvent::signal(QUIT_EVENT)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -56,5 +86,20 @@ mod tests {
         assert!(!NamedMutex::exists(name).unwrap());
         let _held = acquire_named(name).unwrap().expect("acquire");
         assert_eq!(NamedMutex::exists(name).unwrap(), cfg!(windows));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn quit_event_is_auto_reset_and_signalable_by_name() {
+        use crate::platform::NamedEvent;
+        let name = r"Local\mini-launcher-test-quit";
+        assert!(!NamedEvent::signal(name).unwrap(), "nobody listens yet");
+        let listener = NamedEvent::create(name).unwrap();
+        assert!(!listener.take());
+        assert!(NamedEvent::signal(name).unwrap());
+        assert!(listener.take());
+        assert!(!listener.take(), "taking the request resets it");
+        drop(listener);
+        assert!(!NamedEvent::signal(name).unwrap());
     }
 }
