@@ -306,9 +306,9 @@ game file come from your config. You need your own legally dumped games and, whe
 needs them, your own keys and firmware. Mini Launcher doesn't include, download or help you find
 any of these.
 
-The settings window lists emulator games but can't add or edit emulators yet, so for now you set
-them up in `config.toml` by hand. The walkthrough below uses **Eden**, a Switch emulator; any
-emulator that takes the game file on its command line works the same way.
+The walkthrough below uses **Eden**, a Switch emulator; any emulator that takes the game file on
+its command line works the same way. You can add the emulator and its games in the settings
+window (step 3) or in `config.toml` by hand.
 
 **1. Set up the emulator on its own.** Install Eden, give it your keys and firmware, and check
 that your game starts from inside Eden. If it doesn't start there, it won't start from a tag
@@ -325,7 +325,18 @@ the full path (`%LOCALAPPDATA%` isn't expanded there). Point `exe` at the emulat
 not a `.bat` or `.cmd` that starts it: those run through `cmd.exe`, which reads the arguments
 again and can break or refuse game paths with characters like `&`, `%` or `^`.
 
-**3. Add the emulator and a game to the config.** Describe each emulator once in an
+**3. Add the emulator and a game.** In the settings window: **Add game → Emulator game...**. If
+no emulator is set up yet, click **Add Eden...**: the form fills in Eden's arguments and finds
+`eden.exe` in the usual places above (otherwise **Browse** for it); **Save** brings you back to
+the wizard. Then choose the game file with **Browse**, or click **Scan folder...** to list the
+Eden game files in a folder (and in the folders directly inside it) and click one. **Next** shows
+a name and tag ID made from the file name; change them if you like. If the name has nothing an ID
+can be made from (for example only Japanese characters), type an ID yourself. **Next** again
+takes you to the same tag step as for any other game (step 4 is done for you). The **Emulators**
+button on the library screen lists, edits and removes emulators, and a game's **Edit** form can
+change its game file or move it onto another emulator.
+
+By hand: describe each emulator once in an
 `[[emulators]]` block, then point games at it with `emulator` (its `id`) and `rom` (the full path
 to the game file):
 
@@ -344,17 +355,17 @@ emulator = "eden"
 rom = 'D:\Games\Switch\kart-racer.nsp'
 
 [[games]]
-id = "puzzle-quest"
-name = "Puzzle Quest"
+id = "my-puzzle-game"
+name = "My Puzzle Game"
 emulator = "eden"
-rom = 'D:\Games\Switch\Puzzle Quest [v0].xci'
+rom = 'D:\Games\Switch\My Puzzle Game [v0].xci'
 ```
 
 For Eden, `-f` starts in fullscreen and `-g` is followed by the game to run. Eden's game files
 usually end in `.nsp`, `.xci`, `.nca`, `.nro` or `.nso`. The config doesn't check that the
 `rom` file exists: if the path is wrong, Eden opens and reports that it can't load the game.
 
-**4. Write the tag.** Write `id:` followed by the game's `id`, for example `id:kart-racer`, with
+**4. Write the tag** (if you added the game by hand). Write `id:` followed by the game's `id`, for example `id:kart-racer`, with
 NFC Tools ([step 4](#4-write-a-tag)) or with `.\mini-launcher.exe write id:kart-racer` (quit the
 tray app first). Or leave the tag as it is and map its UID with `uid` on the game, as for any
 other game.
@@ -377,8 +388,8 @@ Rules for emulators and emulator games:
   game's `rom` path as one argument, spaces included. `{rom}` inside a longer item (e.g.
   `"--rom={rom}"`) is an error; nothing else is substituted.
 - `{rom}` must be written exactly like that: lowercase, no spaces. `{ROM}` or `{ rom }` aren't
-  recognised; they count as plain text, so `args = ["-g", "{ROM}"]` is rejected with
-  `args must contain "{rom}" exactly once`.
+  recognised; they count as plain text, so `args = ["-g", "{ROM}"]` is rejected with an error
+  ending in `args must contain "{rom}" exactly once`.
 - `args` and `cwd` belong to the emulator; a game with `emulator` can't set them, and `rom` is
   only allowed together with `emulator`.
 - The tag still only says `id:<slug>` (or is mapped by `uid`); nothing on the tag reaches the

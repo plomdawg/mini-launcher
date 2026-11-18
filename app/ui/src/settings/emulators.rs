@@ -19,6 +19,9 @@ pub struct Emulators {
     pub confirm_remove: Option<Slug>,
     /// Why the last change on the list failed.
     pub problem: Option<String>,
+    /// The form was opened from the add-game wizard: Save and Cancel go
+    /// back there.
+    pub for_wizard: bool,
 }
 
 impl Settings {
@@ -27,6 +30,7 @@ impl Settings {
         let e = &mut self.emulators;
         e.selected = e.selected.filter(|&i| i < n).or((n > 0).then_some(0));
         e.problem = None;
+        e.for_wizard = false;
         self.screen = Screen::Emulators;
     }
 
@@ -61,6 +65,10 @@ impl Settings {
                 let mut at = self.library.emulators().iter();
                 self.emulators.selected = at.position(|e| e.id == emulator.id);
                 self.screen = Screen::Emulators;
+                if let (true, Some(w)) = (self.emulators.for_wizard, &mut self.wizard) {
+                    (w.emu.emulator, w.emu.rom_error) = (Some(emulator.id), None);
+                    self.screen = Screen::Wizard;
+                }
             }
             Err(e) => self.emulators.form.problem = Some(format!("Not saved: {e}")),
         }
@@ -198,7 +206,10 @@ pub(super) fn edit(ui: &mut Ui, s: &mut Settings) {
         s.browse = Some(Pick::EmulatorExe);
     }
     if cancel {
-        s.screen = Screen::Emulators;
+        s.screen = match s.emulators.for_wizard {
+            true => Screen::Wizard,
+            false => Screen::Emulators,
+        };
     } else if save {
         s.save_emulator();
     }

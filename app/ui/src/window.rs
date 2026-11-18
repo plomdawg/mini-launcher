@@ -280,7 +280,8 @@ impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         settings::show(ui, &mut self.0);
         if let Some((pick, start)) = self.0.take_browse() {
-            if let Some(path) = browse(frame, pick, start) {
+            let types = self.0.game_file_types();
+            if let Some(path) = browse(frame, pick, start, types) {
                 self.0.picked(pick, path);
             }
         }
@@ -329,6 +330,7 @@ fn browse(
     frame: &eframe::Frame,
     pick: settings::Pick,
     start: Option<std::path::PathBuf>,
+    game_file_types: &[&str],
 ) -> Option<std::path::PathBuf> {
     let mut dialog = rfd::FileDialog::new().set_parent(frame);
     if let Some(dir) = start {
@@ -341,7 +343,14 @@ fn browse(
             .add_filter("All files", &["*"])
             .pick_file(),
         settings::Pick::Cwd => dialog.set_title("Choose the working folder").pick_folder(),
-        settings::Pick::Rom => dialog.set_title("Choose the game file").pick_file(),
+        settings::Pick::Rom | settings::Pick::GameFile => {
+            if !game_file_types.is_empty() {
+                dialog = dialog.add_filter("Game files", game_file_types);
+            }
+            let dialog = dialog.set_title("Choose the game file");
+            dialog.add_filter("All files", &["*"]).pick_file()
+        }
+        settings::Pick::GameFolder => dialog.set_title("Choose a folder of games").pick_folder(),
     }
 }
 
@@ -350,6 +359,7 @@ fn browse(
     _: &eframe::Frame,
     _: settings::Pick,
     _: Option<std::path::PathBuf>,
+    _: &[&str],
 ) -> Option<std::path::PathBuf> {
     None
 }

@@ -21,10 +21,10 @@
 //! args = ["-f", "-g", "{rom}"]
 //!
 //! [[games]]
-//! id = "mario-kart-8"
-//! name = "Mario Kart 8 Deluxe"
+//! id = "kart-racer"
+//! name = "Kart Racer"
 //! emulator = "eden"
-//! rom = 'D:\Switch\mk8.nsp'
+//! rom = 'D:\Switch\kart-racer.nsp'
 //! ```
 //!
 //! Each game has exactly one of `steam_appid`, `exe` or `emulator` + `rom`;
