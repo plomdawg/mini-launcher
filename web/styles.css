@@ -26,3 +26,21 @@ body{font-size:15px}.brand{font-size:17px}.topbar-meta,.button{font-size:13px}.e
 .lb-group h3{margin:0;font-size:12px;font-weight:600;color:#d9e7aa;letter-spacing:.02em}
 .lb-group h3 small{font-weight:400;color:#879287;margin-left:6px}
 .sgdb-key-area .hint a{color:#c4d779}
+.preview-stage[hidden]{display:none}
+.view-toggle{display:inline-flex;margin-right:auto;background:#121613;border:1px solid #2f3730;border-radius:8px;padding:2px;gap:2px}
+.view-toggle button{background:transparent;border:0;border-radius:6px;padding:6px 11px;font-size:12px;font-weight:600;color:#9aa499}
+.view-toggle button:hover{color:var(--text)}
+.view-toggle button[aria-pressed=true]{background:#283418;color:var(--green)}
+.case3d-stage{padding:0;cursor:grab;background-image:radial-gradient(ellipse at 50% 35%,#1d241e 0,#131714 70%)}
+.case3d-stage:active{cursor:grabbing}
+.case3d-canvas{position:absolute;inset:0;width:100%;height:100%;display:block;touch-action:none}
+.case3d-status{position:absolute;inset:0;display:grid;place-items:center;color:#828d82;font-size:12px;pointer-events:none}
+.case3d-status[hidden]{display:none}
+.case3d-controls{position:absolute;left:12px;bottom:12px;display:flex;align-items:center;gap:10px;background:#151a16e6;border:1px solid #2c332e;border-radius:9px;padding:7px 10px;cursor:default}
+.case3d-controls .button{min-width:64px}
+.case3d-lid{display:flex;align-items:center;gap:8px;font-size:11px;color:#b5bdb4}
+.case3d-lid span{display:flex;gap:5px;white-space:nowrap}
+.case3d-lid output{font:11px var(--mono);color:var(--green);min-width:32px}
+.case3d-lid input{width:150px;accent-color:var(--green)}
+.case3d-hint{position:absolute;right:12px;bottom:12px;margin:0;font:10px var(--mono);color:#6f7a70;pointer-events:none}
+.case3d-controls[hidden],.case3d-hint[hidden]{display:none}

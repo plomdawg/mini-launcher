@@ -1,6 +1,6 @@
 # Plomcase
 
-A lightweight web app for designing and exporting wraparound game-case art. It has no package dependencies; the included Python standard-library server serves the app and proxies SteamGridDB and LaunchBox Games DB requests to avoid browser CORS restrictions. Projects and artwork are stored in the browser's IndexedDB. Use **Export JSON** to move an editable project to another browser; **Download SVG** and **Export print PNG** create artwork files.
+A lightweight web app for designing and exporting wraparound game-case art. It has no package dependencies or build step (the 3D preview uses a vendored copy of three.js); the included Python standard-library server serves the app and proxies SteamGridDB and LaunchBox Games DB requests to avoid browser CORS restrictions. Projects and artwork are stored in the browser's IndexedDB. Use **Export JSON** to move an editable project to another browser; **Download SVG** and **Export print PNG** create artwork files.
 
 Run locally with Python 3.10 or newer:
 
@@ -22,6 +22,7 @@ Then open <http://127.0.0.1:8784>. Opening `index.html` directly still allows lo
 - Shared settings defaults are stored in this browser. Each project follows those defaults until you edit a setting; edited settings become project overrides. Use **Save as default** or **Use default** within a section to manage that section independently. Project values and override markers are included in exported project JSON; another browser will apply its own shared defaults to inherited settings.
 - SVG or DPI-selected PNG export. The PNG includes bleed, selected-DPI pixel dimensions, and physical-resolution metadata for the entered millimeter dimensions.
 - Local project library plus portable `.plomcase.json` project files.
+- **3D case** preview (toggle next to the export buttons): the current wrap is mapped onto a game case sized from face height × face width × spine width, with a hinged front lid (Open/Close button or 0–150° slider) and a disc on the tray hub sized from the disc diameter, with the disc art on top when available. The disc is shown at real scale; opening the lid eases the camera in toward it until you orbit or zoom yourself (**Reset view** restores that). Drag to orbit, scroll to zoom. It re-renders about 250 ms after each edit and pauses while the 2D layout is shown. Needs WebGL; three.js is vendored under `vendor/three/` (see its README for the pinned version) and only loaded the first time the 3D view is opened. Like the PNG export, the texture is rasterized from the SVG, so Google Fonts may fall back to a local font in the 3D view.
 
 ## Notes
 

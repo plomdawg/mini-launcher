@@ -871,6 +871,30 @@
     const pressed = e.currentTarget.getAttribute('aria-pressed') !== 'true';
     e.currentTarget.setAttribute('aria-pressed', String(pressed)); update();
   });
+  let casePreview = null;
+  async function setPreviewMode(is3d) {
+    $('view2d').setAttribute('aria-pressed', String(!is3d));
+    $('view3d').setAttribute('aria-pressed', String(is3d));
+    $('previewStage').hidden = is3d;
+    $('case3dStage').hidden = !is3d;
+    $('toggleGuides').hidden = is3d;
+    if (!is3d) { casePreview?.then((preview) => preview.hide(), () => {}); return; }
+    casePreview ??= import('./preview3d.js').then((module) => module.createCasePreview($('case3dStage')));
+    try {
+      const preview = await casePreview;
+      $('case3dStatus').hidden = true;
+      if ($('view3d').getAttribute('aria-pressed') === 'true') preview.show();
+    } catch (error) {
+      casePreview = null;
+      console.warn('Plomcase 3D preview unavailable', error);
+      $('case3dStatus').textContent = '3D preview is unavailable in this browser (WebGL is required).';
+      $('case3dStage').querySelector('.case3d-controls').hidden = true;
+      $('case3dStage').querySelector('.case3d-hint').hidden = true;
+    }
+  }
+  $('view2d').addEventListener('click', () => setPreviewMode(false));
+  $('view3d').addEventListener('click', () => setPreviewMode(true));
+
   async function chooseImage(which, input) {
     await addImage(which, input.files[0]);
     input.value = '';
@@ -1311,8 +1335,9 @@
 
   window.plomcase = {
     getState: () => readState(),
-    buildSvg: () => buildSvg(),
-    buildDiscSvg: () => buildDiscSvg(),
+    // Optional overrides are merged into the current state, e.g. buildDiscSvg({cropMarks: false}).
+    buildSvg: (overrides) => buildSvg({...readState(), ...overrides}),
+    buildDiscSvg: (overrides) => buildDiscSvg({...readState(), ...overrides}),
     onChange(cb) { if (typeof cb === 'function') changeListeners.push(cb); }
   };
 
