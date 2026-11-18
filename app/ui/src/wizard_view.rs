@@ -330,6 +330,12 @@ fn rom(ui: &mut Ui, s: &mut Settings, c: &mut Clicks) {
         list_note(ui, body, &format!("Scanning {}...", dir.display()));
         return;
     }
+    if w.emu.scan_failed {
+        ui.add_space(U);
+        let body = theme::list(ui, &[0.0, 0.5], &["GAME", "FILE"], 0, |_, _, _, _| {});
+        list_note(ui, body, "Couldn't scan this folder.");
+        return;
+    }
     let Some((dir, found)) = &w.emu.scan else {
         return;
     };

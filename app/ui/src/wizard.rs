@@ -292,6 +292,7 @@ impl Wizard {
         if self.emu.emulator.as_ref() != Some(&id) {
             self.emu.scan = None;
             self.emu.scanning = None;
+            self.emu.scan_failed = false;
         }
         self.emu.emulator = Some(id);
         self.emu.rom_error = None;
@@ -316,10 +317,12 @@ impl Wizard {
             move || drop(tx.send(scan_roms(&dir, preset, opts)))
         };
         self.emu.scan = None;
+        self.emu.scan_failed = false;
         self.emu.scanning = Some((dir, rx));
         if let Err(e) = thread::Builder::new().name("rom-scan".into()).spawn(worker) {
             tracing::warn!("cannot start the folder scan: {e}");
             self.emu.scanning = None;
+            self.emu.scan_failed = true;
         }
     }
 
@@ -332,7 +335,8 @@ impl Wizard {
         match rx.try_recv() {
             Err(TryRecvError::Empty) => return true,
             Ok(found) => self.emu.scan = Some((dir.clone(), found)),
-            Err(TryRecvError::Disconnected) => {}
+            // The worker died (a panic) without sending a result.
+            Err(TryRecvError::Disconnected) => self.emu.scan_failed = true,
         }
         self.emu.scanning = None;
         false
@@ -670,6 +674,8 @@ pub struct EmuPick {
     pub scan: Option<(PathBuf, RomScan)>,
     /// The folder being scanned, and where its result will arrive.
     scanning: Option<(PathBuf, Receiver<RomScan>)>,
+    /// The last scan could not run or died; the list shows a note.
+    pub scan_failed: bool,
     /// The game's name (Name step).
     pub name: String,
     pub name_error: Option<String>,
@@ -703,7 +709,10 @@ pub fn same_path(a: &Path, b: &Path) -> bool {
 }
 
 fn paths_match(a: &Path, b: &Path, windows: bool) -> bool {
-    let fold = |p: &Path| p.to_string_lossy().replace('/', "\\").to_lowercase();
+    // ASCII-only folding is narrower than NTFS's, so it can only miss a
+    // match (a harmless duplicate), never merge two different files
+    // (Unicode lowercasing joins e.g. KELVIN SIGN and `k`).
+    let fold = |p: &Path| p.to_string_lossy().replace('/', "\\").to_ascii_lowercase();
     a == b || (windows && fold(a) == fold(b))
 }
 
@@ -1454,6 +1463,31 @@ mod tests {
         assert!(paths_match(a, a, false));
         let c = Path::new("D:\\Games\\y.nsp");
         assert!(!paths_match(a, c, true));
+    }
+
+    #[test]
+    fn non_ascii_case_pairs_are_different_files() {
+        for (x, y) in [
+            ("\u{212A}", "k"),
+            ("\u{2126}", "\u{3C9}"),
+            ("\u{212B}", "\u{E5}"),
+            ("\u{130}", "i\u{307}"),
+        ] {
+            let (a, b) = (format!("D:\\g\\{x}.nsp"), format!("d:\\G\\{y}.nsp"));
+            assert!(!paths_match(Path::new(&a), Path::new(&b), true), "{x} {y}");
+        }
+        let (a, b) = (Path::new("D:\\G\\\u{E5}.nsp"), Path::new("d:/g/\u{E5}.NSP"));
+        assert!(paths_match(a, b, true));
+    }
+
+    #[test]
+    fn a_dead_scan_worker_is_reported() {
+        let (tx, rx) = mpsc::channel::<RomScan>();
+        drop(tx);
+        let mut w = Wizard::new(Ok(steam_games()));
+        w.emu.scanning = Some((PathBuf::from("D:\\g"), rx));
+        assert!(!w.poll_scan());
+        assert!(w.emu.scan_failed && w.emu.scan.is_none());
     }
 
     #[test]
