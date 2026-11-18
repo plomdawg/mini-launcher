@@ -1,10 +1,12 @@
 //! The add-game wizard's screens, in the settings window's retro theme.
 //! The logic is in [`crate::wizard`].
 
+use std::path::Path;
+
 use egui::{pos2, vec2, Align, Layout, Rect, Sense, Ui};
 
 use crate::library::Field;
-use crate::settings::{Pick, Settings};
+use crate::settings::{field_w, row, Pick, Settings, LABEL_W};
 use crate::theme::{self, BIG, INK, PAPER, ROW, SHADE, SIGNAL, U};
 use crate::wizard::{self, Outcome, Step, Wizard};
 
@@ -15,6 +17,8 @@ const STEPS: [&str; 4] = ["1 PICK", "2 TAG", "3 WRITE", "4 TEST"];
 struct Clicks {
     next: bool,
     program: bool,
+    emulator: bool,
+    add_eden: bool,
     cancel: bool,
     skip: bool,
     launch: bool,
@@ -36,8 +40,8 @@ pub fn show(ui: &mut Ui, s: &mut Settings) {
         ui.with_layout(Layout::top_down(Align::Min), |ui| match &step {
             Step::Pick => pick(ui, s, &mut c),
             Step::Program => program(ui, s),
-            // Their screens come with the next change.
-            Step::Rom | Step::Name => {}
+            Step::Rom => rom(ui, s, &mut c),
+            Step::Name => name(ui, s),
             Step::Tap | Step::Overwrite { .. } | Step::Writing { .. } => tap(ui, s),
             Step::Test { outcome } => test(ui, s, outcome),
         });
@@ -60,6 +64,12 @@ fn act(s: &mut Settings, c: Clicks) {
     }
     if c.program {
         s.wizard_program();
+    }
+    if c.emulator {
+        s.wizard_emulator();
+    }
+    if c.add_eden {
+        s.wizard_add_emulator();
     }
     if c.next {
         s.wizard_next();
@@ -85,8 +95,10 @@ fn act(s: &mut Settings, c: Clicks) {
         }
     }
     if let (Some(w), Some(config)) = (&mut s.wizard, s.library.config()) {
-        if w.step == Step::Program {
-            w.follow_name(&s.form, config);
+        match w.step {
+            Step::Program => w.follow_name(&s.form, config),
+            Step::Name => w.follow_rom_name(config),
+            _ => {}
         }
     }
 }
@@ -125,9 +137,9 @@ fn buttons(ui: &mut Ui, step: &Step, s: &Settings, c: &mut Clicks) {
         }
         Step::Pick | Step::Program | Step::Rom | Step::Name => {
             c.cancel = theme::button(ui, "Cancel", true, false).clicked();
-            let ready = step == &Step::Program || w.is_some_and(|w| w.selected.is_some());
+            let ready = step != &Step::Pick || w.is_some_and(|w| w.selected.is_some());
             c.next = theme::button(ui, "Next", ready, true).clicked();
-            if step == &Step::Program {
+            if step != &Step::Pick {
                 c.back = theme::button(ui, "Back", true, false).clicked();
             }
         }
@@ -147,9 +159,10 @@ fn pick(ui: &mut Ui, s: &mut Settings, c: &mut Clicks) {
     };
     ui.horizontal(|ui| {
         let l = theme::form_label(ui, 14.0 * U, "Search");
-        let width = (ui.available_width() - 30.0 * U).floor();
+        let width = (ui.available_width() - 66.0 * U).floor();
         theme::field(ui, &mut w.search, width, w.steam.is_ok(), l.id);
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            c.emulator = theme::button(ui, "Emulator game...", true, false).clicked();
             c.program = theme::button(ui, "Program...", true, false).clicked();
         });
     });
@@ -259,6 +272,128 @@ fn program(ui: &mut Ui, s: &mut Settings) {
     if browse.is_some() {
         s.browse = browse;
     }
+}
+
+/// The emulator game's emulator and file: typed, browsed for, or picked
+/// from a scanned folder.
+fn rom(ui: &mut Ui, s: &mut Settings, c: &mut Clicks) {
+    let indent = LABEL_W + ui.spacing().item_spacing.x;
+    let emulators = s.library.emulators();
+    let Some(w) = &mut s.wizard else {
+        return;
+    };
+    let config = s.library.config();
+    let preset = config
+        .and_then(|c| w.emulator(c))
+        .and_then(wizard::preset_of);
+    let mut browse = None;
+    theme::group(ui, "Emulator game", |ui| {
+        row(ui, "Runs on", |ui, _| {
+            for e in emulators {
+                let on = w.emu.emulator.as_ref() == Some(&e.id);
+                if theme::choice(ui, on, &e.name).clicked() {
+                    w.emu.emulator = Some(e.id.clone());
+                }
+                ui.add_space(2.0 * U);
+            }
+            if emulators.is_empty() {
+                c.add_eden = theme::button(ui, "Add Eden...", true, false).clicked();
+                ui.colored_label(SHADE, "No emulator is set up yet.");
+            }
+        });
+        row(ui, "Game file", |ui, id| {
+            theme::field(ui, &mut w.emu.rom, field_w(ui, true), true, id);
+            if theme::button(ui, "Browse", true, false).clicked() {
+                browse = Some(Pick::GameFile);
+            }
+        });
+        if let Some(e) = &w.emu.rom_error {
+            theme::warning(ui, indent, e);
+        }
+        row(ui, "", |ui, _| {
+            if theme::button(ui, "Scan folder...", preset.is_some(), false).clicked() {
+                browse = Some(Pick::GameFolder);
+            }
+            let hint = match preset {
+                Some(_) => "or pick one from a folder of games",
+                None => "Scan knows Eden's game files only: use Browse.",
+            };
+            ui.colored_label(SHADE, hint);
+        });
+    });
+    if browse.is_some() {
+        s.browse = browse;
+    }
+    let Some((dir, found)) = &w.emu.scan else {
+        return;
+    };
+    ui.add_space(U);
+    if found.truncated {
+        let n = found.roms.len();
+        let text = format!(
+            "Showing the first {n} game files found. Choose a smaller folder, or Browse for the file."
+        );
+        theme::warning(ui, 0.0, &text);
+    }
+    let (mut clicked, mut open) = (None, None);
+    let body = theme::list(
+        ui,
+        &[0.0, 0.5],
+        &["GAME", "FILE"],
+        found.roms.len(),
+        |ui, i, row, cols| {
+            let rom = &found.roms[i];
+            let on = Path::new(w.emu.rom.trim()) == rom.path;
+            let (resp, fg, _) = theme::list_row(ui, row, ("rom", i), on, &rom.name);
+            clicked = clicked.or(resp.clicked().then_some(i));
+            open = open.or(resp.double_clicked().then_some(i));
+            let file = rom.path.strip_prefix(dir).unwrap_or(&rom.path);
+            theme::label_at(ui, row, cols[0] + 2.0 * U, &rom.name, fg);
+            theme::label_at(ui, row, cols[1] + 2.0 * U, &file.display().to_string(), fg);
+        },
+    );
+    if found.roms.is_empty() {
+        let at = pos2(body.min.x + 2.0 * U, body.min.y + ROW / 2.0);
+        let row = Rect::from_center_size(at, vec2(0.0, ROW));
+        theme::label_at(ui, row, at.x, "No game files in this folder.", SHADE);
+    }
+    if let Some(i) = clicked.or(open) {
+        w.emu.rom = found.roms[i].path.display().to_string();
+    }
+    c.next |= open.is_some();
+}
+
+/// The emulator game's name and tag ID.
+fn name(ui: &mut Ui, s: &mut Settings) {
+    let indent = LABEL_W + ui.spacing().item_spacing.x;
+    let Some(w) = &mut s.wizard else {
+        return;
+    };
+    let config = s.library.config();
+    let emulator = config.and_then(|c| w.emulator(c)).map(|e| e.name.clone());
+    theme::group(ui, "Emulator game", |ui| {
+        row(ui, "Name", |ui, id| {
+            theme::field(ui, &mut w.emu.name, field_w(ui, false), true, id);
+        });
+        if let Some(e) = &w.emu.name_error {
+            theme::warning(ui, indent, e);
+        }
+        row(ui, "Tag ID", |ui, id| {
+            if theme::field(ui, &mut w.slug, 40.0 * U, true, id).changed() {
+                w.auto_slug = false;
+            }
+            ui.colored_label(SHADE, "written as id:<this>");
+        });
+        if let Some(e) = &w.slug_error {
+            theme::warning(ui, indent, e);
+        }
+        row(ui, "Runs on", |ui, _| {
+            ui.label(emulator.unwrap_or_default());
+        });
+        row(ui, "Game file", |ui, _| {
+            ui.add(egui::Label::new(w.emu.rom.trim()).truncate());
+        });
+    });
 }
 
 /// A big headline, then lines of detail, in a sunken panel.

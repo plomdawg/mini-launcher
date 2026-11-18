@@ -119,14 +119,15 @@ already configured.
 ## Writing a tag with the launcher
 
 In the tray app, **Settings… → Add game** (or **Write tag…** in a game's edit form) opens a
-wizard: pick an installed Steam game or a program, hold the cart on the reader, and the app
-writes `steam://<appid>` (Steam) or `id:<slug>` (programs) as below and saves the library.
+wizard: pick an installed Steam game, a program, or an emulator game (a configured emulator plus
+a game file, browsed for or picked from a scanned folder), hold the cart on the reader, and the
+app writes `steam://<appid>` (Steam) or `id:<slug>` (programs and emulator games) as below and
+saves the library.
 While the wizard waits for a tag, inserted carts don't launch. If the tag already holds another
 game, or its UID is bound to another game, the wizard asks before using it (and removes the other
 game's UID binding, which would otherwise override what was written). A read-only, too-small or
 non-NDEF tag is not written; the wizard binds its UID instead and says why. Closing the wizard at
-any point gives the reader back. Emulator games can't be opened in the edit form yet; write their
-`id:<slug>` with the command below or a phone.
+any point gives the reader back.
 
 From the command line:
 `mini-launcher write steam://440` (or `id:my-game`, optionally `--port COM7`) waits for a tag,

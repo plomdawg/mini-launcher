@@ -71,6 +71,9 @@ pub enum Pick {
     EmulatorExe,
     /// An emulator game's ROM file.
     Rom,
+    /// The wizard's emulator game file, and a folder of them to scan.
+    GameFile,
+    GameFolder,
 }
 
 pub struct Settings {
@@ -156,6 +159,8 @@ impl Settings {
         let next = match w.step {
             crate::wizard::Step::Pick => w.pick_steam(config),
             crate::wizard::Step::Program => w.program_next(&mut self.form, config),
+            crate::wizard::Step::Rom => w.rom_next(config),
+            crate::wizard::Step::Name => w.name_next(config),
             _ => false,
         };
         if next {
@@ -168,6 +173,32 @@ impl Settings {
         if let (Some(w), Some(config)) = (&mut self.wizard, self.library.config()) {
             w.program(&mut self.form, config);
         }
+    }
+
+    /// The wizard's "Emulator game...".
+    pub fn wizard_emulator(&mut self) {
+        if let (Some(w), Some(config)) = (&mut self.wizard, self.library.config()) {
+            w.emulator_game(config);
+        }
+    }
+
+    /// The wizard's "Add Eden...": the emulator form, then back to the
+    /// wizard (see [`Settings::save_emulator`]).
+    pub fn wizard_add_emulator(&mut self) {
+        self.add_emulator();
+        self.emulators.for_wizard = true;
+    }
+
+    /// The file types a game file Browse offers: those of the emulator
+    /// chosen in the wizard, or in the edit form.
+    pub fn game_file_types(&self) -> &'static [&'static str] {
+        let id = match (&self.wizard, self.screen) {
+            (Some(w), Screen::Wizard) => w.emu.emulator.as_ref(),
+            _ => self.form.emulator.as_ref(),
+        };
+        let emulator = self.library.emulators().iter().find(|e| Some(&e.id) == id);
+        let preset = emulator.and_then(crate::wizard::preset_of);
+        preset.map_or(&[], |p| p.rom_extensions)
     }
 
     /// Closes the wizard (giving the reader back): to the edit form if it
@@ -264,6 +295,11 @@ impl Settings {
                 .parent()
                 .map(PathBuf::from),
             Pick::Rom => PathBuf::from(&self.form.rom).parent().map(PathBuf::from),
+            Pick::GameFile | Pick::GameFolder => self.wizard.as_ref().and_then(|w| {
+                let scanned = w.emu.scan.as_ref().map(|(dir, _)| dir.clone());
+                let rom = PathBuf::from(&w.emu.rom).parent().map(PathBuf::from);
+                rom.filter(|_| pick == Pick::GameFile).or(scanned)
+            }),
         };
         Some((pick, current.filter(|p| p.is_dir())))
     }
@@ -283,6 +319,15 @@ impl Settings {
             Pick::Cwd => self.form.cwd = text,
             Pick::EmulatorExe => self.emulators.form.exe = text,
             Pick::Rom => self.form.rom = text,
+            Pick::GameFile | Pick::GameFolder => {
+                let (Some(w), Some(config)) = (&mut self.wizard, self.library.config()) else {
+                    return;
+                };
+                match pick {
+                    Pick::GameFile => w.emu.rom = text,
+                    _ => w.scan(path, config),
+                }
+            }
         }
     }
 
@@ -575,10 +620,10 @@ fn form_screen(ui: &mut Ui, problem: Option<&str>, form: impl FnOnce(&mut Ui)) -
     (save, cancel)
 }
 
-const LABEL_W: f32 = 22.0 * U;
+pub(crate) const LABEL_W: f32 = 22.0 * U;
 
 /// A form row: a label, then what `add` adds (given the label's id).
-fn row(ui: &mut Ui, label: &str, add: impl FnOnce(&mut Ui, egui::Id)) {
+pub(crate) fn row(ui: &mut Ui, label: &str, add: impl FnOnce(&mut Ui, egui::Id)) {
     ui.horizontal(|ui| {
         let l = theme::form_label(ui, LABEL_W, label);
         add(ui, l.id);
@@ -593,7 +638,7 @@ fn note(ui: &mut Ui, errors: &[(Field, String)], field: Field) {
 }
 
 /// A field's width, leaving room for a Browse button if it has one.
-fn field_w(ui: &Ui, button: bool) -> f32 {
+pub(crate) fn field_w(ui: &Ui, button: bool) -> f32 {
     (ui.available_width() - if button { 20.0 * U } else { 0.0 }).floor()
 }
 

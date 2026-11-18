@@ -17,7 +17,7 @@ use mini_launcher_core::runner::{Notice, Runner};
 use mini_launcher_core::session::{self, SessionServer, Sessions, WriteFailure};
 use mini_launcher_core::steam::SteamGame;
 use mini_launcher_ui::library::EmuForm;
-use mini_launcher_ui::settings::{self, Host, ReaderStatus, Screen, Settings};
+use mini_launcher_ui::settings::{self, Host, Pick, ReaderStatus, Screen, Settings};
 use mini_launcher_ui::theme;
 use mini_launcher_ui::wizard::{Link, Outcome, Step};
 
@@ -526,6 +526,83 @@ fn wizard_adds_a_steam_game_by_writing_the_tag_while_launches_wait() {
 }
 
 #[test]
+fn wizard_adds_an_emulator_game_after_adding_eden() {
+    let (host, mut run_loop) = host_with_loop("wizard-emulator");
+    let roms = host.dir.join("roms");
+    std::fs::create_dir_all(&roms).unwrap();
+    std::fs::write(roms.join("Sky Drifter [0100AB][v0].nsp"), b"").unwrap();
+    let mut h = harness(host.clone(), 1.0);
+    h.run();
+    h.get_by_label("Add game").click();
+    h.run();
+    h.get_by_label("Emulator game...").click();
+    h.run();
+    h.get_by_label("No emulator is set up yet.");
+    h.get_by_label("Add Eden...").click();
+    h.run();
+    assert_eq!(h.state().screen, Screen::EditEmulator);
+    h.state_mut().emulators.form.exe = "C:\\Eden\\eden.exe".into();
+    h.get_by_label("Save").click();
+    h.run();
+    // Back in the wizard, on the new emulator.
+    assert_eq!(h.state().screen, Screen::Wizard);
+    h.get_by_label("Runs on");
+    assert_eq!(h.state().game_file_types(), EDEN.rom_extensions);
+    h.get_by_label("Next").click();
+    h.run();
+    h.get_by_label("Choose the game file.");
+    h.state_mut().picked(Pick::GameFolder, roms.clone());
+    h.run();
+    h.get_by_label("Sky Drifter").click();
+    h.run();
+    h.get_by_label("Next").click();
+    h.run();
+    let w = h.state().wizard.as_ref().unwrap();
+    assert_eq!(
+        (w.emu.name.as_str(), w.slug.as_str()),
+        ("Sky Drifter", "sky-drifter")
+    );
+    h.get_by_label("Next").click();
+    h.run();
+    run_loop.pump(1);
+    h.run();
+    h.get_by_label("Tag gets: id:sky-drifter");
+    run_loop.line("insert 04a1b2c3d4e5f6");
+    run_loop.pump(2);
+    h.run();
+    run_loop.pump(1);
+    h.run();
+    h.get_by_label("SAVED");
+    let text = host.config();
+    assert!(text.contains("emulator = \"eden\""), "{text}");
+    assert!(text.contains("Sky Drifter [0100AB][v0].nsp"), "{text}");
+    h.get_by_label("Launch now").click();
+    h.run();
+    let launches = host.launches.lock().unwrap();
+    assert!(matches!(&launches[..], [LaunchPlan::Emulator { .. }]));
+}
+
+#[test]
+fn a_truncated_rom_scan_says_so() {
+    let host = host("wizard-scan");
+    add_eden(&host);
+    let roms = host.dir.join("roms");
+    let mut h = harness(host.clone(), 1.0);
+    h.state_mut().add();
+    h.state_mut().wizard_emulator();
+    h.run();
+    h.state_mut().picked(Pick::GameFolder, roms.clone());
+    h.run();
+    let w = h.state_mut().wizard.as_mut().unwrap();
+    w.emu.scan.as_mut().unwrap().1.truncated = true;
+    h.run();
+    h.get_by_label_contains("Showing the first 0 game files found.");
+    h.get_by_label("Back").click();
+    h.run();
+    assert_eq!(h.state().wizard.as_ref().unwrap().step, Step::Pick);
+}
+
+#[test]
 fn write_tag_from_the_edit_form_and_cancel_goes_back_to_it() {
     let (host, mut run_loop) = host_with_loop("write-tag");
     let mut h = harness(host.clone(), 1.0);
@@ -634,7 +711,7 @@ fn design_screenshots() {
     let out = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/design");
     std::fs::create_dir_all(&out).unwrap();
     type Setup = fn(&mut Settings);
-    let shots: [(&str, Setup); 16] = [
+    let shots: [(&str, Setup); 18] = [
         ("library", |_| {}),
         ("edit-game", |s| s.edit(0)),
         ("add-game-errors", |s| {
@@ -655,6 +732,24 @@ fn design_screenshots() {
             s.form.name = "DOOM II (GZDoom)".into();
             s.form.exe = "C:\\Games\\GZDoom\\gzdoom.exe".into();
             s.form.args = "-iwad doom2.wad".into();
+        }),
+        ("wizard-1-emulator-file", |s| {
+            emulator_wizard(s);
+            let roms = config_dir(s).join("Switch");
+            s.picked(Pick::GameFolder, roms.clone());
+            let w = s.wizard.as_mut().unwrap();
+            w.emu.rom = roms
+                .join("Sky Drifter [0100AB][v0].nsp")
+                .display()
+                .to_string();
+        }),
+        ("wizard-1-emulator-name", |s| {
+            emulator_wizard(s);
+            let rom = config_dir(s)
+                .join("Switch")
+                .join("Sky Drifter [0100AB][v0].nsp");
+            s.wizard.as_mut().unwrap().emu.rom = rom.display().to_string();
+            s.wizard_next();
         }),
         ("wizard-2-tap", |s| {
             pick_vampire(s);
@@ -735,6 +830,25 @@ fn design_screenshots() {
 
 fn tag_uid() -> Uid {
     Uid::from_hex("04A1B2C3D4E5F6").unwrap()
+}
+
+/// The wizard on the emulator game's file step, with Eden and a folder of
+/// (empty, fictional) game files.
+fn emulator_wizard(s: &mut Settings) {
+    let eden = EmuForm::from_preset(&EDEN, Some(r"C:\Emulators\Eden\eden.exe".into()));
+    let eden = eden.to_emulator(s.library.config().unwrap()).unwrap();
+    s.library.save_emulator(&eden).unwrap();
+    let roms = config_dir(s).join("Switch");
+    std::fs::create_dir_all(&roms).unwrap();
+    for name in [
+        "Sky Drifter [0100AB][v0].nsp",
+        "Tile Tumble (USA).xci",
+        "Moss Garden Deluxe [v65536].nsp",
+    ] {
+        std::fs::write(roms.join(name), b"").unwrap();
+    }
+    s.add();
+    s.wizard_emulator();
 }
 
 /// The wizard on the tap step for Vampire Survivors.
