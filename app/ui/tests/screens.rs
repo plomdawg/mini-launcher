@@ -267,6 +267,26 @@ fn library_lists_the_config_and_opens_the_form() {
 }
 
 #[test]
+fn the_new_cart_notification_opens_the_wizard_without_losing_work() {
+    let mut s = Settings::new(host("tray-add"));
+    s.from_tray_add();
+    assert_eq!(s.screen, Screen::Wizard);
+    assert_eq!(s.wizard.as_ref().map(|w| w.step.clone()), Some(Step::Pick));
+    // A second click while the wizard runs keeps its progress.
+    s.wizard.as_mut().unwrap().search = "port".into();
+    s.from_tray_add();
+    assert_eq!(s.wizard.as_ref().unwrap().search, "port");
+    // A half-edited game is never thrown away.
+    s.wizard_close();
+    s.edit(0);
+    s.form.name = "Hades II".into();
+    s.from_tray_add();
+    assert_eq!(s.screen, Screen::Edit);
+    assert!(s.wizard.is_none());
+    assert_eq!(s.form.name, "Hades II");
+}
+
+#[test]
 fn edit_saves_through_the_config_and_unbinds() {
     let host = host("edit");
     let mut h = harness(host.clone(), 1.0);

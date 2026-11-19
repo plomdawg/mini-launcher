@@ -50,6 +50,10 @@ to open **Settings…**, pause, open the config or logs, turn **Start at login**
 `mini-launcher run`, and only one of the two can use the reader at a time. Pausing switches the
 reader's antenna off until you resume; a cart left in the reader does not launch on resume.
 
+When you insert a cart that has no game yet, the tray shows a **New cart — click to add a game**
+notification. Click it to open **Settings** on **Add game**: pick the game, and if the cart is
+still in the reader it is written (or bound) right away.
+
 **Updating:** run the newer setup; it replaces the installed version and keeps your settings.
 If the tray app is running, setup closes it and starts the new version when it's done. If
 **Settings** is open, setup leaves it alone so nothing you haven't saved is lost: the window comes
