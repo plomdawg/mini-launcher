@@ -123,9 +123,11 @@
           <p class="hint spine-fill-hint">Blend colors are sampled from the cover edges beside the spine. Upload both covers to compare the full range.</p>
           <label class="upload-card spine-logo-upload" for="logoFile"><span class="upload-symbol">↥</span><b>Optional spine logo</b><small id="logoFileName">Add image</small><input type="file" id="logoFile" accept="image/*,.ico"></label>
           <label class="field logo-rotation-field"><span>Spine logo rotation <small class="setting-source" id="logoRotationSource">(default)</small> <output id="logoRotationValue">0°</output></span><input type="range" id="logoRotation" min="-180" max="180" step="15" value="0"></label>
+          <label class="field logo-rotation-field"><span>Spine logo size <small class="setting-source" id="logoScaleSource">(default)</small> <output id="logoScaleValue">100%</output></span><input type="range" id="logoScale" min="40" max="100" step="5" value="100"></label>
           <button class="button quiet remove-logo-button" id="removeSpineLogo" type="button" hidden>Remove spine logo</button>
           <label class="upload-card spine-title-upload" for="titleFile"><span class="upload-symbol">↥</span><b>Optional title logo</b><small id="titleFileName">Add image</small><input type="file" id="titleFile" accept="image/*,.ico"></label>
           <p class="hint">A stylized logo shown in place of the project name text, rotated to the spine direction. The spine logo above stays at the bottom.</p>
+          <label class="field logo-rotation-field"><span>Title logo size <small class="setting-source" id="titleLogoScaleSource">(default)</small> <output id="titleLogoScaleValue">100%</output></span><input type="range" id="titleLogoScale" min="40" max="100" step="5" value="100"></label>
           <button class="button quiet remove-logo-button" id="removeTitleLogo" type="button" hidden>Remove title logo</button>
           <div class="default-actions"><button class="button" type="button" data-default-action="save" data-default-group="theme">Save as default</button><button class="button quiet" type="button" data-default-action="reset" data-default-group="theme">Use default</button></div>
         </div>

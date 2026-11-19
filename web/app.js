@@ -1,13 +1,13 @@
 (() => {
   const $ = (id) => document.getElementById(id);
-  const ids = ['projectName','imageFit','imageAnchor','spineArtFit','faceWidth','faceHeight','spineWidth','bleed','dpi','cropMarks','spineDirection','fontFamily','spineFontSize','spineColor','textColor','spineFillMode','spineTextOutline','logoRotation','discFit','discDiameter','discHole','overlayPlatform','overlayStyle','overlayAlign','overlayCorner','overlaySize','overlaySpine','overlayCustomBand','overlayBandColor','esrbRating','esrbCorner','esrbSize','esrbBack'];
+  const ids = ['projectName','imageFit','imageAnchor','spineArtFit','faceWidth','faceHeight','spineWidth','bleed','dpi','cropMarks','spineDirection','fontFamily','spineFontSize','spineColor','textColor','spineFillMode','spineTextOutline','logoRotation','logoScale','titleLogoScale','discFit','discDiameter','discHole','overlayPlatform','overlayStyle','overlayAlign','overlayCorner','overlaySize','overlaySpine','overlayCustomBand','overlayBandColor','esrbRating','esrbCorner','esrbSize','esrbBack'];
   // Per-project fields: saved with each case but never part of the shared setting defaults.
   const projectFields = ['projectName', 'overlayPlatform', 'esrbRating'];
   const settingIds = ids.filter((id) => !projectFields.includes(id));
   const settingGroups = {
     artwork: ['imageFit','imageAnchor','spineArtFit'],
     layout: ['faceWidth','faceHeight','spineWidth','bleed','dpi','cropMarks'],
-    theme: ['spineDirection','fontFamily','spineFontSize','spineColor','textColor','spineFillMode','spineTextOutline','logoRotation'],
+    theme: ['spineDirection','fontFamily','spineFontSize','spineColor','textColor','spineFillMode','spineTextOutline','logoRotation','logoScale','titleLogoScale'],
     disc: ['discFit','discDiameter','discHole'],
     overlay: ['overlayStyle','overlayAlign','overlayCorner','overlaySize','overlaySpine','overlayCustomBand','overlayBandColor','esrbCorner','esrbSize','esrbBack']
   };
@@ -18,13 +18,13 @@
   const builtInDefaults = {
     imageFit: 'cover', imageAnchor: 'center', spineArtFit: 'stretch', faceWidth: '129.5', faceHeight: '183', spineWidth: '14', bleed: '0', dpi: '300', cropMarks: false,
     spineDirection: '90', fontFamily: "'Rubik', sans-serif", spineFontSize: '8', spineColor: '#ffffff',
-    textColor: '#000000', spineFillMode: 'back-front', spineTextOutline: 'auto', logoRotation: '0',
+    textColor: '#000000', spineFillMode: 'back-front', spineTextOutline: 'auto', logoRotation: '0', logoScale: '100', titleLogoScale: '100',
     discFit: 'cover', discDiameter: '50', discHole: '6.25', ...overlayDefaults
   };
   const legacyDefaults = {
     imageFit: 'cover', imageAnchor: 'center', spineArtFit: 'stretch', faceWidth: '80', faceHeight: '120', spineWidth: '12', bleed: '3', dpi: '300', cropMarks: true,
     spineDirection: '90', fontFamily: "'Rubik', sans-serif", spineFontSize: '6', spineColor: '#ffffff',
-    textColor: '#000000', spineFillMode: 'back-front', spineTextOutline: 'auto', logoRotation: '0',
+    textColor: '#000000', spineFillMode: 'back-front', spineTextOutline: 'auto', logoRotation: '0', logoScale: '100', titleLogoScale: '100',
     discFit: 'cover', discDiameter: '31.75', discHole: '4', ...overlayDefaults
   };
   const legacyDefaultValues = {spineWidth: ['12', '8']};
@@ -77,7 +77,7 @@
       overlayCorner: ['tl', 'tr', 'bl', 'br'], esrbCorner: ['tl', 'tr', 'bl', 'br']
     };
     if (choices[id]) return choices[id].includes(String(value)) ? String(value) : fallback;
-    const ranges = {faceWidth: [30,300], faceHeight: [40,350], spineWidth: [3,60], bleed: [0,10], spineFontSize: [2,24], logoRotation: [-180,180], discDiameter: [10,130], discHole: [0,40], overlaySize: [4,25], esrbSize: [8,40]};
+    const ranges = {faceWidth: [30,300], faceHeight: [40,350], spineWidth: [3,60], bleed: [0,10], spineFontSize: [2,24], logoRotation: [-180,180], logoScale: [40,100], titleLogoScale: [40,100], discDiameter: [10,130], discHole: [0,40], overlaySize: [4,25], esrbSize: [8,40]};
     if (ranges[id]) {
       const number = Number(value);
       return Number.isFinite(number) && number >= ranges[id][0] && number <= ranges[id][1] ? String(number) : fallback;
@@ -592,7 +592,9 @@
 
     const overlay = overlayMarkup(s, {backX, spineX, frontX, faceW, faceH, spineW, bleed});
     const spine = s.spineImage ? '' : String(s.projectName || '').trim();
-    const logoLength = Math.min(20, Math.max(10, faceH * .18));
+    const logoSize = Number(normalizeSettingValue('logoScale', s.logoScale)) / 100;
+    const titleLogoSize = Number(normalizeSettingValue('titleLogoScale', s.titleLogoScale)) / 100;
+    const logoLength = Math.min(20, Math.max(10, faceH * .18)) * logoSize;
     const spineCenterY = bleed + faceH / 2;
     let logoMarkup = '', logoTop = null;
     if (s.logoImage && !s.spineImage) {
@@ -601,7 +603,7 @@
       const dir = Number.isFinite(rotation) ? Math.max(-180, Math.min(180, rotation)) : 0;
       const radians = dir * Math.PI / 180;
       const cos = Math.abs(Math.cos(radians)), sin = Math.abs(Math.sin(radians));
-      const logoCross = Math.max(1, spineW - 2);
+      const logoCross = Math.max(1, spineW - 2) * logoSize;
       const vertical = sin > cos;
       let boxW = vertical ? logoLength : logoCross;
       let boxH = vertical ? logoCross : logoLength;
@@ -631,9 +633,10 @@
       const dir = Number(s.spineDirection) === 90 ? 90 : -90;
       const top = bleed + Math.max(8, overlay.spineReserve + 2);  // clear of the platform spine badge
       const bottom = logoTop !== null ? logoTop - 2 : bleed + faceH - 8;
-      const len = Math.max(4, bottom - top);
-      const cross = Math.max(1, spineW - 2);
-      const cx = spineX + spineW / 2, cy = top + len / 2;
+      const region = Math.max(4, bottom - top);
+      const len = region * titleLogoSize;
+      const cross = Math.max(1, spineW - 2) * titleLogoSize;
+      const cx = spineX + spineW / 2, cy = top + region / 2;
       parts.push(`<g transform="rotate(${dir} ${cx} ${cy})"><image href="${s.titleImage}" x="${cx-len/2}" y="${cy-cross/2}" width="${len}" height="${cross}" preserveAspectRatio="xMidYMid meet"/></g>`);
     } else if (spine) {
       const dir = Number(s.spineDirection) === 90 ? 90 : -90;
@@ -736,6 +739,8 @@
         ? `A 600 × 900 grid loses ${gridCrop.toFixed(1)} mm of height when filled, or leaves ${gridGap.toFixed(1)} mm of side space when fit.`
         : `A 600 × 900 grid loses ${(-gridGap).toFixed(1)} mm of width when filled, or leaves ${(-gridCrop).toFixed(1)} mm of top/bottom space when fit.`;
     $('exportDimensions').textContent = `${width.toFixed(1)} × ${height.toFixed(1)} mm with bleed · ${trimWidth} mm trim width`;
+    $('logoScaleValue').textContent = `${Number($('logoScale').value)}%`;
+    $('titleLogoScaleValue').textContent = `${Number($('titleLogoScale').value)}%`;
     $('logoRotationValue').textContent = `${Number($('logoRotation').value) < 0 ? '−' : ''}${Math.abs(Number($('logoRotation').value))}°`;
     const title = $('projectName').value.trim();
     const search = new URL('https://www.steamgriddb.com/search/grids');
