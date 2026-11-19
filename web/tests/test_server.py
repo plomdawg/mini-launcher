@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sys
 import threading
 import unittest
@@ -390,7 +391,21 @@ class OverlayCatalogTests(unittest.TestCase):
         return entries
 
     def test_platforms(self):
-        self.check_catalog("platforms.json", colors=("band", "ink"))
+        entries = self.check_catalog("platforms.json", colors=("band", "ink"))
+        # Original case designs: every "dress" a platform names must have a renderer and its parts.
+        app = (self.OVERLAYS.parent / "app.js").read_text(encoding="utf-8")
+        for entry in entries:
+            dress = entry.get("dress")
+            if not dress:
+                continue
+            with self.subTest(dress=dress):
+                block = re.search(r"'%s': \{([^}]*)\}" % re.escape(dress), app)
+                self.assertIsNotNone(block, f"no dressParts entry for {dress}")
+                self.assertIn(f"'{dress}': ", app[app.index("const dressRenderers"):])
+                for part in re.findall(r"'([a-z0-9-]+\.svg)'", block.group(1)):
+                    text = (self.OVERLAYS / part).read_text(encoding="utf-8")
+                    self.assertIn("<svg", text[:4000])
+                    self.assertNotIn("<script", text)
 
     def test_ratings(self):
         self.check_catalog("ratings.json")

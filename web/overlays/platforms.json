@@ -1,7 +1,7 @@
 [
   {"id": "steam", "name": "Steam", "logo": "steam.svg", "band": "#171a21", "ink": "#ffffff", "aliases": ["Windows", "PC"]},
   {"id": "ps1", "name": "PlayStation", "logo": "playstation.svg", "band": "#000000", "ink": "#ffffff", "aliases": ["Sony Playstation"]},
-  {"id": "ps2", "name": "PlayStation 2", "logo": "ps2.svg", "band": "#000000", "ink": "#ffffff", "aliases": ["Sony Playstation 2"]},
+  {"id": "ps2", "name": "PlayStation 2", "logo": "ps2.svg", "dress": "ps2-ntsc", "band": "#000000", "ink": "#ffffff", "aliases": ["Sony Playstation 2"]},
   {"id": "ps3", "name": "PlayStation 3", "logo": "ps3.svg", "band": "#111111", "ink": "#ffffff", "aliases": ["Sony Playstation 3"]},
   {"id": "ps4", "name": "PlayStation 4", "logo": "ps4.svg", "band": "#003791", "ink": "#ffffff", "aliases": ["Sony Playstation 4"]},
   {"id": "ps5", "name": "PlayStation 5", "logo": "ps5.svg", "band": "#ffffff", "ink": "#000000", "aliases": ["Sony Playstation 5"]},

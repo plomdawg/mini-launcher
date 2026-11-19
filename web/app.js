@@ -12,7 +12,7 @@
     overlay: ['overlayStyle','overlayAlign','overlayCorner','overlaySize','overlaySpine','overlayCustomBand','overlayBandColor','esrbCorner','esrbSize','esrbBack']
   };
   const overlayDefaults = {
-    overlayStyle: 'banner', overlayAlign: 'center', overlayCorner: 'tl', overlaySize: '9', overlaySpine: true,
+    overlayStyle: 'original', overlayAlign: 'center', overlayCorner: 'tl', overlaySize: '9', overlaySpine: true,
     overlayCustomBand: false, overlayBandColor: '#000000', esrbCorner: 'bl', esrbSize: '20', esrbBack: false
   };
   const builtInDefaults = {
@@ -73,7 +73,7 @@
       fontFamily: ["'Rubik', sans-serif", "Impact, Haettenschweiler, 'Arial Narrow Bold', sans-serif"],
       spineFillMode: ['blur','dark-blur','back-front','front-back','dark-blend','light-blend','back-edge','front-edge','center-mix','solid'],
       spineTextOutline: ['auto','none','white','black'],
-      overlayStyle: ['banner', 'badge', 'none'], overlayAlign: ['left', 'center', 'right'],
+      overlayStyle: ['original', 'banner', 'badge', 'none'], overlayAlign: ['left', 'center', 'right'],
       overlayCorner: ['tl', 'tr', 'bl', 'br'], esrbCorner: ['tl', 'tr', 'bl', 'br']
     };
     if (choices[id]) return choices[id].includes(String(value)) ? String(value) : fallback;
@@ -447,9 +447,77 @@
     return null;
   }
 
-  function preloadOverlays(s) {
-    return Promise.all([loadOverlayAsset(overlayEntry('platforms', s.overlayPlatform)), loadOverlayAsset(overlayEntry('ratings', s.esrbRating))]);
+  // Original case designs ("trade dress"): the platform's real printed header/spine layout rather
+  // than a logo on a band. Each part is a bundled file; geometry is measured from retail covers.
+  const dressParts = {
+    'ps2-ntsc': {wordmark: 'ps2-wordmark.svg', psLogo: 'ps-logo-colour.svg', region: 'ps2-ntsc-uc.svg'}
+  };
+
+  function dressAssets(platform) {
+    const parts = platform && dressParts[platform.dress];
+    if (!parts) return null;
+    const assets = {};
+    for (const [key, logo] of Object.entries(parts)) {
+      assets[key] = overlayAsset({logo, ink: null});
+      if (!assets[key]) return null;
+    }
+    return assets;
   }
+
+  function preloadOverlays(s) {
+    const platform = overlayEntry('platforms', s.overlayPlatform);
+    const parts = Object.values(dressParts[platform?.dress] || {}).map((logo) => loadOverlayAsset({logo, ink: null}));
+    return Promise.all([loadOverlayAsset(platform), loadOverlayAsset(overlayEntry('ratings', s.esrbRating)), ...parts]);
+  }
+
+  function imageAt(asset, x, y, {w, h}) {
+    if (w === undefined) w = h * asset.aspect;
+    if (h === undefined) h = w / asset.aspect;
+    return {w, h, markup: overlayImage(asset.data, x, y, w, h)};
+  }
+
+  // PlayStation 2, NTSC U/C (2000-2013 black DVD case), measured off retail scans at 129.5 x 183 mm:
+  // 17.7 mm black header with the white "PlayStation 2" wordmark left and the colour PS logo right,
+  // a silver hairline under it, the NTSC U/C tag below the logo; on the spine a 50 mm black block
+  // with the PS logo on a white square and the wordmark running down it.
+  function ps2NtscDress(s, g, a, band) {
+    const parts = [];
+    const k = g.faceW / 129.5;
+    const headerH = 17.7 * k;
+    const right = g.frontX + g.faceW;
+    parts.push(`<defs><linearGradient id="dressHairline" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#000"/><stop offset=".35" stop-color="#5c5c5c"/><stop offset=".7" stop-color="#9a9a9a" stop-opacity=".6"/><stop offset="1" stop-color="#bbb" stop-opacity="0"/></linearGradient></defs>`);
+    parts.push(`<rect x="${g.frontX}" y="0" width="${g.faceW + g.bleed}" height="${g.bleed + headerH}" fill="${band}"/>`);
+    parts.push(`<rect x="${g.frontX}" y="${g.bleed + headerH}" width="${g.faceW + g.bleed}" height="${1.1 * k}" fill="url(#dressHairline)"/>`);
+    parts.push(imageAt(a.wordmark, g.frontX + 4.6 * k, g.bleed + 4.1 * k, {w: 64 * k}).markup);
+    const ps = imageAt(a.psLogo, 0, 0, {h: 11.8 * k});
+    parts.push(imageAt(a.psLogo, right - 3.3 * k - ps.w, g.bleed + 2.3 * k, {h: ps.h}).markup);
+    const tag = imageAt(a.region, 0, 0, {w: 16 * k});
+    parts.push(imageAt(a.region, right - 3.9 * k - tag.w, g.bleed + headerH + 2.3 * k, {w: tag.w}).markup);
+    let spineReserve = 0;
+    if (s.overlaySpine) {
+      const ks = g.spineW / 14;
+      const blockH = Math.min(50 * k, g.faceH * .4);
+      const cx = g.spineX + g.spineW / 2;
+      const square = Math.min(10 * ks, blockH * .25);
+      const squareY = g.bleed + Math.min(3.2 * ks, blockH * .07);
+      parts.push(`<rect x="${g.spineX}" y="0" width="${g.spineW}" height="${g.bleed + blockH}" fill="${band}"/>`);
+      parts.push(`<rect x="${cx - square / 2}" y="${squareY}" width="${square}" height="${square}" fill="#fff"/>`);
+      const inner = square * .82;
+      const fitted = a.psLogo.aspect > 1 ? {w: inner} : {h: inner};
+      const logo = imageAt(a.psLogo, 0, 0, fitted);
+      parts.push(imageAt(a.psLogo, cx - logo.w / 2, squareY + (square - logo.h) / 2, fitted).markup);
+      const top = squareY + square + 1.6 * ks, bottom = g.bleed + blockH - 1.6 * ks;
+      let along = Math.min(34 * k, bottom - top), across = along / a.wordmark.aspect;
+      if (across > g.spineW * .5) { across = g.spineW * .5; along = across * a.wordmark.aspect; }
+      const cy = top + along / 2;
+      const dir = Number(s.spineDirection) === -90 ? -90 : 90;
+      parts.push(overlayImage(a.wordmark.data, cx - along / 2, cy - across / 2, along, across, `rotate(${dir} ${cx} ${cy})`));
+      spineReserve = blockH;
+    }
+    return {parts, spineReserve};
+  }
+
+  const dressRenderers = {'ps2-ntsc': ps2NtscDress};
 
   function overlayImage(data, x, y, w, h, transform = '') {
     return `<image href="${data}" x="${x}" y="${y}" width="${w}" height="${h}" preserveAspectRatio="xMidYMid meet"${transform ? ` transform="${transform}"` : ''}/>`;
@@ -469,11 +537,17 @@
     let spineReserve = 0;
     const platform = overlayEntry('platforms', s.overlayPlatform);
     const logo = overlayAsset(platform);
-    if (platform && logo) {
-      const platformBand = safeColor(platform.band, '#000000');
-      const band = s.overlayCustomBand ? safeColor(s.overlayBandColor, platformBand) : platformBand;
+    const platformBand = safeColor(platform?.band, '#000000');
+    const band = s.overlayCustomBand ? safeColor(s.overlayBandColor, platformBand) : platformBand;
+    let style = normalizeSettingValue('overlayStyle', s.overlayStyle);
+    const dress = style === 'original' && platform?.dress ? dressAssets(platform) : null;
+    if (style === 'original' && !platform?.dress) style = 'banner';  // no original design bundled yet
+    if (dress) {
+      const result = dressRenderers[platform.dress](s, g, dress, band);
+      parts.push(...result.parts);
+      spineReserve = result.spineReserve;
+    } else if (platform && logo && style !== 'original') {
       const size = Number(normalizeSettingValue('overlaySize', s.overlaySize));
-      const style = normalizeSettingValue('overlayStyle', s.overlayStyle);
       if (style === 'banner') {
         const bandH = g.faceH * size / 100;
         const pad = bandH * .2;
@@ -756,7 +830,9 @@
     const sizeValues = ['faceWidth', 'faceHeight', 'spineWidth'].map((id) => String(Number($(id).value)));
     $('casePreset').value = Object.keys(casePresets).find((key) => casePresets[key].every((v, i) => v === sizeValues[i])) || 'custom';
     $('imageAnchorField').hidden = $('imageFit').value !== 'cover';
-    $('overlayAlignField').hidden = $('overlayStyle').value !== 'banner';
+    const dressed = $('overlayStyle').value === 'original' && Boolean(overlayEntry('platforms', $('overlayPlatform').value)?.dress);
+    $('overlayAlignField').hidden = $('overlayStyle').value !== 'banner' && !($('overlayStyle').value === 'original' && !dressed);
+    $('overlaySize').disabled = dressed;
     $('overlayCornerField').hidden = $('overlayStyle').value !== 'badge';
     $('overlayBandColor').disabled = !$('overlayCustomBand').checked;
     const gridCrop = faceW * 1.5 - faceH, gridGap = faceW - faceH * 2 / 3;
