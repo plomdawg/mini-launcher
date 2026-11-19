@@ -1,4 +1,5 @@
 [
+  {"id": "battlenet", "name": "Battle.net", "logo": "battlenet.svg", "dress": "spine-only", "band": "#0e1117", "ink": "#148eff", "aliases": ["Battle.net", "Blizzard"]},
   {"id": "steam", "name": "Steam", "logo": "steam.svg", "band": "#171a21", "ink": "#ffffff", "aliases": ["Windows", "PC"]},
   {"id": "ps1", "name": "PlayStation", "logo": "playstation.svg", "band": "#000000", "ink": "#ffffff", "aliases": ["Sony Playstation"]},
   {"id": "ps2", "name": "PlayStation 2", "logo": "ps2.svg", "dress": "ps2-ntsc", "band": "#000000", "ink": "#ffffff", "aliases": ["Sony Playstation 2"]},
