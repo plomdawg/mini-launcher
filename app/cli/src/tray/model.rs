@@ -161,14 +161,38 @@ pub fn notification(
         )),
         Notice::UnknownId { uid, slug } => Some((
             Level::Info,
-            "Unknown cart",
-            format!("Tag {uid} says id:{slug}, but config.toml has no game with that id."),
+            NEW_CART,
+            format!(
+                "Tag {uid} says id:{slug}, which isn't in your library. \
+                 Click here to add a game to it."
+            ),
         )),
         Notice::Unmapped { uid } => Some((
             Level::Info,
-            "Unknown cart",
-            format!("Tag {uid} has no game on it and is not mapped in config.toml."),
+            NEW_CART,
+            format!("Tag {uid} isn't linked to a game yet. Click here to pick one."),
         )),
+        _ => None,
+    }
+}
+
+/// The notification title for a cart that has no game yet.
+pub const NEW_CART: &str = "New cart \u{2014} click to add a game";
+
+/// What clicking a notification does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Click {
+    /// Opens Settings on the add-game wizard (its tap step then picks up
+    /// the cart if it is still on the reader).
+    AddGame,
+}
+
+/// What clicking the notification for `notice` (see [`notification`]) does.
+pub fn click_action(notice: &Notice, config_problem: Option<&str>) -> Option<Click> {
+    match notice {
+        Notice::UnknownId { .. } | Notice::Unmapped { .. } if config_problem.is_none() => {
+            Some(Click::AddGame)
+        }
         _ => None,
     }
 }
@@ -607,6 +631,26 @@ mod tests {
     }
 
     #[test]
+    fn only_unknown_carts_click_through_to_add_game() {
+        let uid = Uid::from_hex("04a1b2c3").unwrap();
+        let slug = mini_launcher_core::payload::Slug::new("hades").unwrap();
+        let unknown = [Notice::Unmapped { uid }, Notice::UnknownId { uid, slug }];
+        for notice in &unknown {
+            assert_eq!(click_action(notice, None), Some(Click::AddGame));
+            // The config folder is gone: the wizard could not save.
+            assert_eq!(click_action(notice, Some("it is offline")), None);
+        }
+        let failed = Notice::LaunchFailed {
+            uid,
+            plan: LaunchPlan::Steam { appid: 440 },
+            via: Via::TagSteam,
+            error: "no handler".into(),
+        };
+        assert_eq!(click_action(&failed, None), None);
+        assert_eq!(click_action(&Notice::Removed { uid }, None), None);
+    }
+
+    #[test]
     fn only_problems_with_a_tag_notify() {
         let uid = Uid::from_hex("04a1b2c3").unwrap();
         let failed = Notice::LaunchFailed {
@@ -621,8 +665,9 @@ mod tests {
         assert_eq!(text, "open steam://rungameid/440: no handler");
         let (level, title, text) = notification(&Notice::Unmapped { uid }, None).unwrap();
         assert_eq!(level, Level::Info);
-        assert_eq!(title, "Unknown cart");
+        assert_eq!(title, NEW_CART);
         assert!(text.contains("04A1B2C3"), "{text}");
+        assert!(text.contains("Click here"), "{text}");
         for quiet in [
             Notice::Removed { uid },
             Notice::Paused { uid },
