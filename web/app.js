@@ -850,6 +850,7 @@
     search.searchParams.set('term', title);
     $('steamGridSearch').href = search.toString();
     $('steamSearchTerm').textContent = title || 'game title';
+    $('spineArtOverrideNote').hidden = !(files.spine && (files.logo || files.title));
     const fitNote = $('spineFitNote');
     fitNote.classList.remove('adjusted','tight');
     if (files.spine) fitNote.textContent = 'Spine art replaces the title and logo.';
@@ -1377,6 +1378,7 @@
     hasUnsavedChanges = true;
     update();
   });
+  $('removeSpineArtInline').addEventListener('click', () => $('removeSpineArt').click());
   $('removeSpineArt').addEventListener('click', () => {
     if (!files.spine || !confirm('Remove the spine art from this case?')) return;
     files.spine = null;
