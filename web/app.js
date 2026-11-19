@@ -540,6 +540,8 @@
     const platformBand = safeColor(platform?.band, '#000000');
     const band = s.overlayCustomBand ? safeColor(s.overlayBandColor, platformBand) : platformBand;
     let style = normalizeSettingValue('overlayStyle', s.overlayStyle);
+    // "spine-only" platforms (e.g. Battle.net, which has no retail case) keep the front clean.
+    if (style === 'original' && platform?.dress === 'spine-only') style = 'none';
     const dress = style === 'original' && platform?.dress ? dressAssets(platform) : null;
     if (style === 'original' && !platform?.dress) style = 'banner';  // no original design bundled yet
     if (dress) {
@@ -830,7 +832,7 @@
     const sizeValues = ['faceWidth', 'faceHeight', 'spineWidth'].map((id) => String(Number($(id).value)));
     $('casePreset').value = Object.keys(casePresets).find((key) => casePresets[key].every((v, i) => v === sizeValues[i])) || 'custom';
     $('imageAnchorField').hidden = $('imageFit').value !== 'cover';
-    const dressed = $('overlayStyle').value === 'original' && Boolean(overlayEntry('platforms', $('overlayPlatform').value)?.dress);
+    const dressed = $('overlayStyle').value === 'original' && Boolean(dressParts[overlayEntry('platforms', $('overlayPlatform').value)?.dress]);
     $('overlayAlignField').hidden = $('overlayStyle').value !== 'banner' && !($('overlayStyle').value === 'original' && !dressed);
     $('overlaySize').disabled = dressed;
     $('overlayCornerField').hidden = $('overlayStyle').value !== 'badge';

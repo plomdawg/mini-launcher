@@ -396,7 +396,7 @@ class OverlayCatalogTests(unittest.TestCase):
         app = (self.OVERLAYS.parent / "app.js").read_text(encoding="utf-8")
         for entry in entries:
             dress = entry.get("dress")
-            if not dress:
+            if not dress or dress == "spine-only":
                 continue
             with self.subTest(dress=dress):
                 block = re.search(r"'%s': \{([^}]*)\}" % re.escape(dress), app)
