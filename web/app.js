@@ -71,7 +71,7 @@
     const choices = {
       imageFit: ['cover', 'contain', 'extend'], imageAnchor: ['top', 'center', 'bottom'], discFit: ['cover', 'contain'], spineArtFit: ['stretch', 'cover', 'contain'], dpi: ['150', '300', '600'], spineDirection: ['90', '-90'],
       fontFamily: ["'Rubik', sans-serif", "Impact, Haettenschweiler, 'Arial Narrow Bold', sans-serif"],
-      spineFillMode: ['back-front','front-back','dark-blend','light-blend','back-edge','front-edge','center-mix','solid'],
+      spineFillMode: ['blur','dark-blur','back-front','front-back','dark-blend','light-blend','back-edge','front-edge','center-mix','solid'],
       spineTextOutline: ['auto','none','white','black'],
       overlayStyle: ['banner', 'badge', 'none'], overlayAlign: ['left', 'center', 'right'],
       overlayCorner: ['tl', 'tr', 'bl', 'br'], esrbCorner: ['tl', 'tr', 'bl', 'br']
@@ -553,6 +553,7 @@
     let spinePaint = theme;
     let spineGradient = '';
     let titleBackgrounds = [theme, theme];
+    let spineBlurMarkup = '';
     if (fillMode === 'back-edge') {
       spinePaint = backEdge;
       titleBackgrounds = [backEdge, backEdge];
@@ -562,7 +563,33 @@
     } else if (fillMode === 'center-mix') {
       spinePaint = mixColor(backEdge, frontEdge, .5);
       titleBackgrounds = [spinePaint, spinePaint];
-    } else if (['back-front', 'front-back', 'dark-blend', 'light-blend'].includes(fillMode)) {
+    } else if (['blur', 'dark-blur'].includes(fillMode) && (s.backImage || s.frontImage)) {
+      // Mirror each cover's displayed edge into the spine, crossfade back → front, and blur the lot.
+      // Mirroring keeps the colours continuous at both folds; blurring the unmirrored panels too means
+      // the filter never samples empty space at the spine edges.
+      const dark = fillMode === 'dark-blur';
+      const shade = (color) => dark ? mixColor(color, '#000000', .3) : color;
+      titleBackgrounds = [shade(s.backImage ? backEdge : frontEdge), shade(s.frontImage ? frontEdge : backEdge)];
+      spinePaint = 'none';
+      const panelW = faceW + bleed, panelH = faceH + 2 * bleed;
+      const sigma = Math.max(1.2, spineW * .3);
+      const back = (key) => imageMarkup(s.backImage, 0, 0, panelW, panelH, s.imageFit || 'cover', '', '#343c35', {anchor: s.imageAnchor || 'center', key, trim: {x: backX, y: bleed, w: faceW, h: faceH}});
+      const front = (key) => imageMarkup(s.frontImage, frontX, 0, panelW, panelH, s.imageFit || 'cover', '', '#30382f', {anchor: s.imageAnchor || 'center', key, trim: {x: frontX, y: bleed, w: faceW, h: faceH}});
+      const backLayer = s.backImage ? `${back('spineBackA')}<g transform="matrix(-1 0 0 1 ${2 * spineX} 0)">${back('spineBackB')}</g>` : '';
+      const frontLayer = s.frontImage ? `${front('spineFrontA')}<g transform="matrix(-1 0 0 1 ${2 * frontX} 0)">${front('spineFrontB')}</g>` : '';
+      const pad = sigma * 3;
+      // Feather the blur a few mm onto each cover so it fades in instead of starting at the fold.
+      const feather = Math.min(4, Math.max(1, spineW * .25));
+      const edgeL = spineX - feather, edgeW = spineW + feather * 2, f = (feather / edgeW).toFixed(4);
+      spineGradient = `<defs><linearGradient id="spineBlurEdgeFade" gradientUnits="userSpaceOnUse" x1="${edgeL}" y1="0" x2="${edgeL + edgeW}" y2="0"><stop offset="0" stop-color="#000"/><stop offset="${f}" stop-color="#fff"/><stop offset="${(1 - f).toFixed(4)}" stop-color="#fff"/><stop offset="1" stop-color="#000"/></linearGradient>`
+        + `<mask id="spineBlurEdge" maskUnits="userSpaceOnUse" x="${edgeL}" y="0" width="${edgeW}" height="${totalH}"><rect x="${edgeL}" y="0" width="${edgeW}" height="${totalH}" fill="url(#spineBlurEdgeFade)"/></mask>`
+        + `<filter id="spineBlurFilter" filterUnits="userSpaceOnUse" x="${edgeL - pad}" y="${-pad}" width="${edgeW + pad * 2}" height="${totalH + pad * 2}" color-interpolation-filters="sRGB">`
+        + `<feGaussianBlur stdDeviation="${sigma.toFixed(2)}"/><feComponentTransfer><feFuncA type="table" tableValues="1 1"/></feComponentTransfer></filter>`
+        + `<linearGradient id="spineBlurFade" gradientUnits="userSpaceOnUse" x1="${spineX + spineW * .15}" y1="0" x2="${spineX + spineW * .85}" y2="0"><stop offset="0" stop-color="#000"/><stop offset="1" stop-color="#fff"/></linearGradient>`
+        + `<mask id="spineBlurMask" maskUnits="userSpaceOnUse" x="${edgeL - pad}" y="${-pad}" width="${edgeW + pad * 2}" height="${totalH + pad * 2}"><rect x="${edgeL - pad}" y="${-pad}" width="${edgeW + pad * 2}" height="${totalH + pad * 2}" fill="url(#spineBlurFade)"/></mask></defs>`;
+      spineBlurMarkup = `<rect x="${spineX}" y="0" width="${spineW}" height="${totalH}" fill="${titleBackgrounds[0]}"/><g mask="url(#spineBlurEdge)"><g filter="url(#spineBlurFilter)">${backLayer}${backLayer && frontLayer ? `<g mask="url(#spineBlurMask)">${frontLayer}</g>` : frontLayer}</g>`
+        + (dark ? `<rect x="${edgeL}" y="0" width="${edgeW}" height="${totalH}" fill="#000" fill-opacity=".3"/>` : '') + '</g>';
+    } else if (['back-front', 'front-back', 'dark-blend', 'light-blend', 'blur', 'dark-blur'].includes(fillMode)) {
       let first = fillMode === 'front-back' ? frontEdge : backEdge;
       let last = fillMode === 'front-back' ? backEdge : frontEdge;
       if (fillMode === 'dark-blend') {
@@ -588,7 +615,7 @@
       `<rect width="${totalW}" height="${totalH}" fill="${theme}"/>`,
       imageMarkup(s.backImage, 0, 0, faceW + bleed, faceH + 2 * bleed, fit, 'Back cover artwork', '#343c35', {...panelOptions, key: 'back', trim: {x: backX, y: bleed, w: faceW, h: faceH}}),
       imageMarkup(s.frontImage, frontX, 0, faceW + bleed, faceH + 2 * bleed, fit, 'Front cover artwork', '#30382f', {...panelOptions, key: 'front', trim: {x: frontX, y: bleed, w: faceW, h: faceH}}),
-      `<rect x="${spineX}" y="${bleed}" width="${spineW}" height="${faceH}" fill="${spinePaint}"/>`];
+      spineBlurMarkup || `<rect x="${spineX}" y="${bleed}" width="${spineW}" height="${faceH}" fill="${spinePaint}"/>`];
 
     const overlay = overlayMarkup(s, {backX, spineX, frontX, faceW, faceH, spineW, bleed});
     const spine = s.spineImage ? '' : String(s.projectName || '').trim();
