@@ -98,6 +98,8 @@ export function createCasePreview(stage) {
   const lidOutput = stage.querySelector('[data-case3d="lid-value"]');
   const lidButton = stage.querySelector('[data-case3d="toggle-lid"]');
   const resetButton = stage.querySelector('[data-case3d="reset"]');
+  const controlBar = stage.querySelector('.case3d-controls');
+  let barReserve = 0; // px at the bottom of the stage covered by the control bar
 
   let caseGroup = null;
   let lidPivot = null;
@@ -267,11 +269,14 @@ export function createCasePreview(stage) {
   function cameraPose(d, f) {
     const tan = Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2);
     const aspect = Math.max(.5, camera.aspect || 1);
-    const fit = (h, w) => Math.max(h, w / aspect) / (2 * tan);
+    // The view is shifted up past the control bar (see resize), so fit into the height left above it.
+    const h = stage.clientHeight || 1;
+    const usable = h / Math.max(1, h - barReserve);
+    const fit = (hh, w) => Math.max(hh * usable, w / aspect) / (2 * tan);
     const closedDist = fit(d.H * 1.3, d.W * 1.6) + d.D;
     const openDist = closedDist * .9; // ease in a little; the disc stays at real scale
-    const closedTarget = new THREE.Vector3(0, d.H * .45, d.D / 2); // a little low: clears the control bar
-    const openTarget = new THREE.Vector3(-d.W * .12, d.H * .45, -d.D / 2);
+    const closedTarget = new THREE.Vector3(0, d.H * .5, d.D / 2);
+    const openTarget = new THREE.Vector3(-d.W * .12, d.H * .5, -d.D / 2);
     const closedDir = new THREE.Vector3(-.2, .1, 1).normalize();
     const openDir = new THREE.Vector3(.16, .32, 1).normalize();
     const target = closedTarget.lerp(openTarget, f);
@@ -359,6 +364,12 @@ export function createCasePreview(stage) {
     renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
     renderer.setSize(w, h, false);
     camera.aspect = w / h;
+    // Shift the rendered view down by half the control bar so the orbit target (the case) is
+    // centred in the area above the bar instead of behind it, whatever the orbit angle.
+    barReserve = controlBar && !controlBar.hidden ? Math.max(0, h - controlBar.offsetTop) + 8 : 0;
+    barReserve = Math.min(barReserve, h * .4);
+    if (barReserve) camera.setViewOffset(w, h, 0, barReserve / 2, w, h);
+    else camera.clearViewOffset();
     camera.updateProjectionMatrix();
     if (autoCamera && dims) fitCamera(dims);
   }
