@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use egui_kittest::{kittest::Queryable, Harness};
 use mini_launcher_core::config::location::ConfigLocation;
 use mini_launcher_core::config::Config;
-use mini_launcher_core::emulators::EDEN;
+use mini_launcher_core::emulators::{EDEN, PCSX2};
 use mini_launcher_core::launch::LaunchPlan;
 use mini_launcher_core::reader::{Simulated, Uid};
 use mini_launcher_core::reconnect::{Backoff, Reconnector};
@@ -264,6 +264,26 @@ fn library_lists_the_config_and_opens_the_form() {
     h.run();
     assert_eq!(h.state().screen, Screen::Edit);
     assert_eq!(h.state().form.name, "Hades");
+}
+
+#[test]
+fn the_new_cart_notification_opens_the_wizard_without_losing_work() {
+    let mut s = Settings::new(host("tray-add"));
+    s.from_tray_add();
+    assert_eq!(s.screen, Screen::Wizard);
+    assert_eq!(s.wizard.as_ref().map(|w| w.step.clone()), Some(Step::Pick));
+    // A second click while the wizard runs keeps its progress.
+    s.wizard.as_mut().unwrap().search = "port".into();
+    s.from_tray_add();
+    assert_eq!(s.wizard.as_ref().unwrap().search, "port");
+    // A half-edited game is never thrown away.
+    s.wizard_close();
+    s.edit(0);
+    s.form.name = "Hades II".into();
+    s.from_tray_add();
+    assert_eq!(s.screen, Screen::Edit);
+    assert!(s.wizard.is_none());
+    assert_eq!(s.form.name, "Hades II");
 }
 
 #[test]
@@ -523,6 +543,35 @@ fn wizard_adds_a_steam_game_by_writing_the_tag_while_launches_wait() {
     h.run();
     assert_eq!(h.state().screen, Screen::Library);
     assert!(h.state().wizard.is_none());
+}
+
+#[test]
+fn wizard_offers_the_presets_not_set_up_yet() {
+    let (host, _run_loop) = host_with_loop("wizard-pcsx2");
+    add_eden(&host);
+    let mut h = harness(host.clone(), 1.0);
+    h.run();
+    h.get_by_label("Add game").click();
+    h.run();
+    h.get_by_label("Emulator game...").click();
+    h.run();
+    assert!(h.query_by_label("Add Eden...").is_none());
+    h.get_by_label("Add PCSX2...").click();
+    h.run();
+    assert_eq!(h.state().screen, Screen::EditEmulator);
+    let form = &mut h.state_mut().emulators.form;
+    assert_eq!(
+        (form.name.as_str(), form.args.as_str()),
+        ("PCSX2", "-nogui -fullscreen -- {rom}")
+    );
+    form.exe = r"C:\Program Files\PCSX2\pcsx2-qt.exe".into();
+    h.get_by_label("Save").click();
+    h.run();
+    assert_eq!(h.state().screen, Screen::Wizard);
+    assert!(h.query_by_label("Add PCSX2...").is_none());
+    assert_eq!(h.state().game_file_types(), PCSX2.rom_extensions);
+    let text = host.config();
+    assert!(text.contains("id = \"pcsx2\""), "{text}");
 }
 
 #[test]
@@ -818,7 +867,7 @@ fn design_screenshots() {
             s.open_emulators();
         }),
         ("edit-emulator", |s| {
-            s.add_emulator();
+            s.add_emulator(&EDEN);
             s.emulators.form.exe.clear();
             s.emulators.form.args = "-f -g".into();
             s.save_emulator();

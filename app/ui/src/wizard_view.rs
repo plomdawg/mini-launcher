@@ -4,6 +4,7 @@
 use std::path::Path;
 
 use egui::{pos2, vec2, Align, Layout, Rect, Sense, Ui};
+use mini_launcher_core::emulators::{EmulatorPreset, PRESETS};
 
 use crate::library::Field;
 use crate::settings::{field_w, row, Pick, Settings, LABEL_W};
@@ -18,7 +19,7 @@ struct Clicks {
     next: bool,
     program: bool,
     emulator: bool,
-    add_eden: bool,
+    add: Option<&'static EmulatorPreset>,
     cancel: bool,
     skip: bool,
     launch: bool,
@@ -68,8 +69,8 @@ fn act(s: &mut Settings, c: Clicks) {
     if c.emulator {
         s.wizard_emulator();
     }
-    if c.add_eden {
-        s.wizard_add_emulator();
+    if let Some(p) = c.add {
+        s.wizard_add_emulator(p);
     }
     if c.next {
         s.wizard_next();
@@ -296,8 +297,17 @@ fn rom(ui: &mut Ui, s: &mut Settings, c: &mut Clicks) {
                 }
                 ui.add_space(2.0 * U);
             }
+            // Presets not set up yet, so a second emulator can be added here too.
+            let missing = PRESETS
+                .iter()
+                .filter(|p| !emulators.iter().any(|e| wizard::preset_of(e) == Some(*p)));
+            for p in missing {
+                let label = format!("Add {}...", p.name);
+                if theme::button(ui, &label, true, false).clicked() {
+                    c.add = Some(p);
+                }
+            }
             if emulators.is_empty() {
-                c.add_eden = theme::button(ui, "Add Eden...", true, false).clicked();
                 ui.colored_label(SHADE, "No emulator is set up yet.");
             }
         });
@@ -347,7 +357,8 @@ fn rom(ui: &mut Ui, s: &mut Settings, c: &mut Clicks) {
         );
         theme::warning(ui, 0.0, &text);
     }
-    if let Some(text) = skipped_note(found.skipped_updates) {
+    let hint = preset.and_then(|p| p.updates_hint).unwrap_or_default();
+    if let Some(text) = skipped_note(found.skipped_updates, hint) {
         ui.colored_label(SHADE, text);
     }
     let (mut clicked, mut open) = (None, None);
@@ -382,15 +393,13 @@ fn rom(ui: &mut Ui, s: &mut Settings, c: &mut Clicks) {
 }
 
 /// What the scan says about the update and DLC files it left out.
-fn skipped_note(n: usize) -> Option<String> {
+fn skipped_note(n: usize, hint: &str) -> Option<String> {
     let files = match n {
         0 => return None,
         1 => "1 update/DLC file".to_owned(),
         n => format!("{n} update/DLC files"),
     };
-    Some(format!(
-        "Skipped {files}. Install updates and DLC in Eden once (File > Install Files to NAND) and they load with the base game."
-    ))
+    Some(format!("Skipped {files}. {hint}").trim_end().to_owned())
 }
 
 /// A grey line in the first row of an empty list.

@@ -1,6 +1,7 @@
 //! The Windows tray: a notification-area icon with a menu on the UI thread,
 //! and the shared run loop on a worker thread.
 
+use std::cell::Cell;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -27,7 +28,7 @@ use muda::{CheckMenuItem, IsMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuI
 use tray_icon::{Icon, TrayIcon, TrayIconAttributes};
 use windows_sys::Win32::UI::WindowsAndMessaging as wm;
 
-use crate::model::{self, Level, RateLimiter, APP};
+use crate::model::{self, Click, Level, RateLimiter, APP};
 
 /// At most one balloon per this long, so a bad tag left on the reader
 /// cannot flood the notification center.
@@ -149,11 +150,12 @@ fn run(log_dir: Option<PathBuf>, mut reopen: usize) -> Result<()> {
         },
     )
     .context("cannot create the tray icon")?;
-    if tray_window().is_none() {
-        tracing::error!(
+    match tray_window() {
+        Some(hwnd) => watch_balloon_clicks(hwnd),
+        None => tracing::error!(
             "tray-icon's window (class tray_icon_app) not found: notifications will not \
              show; re-check balloon() against the tray-icon version in use"
-        );
+        ),
     }
 
     // The settings window runs on its own thread, so this loop keeps
@@ -197,6 +199,15 @@ fn run(log_dir: Option<PathBuf>, mut reopen: usize) -> Result<()> {
     'ui: loop {
         if !pump_messages() {
             break;
+        }
+        if BALLOON_CLICKED.swap(false, Ordering::Relaxed) {
+            match BALLOON_CLICK.take() {
+                Some(Click::AddGame) => {
+                    tracing::info!("new-cart notification clicked: opening Add game");
+                    window.show_add_game();
+                }
+                None => {}
+            }
         }
         while let Ok(event) = MenuEvent::receiver().try_recv() {
             let id = event.id();
@@ -305,6 +316,7 @@ fn run(log_dir: Option<PathBuf>, mut reopen: usize) -> Result<()> {
                     if let Some((level, title, text)) = model::notification(&notice, problem) {
                         if limiter.allow(Instant::now()) {
                             balloon(level, title, &text);
+                            BALLOON_CLICK.set(model::click_action(&notice, problem));
                         }
                     }
                 }
@@ -766,6 +778,53 @@ fn message_box(text: &str, error: bool) {
     }
 }
 
+thread_local! {
+    /// What clicking the balloon shown last does; every balloon resets it,
+    /// so clicking an unrelated warning never opens the wizard.
+    static BALLOON_CLICK: Cell<Option<Click>> = const { Cell::new(None) };
+}
+
+/// Set by the tray window's subclass when the user clicks a balloon.
+static BALLOON_CLICKED: AtomicBool = AtomicBool::new(false);
+
+/// `tray-icon`'s callback message for its icon (`WM_USER_TRAYICON` in
+/// its Windows backend). Its window procedure ignores balloon clicks, so
+/// [`watch_balloon_clicks`] catches them before it. An internal of the
+/// pinned `tray-icon` version, like the ones [`balloon`] relies on.
+const TRAY_CALLBACK_MSG: u32 = 6002;
+
+/// Subclasses `tray-icon`'s window to notice clicks on our balloons
+/// (`NIN_BALLOONUSERCLICK`). On failure balloons still show; they just
+/// do nothing when clicked.
+fn watch_balloon_clicks(hwnd: windows_sys::Win32::Foundation::HWND) {
+    use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
+    use windows_sys::Win32::UI::Shell::{DefSubclassProc, SetWindowSubclass, NIN_BALLOONUSERCLICK};
+
+    unsafe extern "system" fn proc(
+        hwnd: HWND,
+        msg: u32,
+        wparam: WPARAM,
+        lparam: LPARAM,
+        _id: usize,
+        _data: usize,
+    ) -> LRESULT {
+        if msg == TRAY_CALLBACK_MSG && lparam as u32 == NIN_BALLOONUSERCLICK {
+            BALLOON_CLICKED.store(true, Ordering::Relaxed);
+        }
+        // SAFETY: forwards the message unchanged to the next procedure.
+        unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) }
+    }
+
+    // SAFETY: `hwnd` is a window on this thread; `proc` is a plain function
+    // that lives as long as the program.
+    if unsafe { SetWindowSubclass(hwnd, Some(proc), 1, 0) } == 0 {
+        tracing::warn!(
+            "cannot watch notification clicks: {}",
+            std::io::Error::last_os_error()
+        );
+    }
+}
+
 /// Shows a balloon (a toast on Windows 10/11) from the tray icon.
 ///
 /// `tray-icon` has no notification API, so this modifies its icon directly.
@@ -775,6 +834,7 @@ fn message_box(text: &str, error: bool) {
 /// given explicitly (`TrayIcon::with_id`). Both are internals of the pinned
 /// `tray-icon` version; a failure here is only logged.
 fn balloon(level: Level, title: &str, text: &str) {
+    BALLOON_CLICK.set(None);
     use windows_sys::Win32::UI::Shell::{
         Shell_NotifyIconW, NIF_INFO, NIIF_INFO, NIIF_RESPECT_QUIET_TIME, NIIF_WARNING, NIM_MODIFY,
         NOTIFYICONDATAW,
