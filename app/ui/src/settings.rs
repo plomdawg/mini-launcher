@@ -11,6 +11,7 @@ use std::sync::Arc;
 use egui::{pos2, vec2, Align, Layout, Rect, Sense, Ui};
 use mini_launcher_core::config::location::ConfigLocation;
 use mini_launcher_core::config::{format_uid, Config};
+use mini_launcher_core::emulators::EmulatorPreset;
 use mini_launcher_core::launch::LaunchPlan;
 use mini_launcher_core::payload::Slug;
 use mini_launcher_core::steam::SteamGame;
@@ -191,10 +192,10 @@ impl Settings {
         }
     }
 
-    /// The wizard's "Add Eden...": the emulator form, then back to the
-    /// wizard (see [`Settings::save_emulator`]).
-    pub fn wizard_add_emulator(&mut self) {
-        self.add_emulator();
+    /// The wizard's "Add Eden..." and the like: the emulator form, then
+    /// back to the wizard (see [`Settings::save_emulator`]).
+    pub fn wizard_add_emulator(&mut self, preset: &'static EmulatorPreset) {
+        self.add_emulator(preset);
         self.emulators.for_wizard = true;
     }
 

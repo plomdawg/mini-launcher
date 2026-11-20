@@ -352,7 +352,7 @@ impl Wizard {
         let rom = unquote(&self.emu.rom).to_owned();
         let emulator = self.emulator(config).map(|e| e.id.clone());
         self.emu.rom_error = match (&emulator, rom.is_empty()) {
-            (None, _) => Some("Choose an emulator, or add Eden.".to_owned()),
+            (None, _) => Some("Choose an emulator, or add one.".to_owned()),
             (_, true) => Some("Choose the game file.".to_owned()),
             _ => None,
         };
@@ -692,10 +692,7 @@ fn preset_in(presets: &'static [EmulatorPreset], e: &Emulator) -> Option<&'stati
     let exe = exe.rsplit(['/', '\\']).next().unwrap_or_default();
     presets.iter().find(|p| {
         p.name.eq_ignore_ascii_case(e.name.trim())
-            || p.local_app_data_exes
-                .iter()
-                .filter_map(|parts| parts.last())
-                .any(|x| x.eq_ignore_ascii_case(exe))
+            || p.exe_names().any(|x| x.eq_ignore_ascii_case(exe))
     })
 }
 
@@ -1423,7 +1420,7 @@ mod tests {
         w.emulator_game(&empty);
         w.emu.rom = "/roms/x.nsp".into();
         assert!(!w.rom_next(&empty));
-        assert!(w.emu.rom_error.as_deref().unwrap().contains("add Eden"));
+        assert!(w.emu.rom_error.as_deref().unwrap().contains("add one"));
         w.back(&mut Form::new());
         assert_eq!(w.step, Step::Pick);
     }
@@ -1445,7 +1442,11 @@ mod tests {
             name: "Sample",
             default_args: &["{rom}"],
             rom_extensions: &["iso"],
-            local_app_data_exes: &[&["Sample", "sample-qt.exe"]],
+            install_paths: &[(
+                mini_launcher_core::emulators::KnownDir::ProgramFiles,
+                &["Sample", "sample-qt.exe"],
+            )],
+            updates_hint: None,
         }];
         eden.exe = PathBuf::from("/opt/sample/sample-qt.exe");
         assert_eq!(preset_in(QT, &eden).map(|p| p.name), Some("Sample"));

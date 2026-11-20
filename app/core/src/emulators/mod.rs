@@ -20,9 +20,39 @@ pub struct EmulatorPreset {
     pub default_args: &'static [&'static str],
     /// Lowercase ROM extensions without the dot.
     pub rom_extensions: &'static [&'static str],
-    /// Exe locations relative to `%LOCALAPPDATA%` as path components (joined
-    /// one by one so the result has native separators), most likely first.
-    pub local_app_data_exes: &'static [&'static [&'static str]],
+    /// Usual exe locations: a base folder and the path below it as
+    /// components (joined one by one so the result has native separators),
+    /// most likely first. The last component is the exe's file name.
+    pub install_paths: &'static [(KnownDir, &'static [&'static str])],
+    /// How to get updates and DLC loaded with a base game, for the note on
+    /// the files a scan left out. `None`: the emulator has no such files, so
+    /// a scan doesn't leave any out.
+    pub updates_hint: Option<&'static str>,
+}
+
+/// A per-user or system folder an emulator is usually installed under.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum KnownDir {
+    /// `%LOCALAPPDATA%`
+    LocalAppData,
+    /// `%ProgramFiles%`
+    ProgramFiles,
+    /// `%USERPROFILE%` (e.g. Scoop's `scoop\apps`)
+    UserProfile,
+}
+
+impl KnownDir {
+    /// The folder from the environment; `None` when unset (e.g. on Linux).
+    pub fn path(self) -> Option<PathBuf> {
+        let var = match self {
+            KnownDir::LocalAppData => "LOCALAPPDATA",
+            KnownDir::ProgramFiles => "ProgramFiles",
+            KnownDir::UserProfile => "USERPROFILE",
+        };
+        std::env::var_os(var)
+            .filter(|v| !v.is_empty())
+            .map(PathBuf::from)
+    }
 }
 
 /// Eden, a Switch emulator: fullscreen (`-f`), then the game (`-g`).
@@ -30,11 +60,41 @@ pub const EDEN: EmulatorPreset = EmulatorPreset {
     name: "Eden",
     default_args: &["-f", "-g", "{rom}"],
     rom_extensions: &["nsp", "xci", "nca", "nro", "nso"],
-    local_app_data_exes: &[&["Programs", "eden", "eden.exe"], &["eden", "eden.exe"]],
+    install_paths: &[
+        (KnownDir::LocalAppData, &["Programs", "eden", "eden.exe"]),
+        (KnownDir::LocalAppData, &["eden", "eden.exe"]),
+    ],
+    updates_hint: Some("Install updates and DLC in Eden once (File > Install Files to NAND) and they load with the base game."),
+};
+
+/// PCSX2, a PS2 emulator (2.x, the Qt build): no main window and quit when
+/// the game closes (`-nogui`), fullscreen, then the game after `--` so a
+/// file name starting with `-` isn't read as an option. CD games ripped as
+/// `.bin` + `.cue` are listed by their `.cue`.
+pub const PCSX2: EmulatorPreset = EmulatorPreset {
+    name: "PCSX2",
+    default_args: &["-nogui", "-fullscreen", "--", "{rom}"],
+    rom_extensions: &["iso", "chd", "cso", "zso", "gz", "cue", "elf"],
+    install_paths: &[
+        (KnownDir::ProgramFiles, &["PCSX2", "pcsx2-qt.exe"]),
+        (
+            KnownDir::LocalAppData,
+            &["Programs", "PCSX2", "pcsx2-qt.exe"],
+        ),
+        (
+            KnownDir::UserProfile,
+            &["scoop", "apps", "pcsx2", "current", "pcsx2-qt.exe"],
+        ),
+        (
+            KnownDir::UserProfile,
+            &["scoop", "apps", "pcsx2-dev", "current", "pcsx2-qt.exe"],
+        ),
+    ],
+    updates_hint: None,
 };
 
 /// All presets, for pickers.
-pub const PRESETS: &[EmulatorPreset] = &[EDEN];
+pub const PRESETS: &[EmulatorPreset] = &[EDEN, PCSX2];
 
 /// Default cap on [`scan_roms`] results.
 pub const MAX_ROMS: usize = 2000;
@@ -55,22 +115,27 @@ impl EmulatorPreset {
     }
 
     /// The installed exe, if found in a usual location. `None` when not
-    /// installed or on platforms without `%LOCALAPPDATA%`.
+    /// installed or on platforms without those folders.
     pub fn detect_exe(&self) -> Option<PathBuf> {
-        let local = std::env::var_os("LOCALAPPDATA").filter(|v| !v.is_empty())?;
-        self.detect_exe_in(Path::new(&local))
+        self.detect_exe_in(KnownDir::path)
     }
 
-    /// [`detect_exe`](Self::detect_exe) with an explicit `%LOCALAPPDATA%`.
-    pub fn detect_exe_in(&self, local_app_data: &Path) -> Option<PathBuf> {
-        self.local_app_data_exes
+    /// [`detect_exe`](Self::detect_exe) with the known folders from `dir`.
+    pub fn detect_exe_in(&self, dir: impl Fn(KnownDir) -> Option<PathBuf>) -> Option<PathBuf> {
+        self.install_paths
             .iter()
-            .map(|parts| {
-                parts
-                    .iter()
-                    .fold(local_app_data.to_path_buf(), |p, part| p.join(part))
+            .filter_map(|(base, parts)| {
+                let base = dir(*base)?;
+                Some(parts.iter().fold(base, |p, part| p.join(part)))
             })
             .find(|p| p.is_file())
+    }
+
+    /// The exe file names this preset installs as (any case on match).
+    pub fn exe_names(&self) -> impl Iterator<Item = &'static str> + '_ {
+        self.install_paths
+            .iter()
+            .filter_map(|(_, parts)| parts.last().copied())
     }
 }
 
@@ -119,8 +184,9 @@ impl Default for ScanOptions {
 
 /// ROM files in `dir` and its subfolders down to `opts.max_depth`, sorted by
 /// name then path. Folders are visited breadth-first in sorted order, so a
-/// truncated scan keeps the shallowest ones. Update and DLC files are counted
-/// in [`RomScan::skipped_updates`] instead of being listed. Dotfiles (e.g. macOS
+/// truncated scan keeps the shallowest ones. For presets with an
+/// [`updates_hint`](EmulatorPreset::updates_hint), update and DLC files are
+/// counted in [`RomScan::skipped_updates`] instead of being listed. Dotfiles (e.g. macOS
 /// `._Game.nsp`) are skipped, symlinks pointing outside `dir` are skipped,
 /// symlinked folders are never entered, and a file reachable through several
 /// names (a symlink to a ROM in the scanned folders) is listed once. Unreadable
@@ -225,7 +291,8 @@ impl Scan<'_> {
             } else {
                 fs::canonicalize(&path).unwrap_or_else(|_| path.clone())
             };
-            if updates || is_update_or_dlc(&path) {
+            let skips = self.preset.updates_hint.is_some();
+            if skips && (updates || is_update_or_dlc(&path)) {
                 // Counted once however many names reach it.
                 if self.skipped.insert(target) {
                     self.found.skipped_updates += 1;
@@ -381,28 +448,94 @@ mod tests {
         assert!(EDEN.is_rom(Path::new("dir/a.Xci")));
         assert!(!EDEN.is_rom(Path::new("a.nsp.txt")));
         assert!(!EDEN.is_rom(Path::new("nsp")));
-        assert_eq!(PRESETS, [EDEN]);
+        assert_eq!(PRESETS, [EDEN, PCSX2]);
+        assert!(EDEN.exe_names().all(|n| n == "eden.exe"));
+    }
+
+    #[test]
+    fn pcsx2_preset() {
+        assert_eq!(PCSX2.default_args, ["-nogui", "-fullscreen", "--", "{rom}"]);
+        for f in [
+            "a.iso", "a.CHD", "a.cso", "a.zso", "a.iso.gz", "a.cue", "a.elf",
+        ] {
+            assert!(PCSX2.is_rom(Path::new(f)), "{f}");
+        }
+        // A `.cue`'s tracks would list the game twice.
+        assert!(!PCSX2.is_rom(Path::new("a (Track 1).bin")));
+        assert!(!PCSX2.is_rom(Path::new("a.nsp")));
+        assert!(PCSX2.exe_names().all(|n| n == "pcsx2-qt.exe"));
+        // Names are unique, so a configured emulator maps to one preset.
+        assert!(PRESETS
+            .iter()
+            .all(|p| PRESETS.iter().filter(|q| q.name == p.name).count() == 1));
+    }
+
+    /// Known folders under `root`: `local`, `pf` and `home`.
+    fn under(root: &Path) -> impl Fn(KnownDir) -> Option<PathBuf> + '_ {
+        move |d| {
+            Some(root.join(match d {
+                KnownDir::LocalAppData => "local",
+                KnownDir::ProgramFiles => "pf",
+                KnownDir::UserProfile => "home",
+            }))
+        }
     }
 
     #[test]
     fn detects_the_exe_in_usual_locations_only() {
         let dir = TempDir::new("detect");
-        assert_eq!(EDEN.detect_exe_in(&dir), None);
-        fs::create_dir_all(dir.join("Programs/eden/eden.exe")).unwrap(); // a folder
-        assert_eq!(EDEN.detect_exe_in(&dir), None);
-        dir.touch("eden/eden.exe");
-        let fallback = dir.join("eden").join("eden.exe");
-        assert_eq!(EDEN.detect_exe_in(&dir), Some(fallback));
-        fs::remove_dir(dir.join("Programs/eden/eden.exe")).unwrap();
-        dir.touch("Programs/eden/eden.exe");
+        let local = dir.join("local");
+        assert_eq!(EDEN.detect_exe_in(under(&dir)), None);
+        fs::create_dir_all(local.join("Programs/eden/eden.exe")).unwrap(); // a folder
+        assert_eq!(EDEN.detect_exe_in(under(&dir)), None);
+        dir.touch("local/eden/eden.exe");
+        let fallback = local.join("eden").join("eden.exe");
+        assert_eq!(EDEN.detect_exe_in(under(&dir)), Some(fallback));
+        fs::remove_dir(local.join("Programs/eden/eden.exe")).unwrap();
+        dir.touch("local/Programs/eden/eden.exe");
         // Joined per component, so the separators are native on Windows.
-        let installed = dir.join("Programs").join("eden").join("eden.exe");
-        let found = EDEN.detect_exe_in(&dir).unwrap();
+        let installed = local.join("Programs").join("eden").join("eden.exe");
+        let found = EDEN.detect_exe_in(under(&dir)).unwrap();
         assert_eq!(found.as_os_str(), installed.as_os_str());
         if cfg!(windows) {
             assert!(!found.to_string_lossy().contains('/'), "{found:?}");
         }
-        assert_eq!(EDEN.detect_exe_in(&dir.join("missing")), None);
+        assert_eq!(EDEN.detect_exe_in(|_| None), None);
+        // Another preset's exe isn't this one's.
+        dir.touch("pf/PCSX2/eden.exe");
+        assert_eq!(PCSX2.detect_exe_in(under(&dir)), None);
+    }
+
+    #[test]
+    fn detects_pcsx2_in_program_files_then_scoop() {
+        let dir = TempDir::new("detect-pcsx2");
+        dir.touch("home/scoop/apps/pcsx2/current/pcsx2-qt.exe");
+        let scoop = dir.join("home/scoop/apps/pcsx2/current/pcsx2-qt.exe");
+        let found = PCSX2.detect_exe_in(under(&dir)).unwrap();
+        assert_eq!(found, scoop);
+        dir.touch("pf/PCSX2/pcsx2-qt.exe");
+        let found = PCSX2.detect_exe_in(under(&dir)).unwrap();
+        assert_eq!(found, dir.join("pf/PCSX2/pcsx2-qt.exe"));
+        // An unset folder is skipped, not a reason to give up.
+        let no_pf = |d| {
+            (d != KnownDir::ProgramFiles)
+                .then(|| under(&dir)(d))
+                .flatten()
+        };
+        assert_eq!(PCSX2.detect_exe_in(no_pf), Some(scoop));
+    }
+
+    #[test]
+    fn pcsx2_scans_keep_update_named_files() {
+        let dir = TempDir::new("scan-pcsx2");
+        dir.touch("Game (USA) [SLUS-20946].iso");
+        dir.touch("Update/Disc Two.chd");
+        dir.touch("Racer [Update].cue");
+        dir.touch("Racer [Update] (Track 1).bin");
+        let scan = scan_roms(&dir, &PCSX2, ScanOptions::default());
+        let roms: Vec<_> = scan.roms.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(roms, ["Disc Two", "Game", "Racer"]);
+        assert_eq!(scan.skipped_updates, 0);
     }
 
     #[test]
