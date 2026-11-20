@@ -314,8 +314,9 @@ game file come from your config. You need your own legally dumped games and, whe
 needs them, your own keys and firmware. Mini Launcher doesn't include, download or help you find
 any of these.
 
-The walkthrough below uses **Eden**, a Switch emulator; any emulator that takes the game file on
-its command line works the same way. You can add the emulator and its games in the settings
+The walkthrough below uses **Eden**, a Switch emulator. **PCSX2** (PS2) is built in too — see
+[PCSX2](#pcsx2) — and any other emulator that takes the game file on its command line works the
+same way. You can add the emulator and its games in the settings
 window (step 3) or in `config.toml` by hand.
 
 **1. Set up the emulator on its own.** Install Eden, give it your keys and firmware, and check
@@ -334,7 +335,8 @@ not a `.bat` or `.cmd` that starts it: those run through `cmd.exe`, which reads 
 again and can break or refuse game paths with characters like `&`, `%` or `^`.
 
 **3. Add the emulator and a game.** In the settings window: **Add game → Emulator game...**. If
-no emulator is set up yet, click **Add Eden...**: the form fills in Eden's arguments and finds
+Eden isn't set up yet, click **Add Eden...** (each built-in emulator you haven't added has its
+own **Add ...** button, here and on the settings window's Emulators screen): the form fills in Eden's arguments and finds
 `eden.exe` in the usual places above (otherwise **Browse** for it); **Save** brings you back to
 the wizard. Then choose the game file with **Browse**, or click **Scan folder...** to list the
 Eden game files in a folder (and in the folders up to three levels inside it) and click one. See
@@ -406,6 +408,23 @@ Rules for emulators and emulator games:
   only allowed together with `emulator`.
 - The tag still only says `id:<slug>` (or is mapped by `uid`); nothing on the tag reaches the
   command line.
+
+#### PCSX2
+
+Install PCSX2 2.x, set up your BIOS in it and check that your game boots there first. **Add
+PCSX2...** finds `pcsx2-qt.exe` in `C:\Program Files\PCSX2\` (the installer's default) or a
+Scoop install (`%USERPROFILE%\scoop\apps\pcsx2\current\`); for the portable build, **Browse**
+to wherever you unzipped it. The arguments it fills in are:
+
+```toml
+args = ["-nogui", "-fullscreen", "--", "{rom}"]
+```
+
+`-nogui` hides PCSX2's game list and quits PCSX2 when you close the game, `-fullscreen` starts in
+fullscreen, and `--` ends the options so the game path is never read as one. **Scan folder...**
+lists `.iso`, `.chd`, `.cso`, `.zso`, `.gz`, `.cue` and `.elf` files; a CD game ripped as `.bin` +
+`.cue` is listed by its `.cue` (pick a lone `.bin` with **Browse**). PS2 games have no separate
+update files, so a PCSX2 scan leaves nothing out.
 
 #### Updates and DLC
 
