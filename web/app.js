@@ -56,6 +56,13 @@
   let sgdbAssets = [];
   let sgdbRequestId = 0;
   const sgdbKeyStorage = 'plomcase.steamgriddb.apiKey';
+  // Lengths are stored in mm everywhere (state, defaults, exports); the inputs show them in the
+  // shared display unit (units.js: 'mm' or 'in') and are converted back on read.
+  const lengthIds = ['faceWidth','faceHeight','spineWidth','bleed','spineFontSize','discDiameter','discHole','esrbSize'];
+  const Units = window.Units;
+  let shownUnit = 'mm'; // unit the inputs currently show (the HTML ships mm); renderLengthUnits() switches it
+  const fmtLen = (mm) => Units.format(Units.fromMm(mm, shownUnit));
+  const lenText = (mm) => `${fmtLen(mm)} ${shownUnit}`;
 
   const dbPromise = new Promise((resolve, reject) => {
     if (!('indexedDB' in window)) { reject(new Error('Local project storage is unavailable')); return; }
@@ -105,7 +112,46 @@
   function setControlValue(id, value) {
     const control = $(id);
     if (control.type === 'checkbox') control.checked = Boolean(value);
-    else control.value = value;
+    else if (lengthIds.includes(id) && value !== '' && Number.isFinite(Number(value))) {
+      // Remember the exact mm behind the rounded display so an unedited field round-trips exactly.
+      control.value = fmtLen(value);
+      control.dataset.mmValue = String(value);
+      control.dataset.shownValue = control.value;
+    } else control.value = value;
+  }
+
+  /** A control's value in canonical units (length inputs converted back to mm). */
+  function controlValue(id) {
+    const el = $(id);
+    if (el.type === 'checkbox') return el.checked;
+    if (!lengthIds.includes(id) || el.value.trim() === '') return el.value;
+    if (el.value === el.dataset.shownValue) return el.dataset.mmValue;
+    const shown = Number(el.value);
+    return Number.isFinite(shown) ? String(Units.round(Units.toMm(shown, shownUnit))) : el.value;
+  }
+
+  /** Re-show every length input (value, min/max/step, unit tag) and the size presets in the current unit. */
+  function renderLengthUnits() {
+    const mm = Object.fromEntries(lengthIds.map((id) => [id, controlValue(id)]));
+    shownUnit = Units.get();
+    lengthIds.forEach((id) => {
+      const el = $(id);
+      ['min', 'max', 'step'].forEach((attr) => {
+        if (el.dataset[`mm${attr}`] === undefined) el.dataset[`mm${attr}`] = el.getAttribute(attr) ?? '';
+      });
+      const {mmmin, mmmax, mmstep} = el.dataset;
+      if (mmmin !== '') el.min = fmtLen(mmmin);
+      if (mmmax !== '') el.max = fmtLen(mmmax);
+      if (mmstep !== '') el.step = shownUnit === 'mm' ? mmstep : (Number(mmstep) >= .5 ? '0.01' : '0.001');
+      const tag = el.closest('label')?.querySelector('span > i');
+      if (tag) tag.textContent = shownUnit;
+      setControlValue(id, mm[id]);
+    });
+    const presetNames = {dvd: 'DVD insert', mini: 'Legacy mini 2:3'};
+    Object.entries(casePresets).forEach(([key, [w, h, spine]]) => {
+      const option = $('casePreset').querySelector(`option[value="${key}"]`);
+      if (option) option.textContent = `${presetNames[key]} (${fmtLen(w)} × ${fmtLen(h)} × ${lenText(spine)})`;
+    });
   }
 
   function applySharedDefaultsToControls() {
@@ -116,7 +162,7 @@
 
   function readState() {
     const values = {};
-    ids.forEach((id) => { const el = $(id); values[id] = el.type === 'checkbox' ? el.checked : el.value; });
+    ids.forEach((id) => { values[id] = controlValue(id); });
     return {...values, settingOverrides: {...settingOverrides}, backImage: files.back, frontImage: files.front, logoImage: files.logo, titleImage: files.title, spineImage: files.spine, discImage: files.disc, discFileName: files.disc ? $('discFileName').textContent : '', version: 1};
   }
 
@@ -297,7 +343,7 @@
   }
 
   function clampNumber(id, fallback, min, max) {
-    const n = Number($(id).value);
+    const n = Number(controlValue(id));
     if (!Number.isFinite(n)) return fallback;
     return Math.min(max, Math.max(min, n));
   }
@@ -828,8 +874,8 @@
     const ready = Boolean(files.back || files.front || files.spine || files.logo || files.title || files.disc || $('projectName').value.trim());
     $('previewStage').classList.toggle('has-art', ready);
     $('emptyHint').style.display = ready ? 'none' : '';
-    const trimWidth = (faceW * 2 + spineW).toFixed(1);
-    const sizeValues = ['faceWidth', 'faceHeight', 'spineWidth'].map((id) => String(Number($(id).value)));
+    const trimWidth = lenText(faceW * 2 + spineW);
+    const sizeValues = ['faceWidth', 'faceHeight', 'spineWidth'].map((id) => String(Number(controlValue(id))));
     $('casePreset').value = Object.keys(casePresets).find((key) => casePresets[key].every((v, i) => v === sizeValues[i])) || 'custom';
     $('imageAnchorField').hidden = $('imageFit').value !== 'cover';
     const dressed = $('overlayStyle').value === 'original' && Boolean(dressParts[overlayEntry('platforms', $('overlayPlatform').value)?.dress]);
@@ -841,9 +887,9 @@
     $('gridFitNote').textContent = Math.abs(gridGap) < .05
       ? 'A 2:3 grid fits this face exactly.'
       : gridCrop > 0
-        ? `A 600 × 900 grid loses ${gridCrop.toFixed(1)} mm of height when filled, or leaves ${gridGap.toFixed(1)} mm of side space when fit.`
-        : `A 600 × 900 grid loses ${(-gridGap).toFixed(1)} mm of width when filled, or leaves ${(-gridCrop).toFixed(1)} mm of top/bottom space when fit.`;
-    $('exportDimensions').textContent = `${width.toFixed(1)} × ${height.toFixed(1)} mm with bleed · ${trimWidth} mm trim width`;
+        ? `A 600 × 900 grid loses ${lenText(gridCrop)} of height when filled, or leaves ${lenText(gridGap)} of side space when fit.`
+        : `A 600 × 900 grid loses ${lenText(-gridGap)} of width when filled, or leaves ${lenText(-gridCrop)} of top/bottom space when fit.`;
+    $('exportDimensions').textContent = `${fmtLen(width)} × ${lenText(height)} with bleed · ${trimWidth} trim width`;
     $('logoScaleValue').textContent = `${Number($('logoScale').value)}%`;
     $('titleLogoScaleValue').textContent = `${Number($('titleLogoScale').value)}%`;
     $('logoRotationValue').textContent = `${Number($('logoRotation').value) < 0 ? '−' : ''}${Math.abs(Number($('logoRotation').value))}°`;
@@ -859,13 +905,13 @@
     else if (files.title) fitNote.textContent = 'Title logo replaces the project name text.';
     else if (!title) fitNote.textContent = 'Enter a project name to check fit.';
     else if (spineFit.reason) {
-      fitNote.textContent = `Auto-fit to ${spineFit.effective.toFixed(1)} mm for ${spineFit.reason}.`;
+      fitNote.textContent = `Auto-fit to ${lenText(spineFit.effective)} for ${spineFit.reason}.`;
       fitNote.classList.add('adjusted');
       if (spineFit.effective < spineFit.requested * .7) fitNote.classList.add('tight');
-    } else fitNote.textContent = `Fits at ${spineFit.effective.toFixed(1)} mm.`;
+    } else fitNote.textContent = `Fits at ${lenText(spineFit.effective)}.`;
     const disc = buildDiscSvg(undefined, true);
     $('discPreview').outerHTML = disc.svg.replace('<svg ', '<svg id="discPreview" role="img" aria-label="Printable disc label preview" ');
-    $('discDimensions').textContent = `${disc.width.toFixed(2)} mm${disc.bleed > 0 ? ' with bleed' : ''} · ${+disc.hole.toFixed(2)} mm hole`;
+    $('discDimensions').textContent = `${lenText(disc.width)}${disc.bleed > 0 ? ' with bleed' : ''} · ${lenText(disc.hole)} hole`;
     clearTimeout(saveTimer);
     saveTimer = setTimeout(renderProjectList, 700);
     changeListeners.forEach((listener) => { try { listener(); } catch (error) { console.error(error); } });
@@ -1129,8 +1175,7 @@
     if (!fields) return;
     const nextDefaults = {...settingDefaults};
     fields.forEach((id) => {
-      const control = $(id);
-      nextDefaults[id] = normalizeSettingValue(id, control.type === 'checkbox' ? control.checked : control.value, settingDefaults[id]);
+      nextDefaults[id] = normalizeSettingValue(id, controlValue(id), settingDefaults[id]);
     });
     let previousStorage;
     try {
@@ -1837,6 +1882,10 @@
     markSettingEdited('casePreset');
   });
   ids.forEach((id) => $(id).addEventListener('change', () => markSettingEdited(id)));
+  // Unit toggle (shared with sibling apps via units.js): display-only, never marks anything edited.
+  Units.mountToggle($('unitsToggle'));
+  renderLengthUnits();
+  Units.onChange(() => { renderLengthUnits(); update(); });
   window.addEventListener('storage', (event) => {
     if (event.key !== defaultsStorageKey) return;
     settingDefaults = loadSettingDefaults();
