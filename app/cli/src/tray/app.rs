@@ -749,8 +749,7 @@ fn tray_icon() -> Icon {
     })
 }
 
-/// Dispatches pending window messages, then waits briefly for more.
-/// Returns `false` once `WM_QUIT` arrives.
+/// Maps a tray-icon mouse event to the platform-neutral [`model::IconEvent`].
 fn icon_event(event: &TrayIconEvent) -> model::IconEvent {
     use model::IconEvent as E;
     match event {
@@ -770,6 +769,8 @@ fn icon_event(event: &TrayIconEvent) -> model::IconEvent {
     }
 }
 
+/// Dispatches pending window messages, then waits briefly for more.
+/// Returns `false` once `WM_QUIT` arrives.
 fn pump_messages() -> bool {
     // SAFETY: plain Win32 message loop on the thread that owns the tray window.
     unsafe {
