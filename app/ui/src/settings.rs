@@ -601,6 +601,7 @@ fn library(ui: &mut Ui, s: &mut Settings) {
 pub fn launch_label(plan: &LaunchPlan) -> String {
     match plan {
         LaunchPlan::Steam { appid } => format!("Steam {appid}"),
+        LaunchPlan::SteamShortcut { .. } => "Steam shortcut".to_owned(),
         LaunchPlan::BattleNet { code } => format!("Battle.net {code}"),
         LaunchPlan::Exe { .. } => "Program".to_owned(),
         LaunchPlan::Emulator { .. } => "Emulator".to_owned(),
@@ -679,9 +680,15 @@ fn form(ui: &mut Ui, s: &mut Settings) {
         note(ui, Field::Name);
         let emulator = f.emulator.is_some();
         let bnet = f.battlenet && !emulator;
+        let shortcut = f.shortcut && !bnet && !emulator;
+        let steam = f.steam && !shortcut && !bnet && !emulator;
         row(ui, "Launch with", |ui, _| {
-            if theme::choice(ui, f.steam && !bnet && !emulator, "Steam").clicked() {
-                (f.steam, f.battlenet, f.emulator) = (true, false, None);
+            if theme::choice(ui, steam, "Steam").clicked() {
+                (f.steam, f.shortcut, f.battlenet, f.emulator) = (true, false, false, None);
+            }
+            ui.add_space(2.0 * U);
+            if theme::choice(ui, shortcut, "Steam shortcut").clicked() {
+                (f.shortcut, f.battlenet, f.emulator) = (true, false, None);
             }
             ui.add_space(2.0 * U);
             // Battle.net runs on Windows only; an entry made there still
@@ -692,8 +699,9 @@ fn form(ui: &mut Ui, s: &mut Settings) {
                 }
                 ui.add_space(2.0 * U);
             }
-            if theme::choice(ui, !f.steam && !bnet && !emulator, "Program").clicked() {
-                (f.steam, f.battlenet, f.emulator) = (false, false, None);
+            let program = !f.steam && !shortcut && !bnet && !emulator;
+            if theme::choice(ui, program, "Program").clicked() {
+                (f.steam, f.shortcut, f.battlenet, f.emulator) = (false, false, false, None);
             }
             ui.add_space(2.0 * U);
             // Offered once an emulator is set up (on the Emulators screen).
@@ -728,7 +736,14 @@ fn form(ui: &mut Ui, s: &mut Settings) {
             note(ui, Field::Code);
             return;
         }
-        let steam = f.steam;
+        if shortcut {
+            row(ui, "Shortcut ID", |ui, id| {
+                theme::field(ui, &mut f.shortcut_id, 24.0 * U, true, id);
+                ui.colored_label(SHADE, "a non-Steam game added to Steam");
+            });
+            note(ui, Field::ShortcutId);
+            return;
+        }
         row(ui, "Steam app ID", |ui, id| {
             theme::field(ui, &mut f.app_id, 24.0 * U, steam, id);
         });

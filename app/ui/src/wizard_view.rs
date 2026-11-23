@@ -185,8 +185,9 @@ fn pick(ui: &mut Ui, s: &mut Settings, c: &mut Clicks) {
         |ui, i, row, cols| {
             let game = &games[i];
             let on = w.selected.as_ref() == Some(&game.plan);
-            let (resp, fg, weak) =
-                theme::list_row(ui, row, ("installed", &game.store), on, &game.name);
+            // Keyed by plan: every shortcut has the same store label.
+            let key = format!("{:?}", game.plan);
+            let (resp, fg, weak) = theme::list_row(ui, row, ("installed", key), on, &game.name);
             if resp.clicked() {
                 clicked = Some(i);
             }

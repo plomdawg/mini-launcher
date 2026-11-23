@@ -411,8 +411,10 @@ fn write_game(table: &mut Table, game: &Game) -> Result<(), EditError> {
     );
     let (mut appid, mut battlenet, mut exe, mut args, mut cwd, mut emulator, mut rom) =
         (None, None, None, None, None, None, None);
+    let mut shortcut = None;
     match &game.plan {
         LaunchPlan::Steam { appid: n } => appid = Some(i64::from(*n).into()),
+        LaunchPlan::SteamShortcut { appid: n } => shortcut = Some(i64::from(*n).into()),
         LaunchPlan::BattleNet { code } => battlenet = Some(code.as_str().into()),
         LaunchPlan::Exe {
             path,
@@ -434,6 +436,7 @@ fn write_game(table: &mut Table, game: &Game) -> Result<(), EditError> {
         }
     }
     set(table, "steam_appid", appid);
+    set(table, "steam_shortcut", shortcut);
     set(table, "battlenet", battlenet);
     set(table, "exe", exe);
     set(table, "args", args);
@@ -793,6 +796,11 @@ rom = 'D:\Switch\botw.nsp'
         doc.upsert_game(&mk8).unwrap();
         assert_eq!(game_keys(&doc, 0), ["id", "name", "battlenet"]);
         assert!(doc.to_string().contains("battlenet = \"WoWF\""));
+        assert_eq!(doc.config().games[0].plan, mk8.plan);
+        mk8.plan = LaunchPlan::SteamShortcut { appid: u32::MAX };
+        doc.upsert_game(&mk8).unwrap();
+        assert_eq!(game_keys(&doc, 0), ["id", "name", "steam_shortcut"]);
+        assert!(doc.to_string().contains("steam_shortcut = 4294967295"));
         assert_eq!(doc.config().games[0].plan, mk8.plan);
 
         let mut botw = doc.config().games[1].clone();

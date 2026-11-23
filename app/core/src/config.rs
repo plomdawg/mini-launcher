@@ -13,6 +13,11 @@
 //! battlenet = "WoWF"               # Battle.net launch code (Windows only)
 //!
 //! [[games]]
+//! id = "doom"
+//! name = "Doom"
+//! steam_shortcut = 3237998081      # a non-Steam game added to Steam
+//!
+//! [[games]]
 //! id = "my-game"
 //! name = "My Game"
 //! exe = 'C:\Games\MyGame\game.exe'
@@ -32,8 +37,8 @@
 //! rom = 'D:\Switch\kart-racer.nsp'
 //! ```
 //!
-//! Each game has exactly one of `steam_appid`, `battlenet`, `exe` or
-//! `emulator` + `rom`;
+//! Each game has exactly one of `steam_appid`, `steam_shortcut`,
+//! `battlenet`, `exe` or `emulator` + `rom`;
 //! `args` and `cwd` are only allowed with `exe`. An emulator's `args` must
 //! contain `{rom}` as one whole argument exactly once; it is replaced by the
 //! ROM path as a single argument when the config is loaded. Unknown keys are
@@ -132,6 +137,7 @@ struct RawGame {
     name: String,
     uid: Option<String>,
     steam_appid: Option<i64>,
+    steam_shortcut: Option<i64>,
     battlenet: Option<String>,
     exe: Option<PathBuf>,
     args: Option<Vec<String>>,
@@ -293,10 +299,34 @@ fn validate(raw: RawGame, emulators: &[Emulator]) -> Result<Game, String> {
     if raw.rom.is_some() && raw.emulator.is_none() {
         return Err(ctx("rom is only allowed with emulator"));
     }
+    if let Some(n) = raw.steam_shortcut {
+        if raw.steam_appid.is_some()
+            || raw.battlenet.is_some()
+            || raw.exe.is_some()
+            || raw.emulator.is_some()
+        {
+            return Err(ctx(
+                "set only one of steam_appid, steam_shortcut, battlenet, exe or emulator",
+            ));
+        }
+        if raw.args.is_some() || raw.cwd.is_some() {
+            return Err(ctx("args and cwd are only allowed with exe"));
+        }
+        let appid = u32::try_from(n)
+            .ok()
+            .filter(|&n| n != 0)
+            .ok_or_else(|| ctx(&format!("steam_shortcut {n}: must be 1 to {}", u32::MAX)))?;
+        return Ok(Game {
+            id,
+            name: raw.name,
+            uid,
+            plan: LaunchPlan::SteamShortcut { appid },
+        });
+    }
     if let Some(code) = raw.battlenet {
         if raw.steam_appid.is_some() || raw.exe.is_some() || raw.emulator.is_some() {
             return Err(ctx(
-                "set only one of steam_appid, battlenet, exe or emulator",
+                "set only one of steam_appid, steam_shortcut, battlenet, exe or emulator",
             ));
         }
         if raw.args.is_some() || raw.cwd.is_some() {
@@ -312,11 +342,13 @@ fn validate(raw: RawGame, emulators: &[Emulator]) -> Result<Game, String> {
     }
     let plan = match (raw.steam_appid, raw.exe, raw.emulator) {
         (None, None, None) => {
-            return Err(ctx("set one of steam_appid, battlenet, exe or emulator"))
+            return Err(ctx(
+                "set one of steam_appid, steam_shortcut, battlenet, exe or emulator",
+            ))
         }
         (Some(_), Some(_), _) | (Some(_), _, Some(_)) | (_, Some(_), Some(_)) => {
             return Err(ctx(
-                "set only one of steam_appid, battlenet, exe or emulator",
+                "set only one of steam_appid, steam_shortcut, battlenet, exe or emulator",
             ))
         }
         (None, None, Some(emulator)) => {
@@ -443,6 +475,10 @@ mod tests {
             id = "wow-forever"
             name = "WoW Forever"
             battlenet = "WoWF"
+            [[games]]
+            id = "doom"
+            name = "Doom"
+            steam_shortcut = 4294967295
             "#,
         )
         .unwrap();
@@ -465,6 +501,7 @@ mod tests {
                 LaunchPlan::BattleNet {
                     code: Code::new("WoWF").unwrap()
                 },
+                LaunchPlan::SteamShortcut { appid: u32::MAX },
             ]
         );
         assert_eq!(
@@ -487,6 +524,19 @@ mod tests {
             (g("battlenet = \"launch WoW\""), "invalid Battle.net code"),
             (g("battlenet = \"\""), "invalid Battle.net code"),
             (g("battlenet = 1"), "invalid type"),
+            (g("steam_shortcut = 1\nsteam_appid = 1"), "only one of"),
+            (g("steam_shortcut = 1\nbattlenet = \"WoW\""), "only one of"),
+            (g("steam_shortcut = 1\nexe = \"a\""), "only one of"),
+            (g("steam_shortcut = 1\nargs = []"), "only allowed with exe"),
+            (
+                g("steam_shortcut = 1\ncwd = \"/\""),
+                "only allowed with exe",
+            ),
+            (g("steam_shortcut = 1\nrom = \"r\""), "rom is only allowed"),
+            (g("steam_shortcut = 0"), "steam_shortcut 0: must be 1 to"),
+            (g("steam_shortcut = -1"), "must be 1 to"),
+            (g("steam_shortcut = 4294967296"), "must be 1 to"),
+            (g("steam_shortcut = \"1\""), "invalid type"),
             (g(""), "set one of"),
             (g("steam_appid = 0"), "must be 1 to"),
             (g("steam_appid = -1"), "must be 1 to"),

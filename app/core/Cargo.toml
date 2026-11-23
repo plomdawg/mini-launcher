@@ -11,6 +11,7 @@ rust-version.workspace = true
 name = "mini_launcher_core"
 
 [dependencies]
+crc32fast = "1.5.0"
 directories = "6.0.0"
 open = { version = "5.4.5", features = ["shellexecute-on-windows"] }
 serde = { version = "1.0.229", features = ["derive"] }

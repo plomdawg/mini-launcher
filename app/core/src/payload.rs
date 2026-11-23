@@ -43,6 +43,15 @@ pub fn steam_launch_uri(appid: u32) -> String {
     format!("steam://rungameid/{appid}")
 }
 
+/// Builds the launch URI for a non-Steam game added to Steam (a shortcut)
+/// from its parsed 32-bit appid: Steam's 64-bit game id, the appid in the
+/// high half and the shortcut type (`0x0200_0000`) in the low half. Never
+/// built from tag text; tags name shortcuts by `id:<slug>` only.
+pub fn steam_shortcut_uri(appid: u32) -> String {
+    let game_id = (u64::from(appid) << 32) | 0x0200_0000;
+    format!("steam://rungameid/{game_id}")
+}
+
 /// A validated library slug matching `^[a-z0-9][a-z0-9-]{0,63}$`.
 ///
 /// The only constructor is [`Slug::new`], so holding a `Slug` means the string
@@ -231,6 +240,24 @@ mod tests {
         }
         assert!(Slug::new(&"a".repeat(64)).is_ok());
         assert!(Slug::new(&"a".repeat(65)).is_err());
+    }
+
+    #[test]
+    fn shortcut_uri_is_built_from_the_u32() {
+        let uri = |n| steam_shortcut_uri(n);
+        assert_eq!(uri(0xC0FF_EE01), "steam://rungameid/13907095862439313408");
+        assert_eq!(uri(u32::MAX), "steam://rungameid/18446744069448138752");
+        assert_eq!(uri(1), "steam://rungameid/4328521728");
+        // A shortcut appid on a tag is just a (store) Steam appid: the tag
+        // grammar has no shortcut form.
+        assert_eq!(
+            Payload::parse("steam://3237998081"),
+            Payload::Steam(3_237_998_081)
+        );
+        assert_eq!(
+            Payload::parse("steam://13907095862439313408"),
+            Payload::Unusable
+        );
     }
 
     #[test]

@@ -2110,6 +2110,7 @@ dependencies = [
 name = "mini-launcher-core"
 version = "0.5.1"
 dependencies = [
+ "crc32fast",
  "directories",
  "open",
  "serde",

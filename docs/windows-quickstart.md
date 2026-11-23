@@ -292,8 +292,9 @@ steam_appid = 400
 Rules:
 
 - Each game is a `[[games]]` block with an `id` and a `name`, plus **exactly one** of
-  `steam_appid`, `battlenet` (see [Battle.net games](#battlenet-games)), `exe`, or
-  `emulator` + `rom` (see [Emulator games](#emulator-games)).
+  `steam_appid`, `steam_shortcut` (see [Non-Steam games added to Steam](#non-steam-games-added-to-steam)),
+  `battlenet` (see [Battle.net games](#battlenet-games)), `exe`, or `emulator` + `rom` (see
+  [Emulator games](#emulator-games)).
 - `id`: lowercase letters, digits and `-`, starting with a letter or digit (up to 64 characters).
   Every `id` must be different.
 - `exe`: use the **full path**. Put Windows paths in single quotes (`'C:\...'`) so the
@@ -307,6 +308,29 @@ Rules:
   **always wins** over what the tag says.
 - `args` and `cwd` are only allowed with `exe`. Unknown keys are an error, so typos show up right
   away.
+
+### Non-Steam games added to Steam
+
+Games you added to Steam yourself (**Games → Add a Non-Steam Game to My Library...**) show up in
+**Add game** too, marked `Steam shortcut` in the **Store** column. Pick one and write the tag as
+usual; the tag gets `id:<id>`, and the config entry holds the shortcut's app ID:
+
+```toml
+[[games]]
+id = "doom"
+name = "Doom"
+steam_shortcut = 3237998081
+```
+
+The game is started **through Steam**, the same way Steam starts it, so the Steam overlay, your
+Steam Input controller layout and (on Linux) Proton all still apply. Steam must be running or
+able to start, and the shortcut must still exist in Steam: if you delete it and add it again,
+or change its name or target in Steam, it can get a new ID, so add the game again (or fix the
+number with **Edit → Launch with: Steam shortcut**).
+
+Mini Launcher reads the shortcuts of every Steam account that has signed in on this PC
+(`<Steam folder>\userdata\<account>\config\shortcuts.vdf`) and skips hidden ones.
+`mini-launcher steam list` prints them with `(shortcut)` after the name.
 
 ### Battle.net games
 
@@ -497,7 +521,7 @@ Backups, export/import and keeping the config in a synced folder are covered in
 
 Restart `run` after you edit the config. If the file has a mistake, `run` stops with
 `error: cannot load ...config.toml: ...` and the message names the problem, e.g.
-`games[1]: "my-game": set one of steam_appid, battlenet, exe or emulator`. `games[1]` is the second block (counting
+`games[1]: "my-game": set one of steam_appid, steam_shortcut, battlenet, exe or emulator`. `games[1]` is the second block (counting
 starts at 0).
 
 ### Mapping an unknown tag
