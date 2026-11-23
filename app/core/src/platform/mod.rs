@@ -58,4 +58,13 @@ mod other {
     pub(crate) fn battlenet_dirs() -> Vec<std::path::PathBuf> {
         Vec::new()
     }
+
+    /// Process listing is only needed for Battle.net, which is Windows-only.
+    pub(crate) fn process_ids(_exe_name: &str) -> Vec<u32> {
+        Vec::new()
+    }
+
+    pub(crate) fn has_visible_window(_pids: &[u32]) -> bool {
+        false
+    }
 }

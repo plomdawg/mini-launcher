@@ -9,9 +9,13 @@
 //! `.flavor.info` names the product (`wowf`); a flavor counts only when its
 //! subfolder holds an executable.
 //!
-//! Games are launched with `Battle.net.exe --exec="launch <code>"`, which
-//! starts Battle.net if needed. Codes come from the catalog or the user's
-//! config, never from a tag, and must match `^[A-Za-z0-9_]{1,32}$`.
+//! Games are launched with `Battle.net.exe --exec="launch <code>"`. That only
+//! works when Battle.net is already running (a cold start drops it), so
+//! [`client::launch`] sends it again once a cold-started client is up. Codes
+//! come from the catalog or the user's config, never from a tag, and must
+//! match `^[A-Za-z0-9_]{1,32}$`.
+
+pub mod client;
 
 use std::fmt;
 use std::path::{Path, PathBuf};

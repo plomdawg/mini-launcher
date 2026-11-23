@@ -18,7 +18,8 @@ use crate::payload::{steam_launch_uri, Payload, Slug};
 pub enum LaunchPlan {
     /// Open `steam://rungameid/{appid}` with the desktop opener.
     Steam { appid: u32 },
-    /// Start `Battle.net.exe --exec="launch <code>"` (Windows only).
+    /// Start `Battle.net.exe --exec="launch <code>"` (Windows only), sent
+    /// again once the client is up if it wasn't running.
     BattleNet { code: Code },
     /// Start a configured executable directly (no shell).
     Exe {
@@ -143,7 +144,7 @@ pub fn execute(plan: &LaunchPlan, dry_run: bool) -> std::io::Result<Outcome> {
         // can't break out of its quotes.
         LaunchPlan::BattleNet { code } => {
             let exe = battlenet::client_exe().map_err(std::io::Error::other)?;
-            spawn_raw(&exe, &battlenet::exec_arg(code))?
+            battlenet::client::launch(exe, code)?
         }
         LaunchPlan::Exe { path, args, cwd }
         | LaunchPlan::Emulator {
@@ -170,7 +171,7 @@ fn spawn(path: &Path, args: &[String], cwd: Option<&Path>) -> std::io::Result<()
 /// Starts `path` with one argument passed verbatim, as Battle.net expects
 /// `--exec="launch <code>"` with the quotes inside the argument.
 #[cfg(windows)]
-fn spawn_raw(path: &Path, arg: &str) -> std::io::Result<()> {
+pub(crate) fn spawn_raw(path: &Path, arg: &str) -> std::io::Result<()> {
     use std::os::windows::process::CommandExt;
     let mut cmd = Command::new(path);
     cmd.raw_arg(arg).stdin(Stdio::null());
@@ -181,7 +182,7 @@ fn spawn_raw(path: &Path, arg: &str) -> std::io::Result<()> {
 }
 
 #[cfg(not(windows))]
-fn spawn_raw(_: &Path, _: &str) -> std::io::Result<()> {
+pub(crate) fn spawn_raw(_: &Path, _: &str) -> std::io::Result<()> {
     Err(std::io::Error::other(
         battlenet::BattleNetError::Unsupported,
     ))

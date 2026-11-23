@@ -321,8 +321,11 @@ name = "World of Warcraft: Forever"
 battlenet = "WoWF"
 ```
 
-A tag for it runs `Battle.net.exe --exec="launch WoWF"`, which opens Battle.net if it isn't
-running and starts the game once you're logged in. The main codes Mini Launcher detects:
+A tag for it runs `Battle.net.exe --exec="launch WoWF"`. If Battle.net is already running, the
+game starts right away. If it isn't, Battle.net drops that request while it starts up, so Mini
+Launcher opens Battle.net, waits (up to 90 seconds) for its window, gives it a few more seconds
+to log in, and sends the request again. If you have to type a password, the game won't start
+on its own; insert the cart again once you're logged in. The main codes Mini Launcher detects:
 
 | Game | Code | | Game | Code |
 |---|---|---|---|---|

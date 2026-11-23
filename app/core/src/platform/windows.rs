@@ -1,6 +1,6 @@
 //! Win32 calls: a named mutex for single instance, the per-user `Run` key
 //! for start at login, Steam's install path and Battle.net's uninstall
-//! entries. No admin rights needed.
+//! entries, and Battle.net process/window checks. No admin rights needed.
 
 use std::io;
 use std::path::PathBuf;
@@ -356,4 +356,83 @@ pub(crate) fn delete_run_value(name: &str) -> Option<io::Result<()>> {
     } else {
         check(code)
     })
+}
+
+/// Ids of the running processes whose executable is named `exe_name`
+/// (case-insensitive, e.g. `Battle.net.exe`).
+pub(crate) fn process_ids(exe_name: &str) -> Vec<u32> {
+    use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
+        TH32CS_SNAPPROCESS,
+    };
+    // SAFETY: no pointer arguments; the handle is checked and closed below.
+    let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
+    if snapshot == INVALID_HANDLE_VALUE || snapshot.is_null() {
+        tracing::debug!("process snapshot failed: {}", io::Error::last_os_error());
+        return Vec::new();
+    }
+    let mut ids = Vec::new();
+    let mut entry = PROCESSENTRY32W {
+        dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
+        ..Default::default()
+    };
+    // SAFETY: `snapshot` is a valid process snapshot and `entry` is a
+    // `PROCESSENTRY32W` with `dwSize` set, as both calls require.
+    let mut ok = unsafe { Process32FirstW(snapshot, &mut entry) };
+    while ok != 0 {
+        let len = entry
+            .szExeFile
+            .iter()
+            .position(|&c| c == 0)
+            .unwrap_or(entry.szExeFile.len());
+        let name = String::from_utf16_lossy(&entry.szExeFile[..len]);
+        if name.eq_ignore_ascii_case(exe_name) {
+            ids.push(entry.th32ProcessID);
+        }
+        // SAFETY: as above.
+        ok = unsafe { Process32NextW(snapshot, &mut entry) };
+    }
+    // SAFETY: `snapshot` is a handle we own and close once.
+    unsafe { CloseHandle(snapshot) };
+    ids
+}
+
+/// Whether any process in `pids` owns a visible top-level window.
+pub(crate) fn has_visible_window(pids: &[u32]) -> bool {
+    use windows_sys::core::BOOL;
+    use windows_sys::Win32::Foundation::{HWND, LPARAM};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        EnumWindows, GetWindowThreadProcessId, IsWindowVisible,
+    };
+
+    struct Search<'a> {
+        pids: &'a [u32],
+        found: bool,
+    }
+
+    unsafe extern "system" fn visit(hwnd: HWND, lparam: LPARAM) -> BOOL {
+        // SAFETY: `lparam` is the `&mut Search` passed to `EnumWindows`
+        // below, which outlives the enumeration.
+        let search = unsafe { &mut *(lparam as *mut Search) };
+        let mut pid = 0u32;
+        // SAFETY: `hwnd` comes from `EnumWindows`; `pid` is a valid out pointer.
+        unsafe { GetWindowThreadProcessId(hwnd, &mut pid) };
+        // SAFETY: `hwnd` comes from `EnumWindows`.
+        if search.pids.contains(&pid) && unsafe { IsWindowVisible(hwnd) } != 0 {
+            search.found = true;
+            return 0; // stop enumerating
+        }
+        1
+    }
+
+    if pids.is_empty() {
+        return false;
+    }
+    let mut search = Search { pids, found: false };
+    // SAFETY: `visit` matches `WNDENUMPROC`; `search` outlives the call.
+    // The return value is 0 both on error and when `visit` stops early, so
+    // `found` is the answer either way.
+    unsafe { EnumWindows(Some(visit), &mut search as *mut Search as LPARAM) };
+    search.found
 }
