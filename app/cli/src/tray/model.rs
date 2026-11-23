@@ -179,12 +179,14 @@ pub fn notification(
 /// The notification title for a cart that has no game yet.
 pub const NEW_CART: &str = "New cart \u{2014} click to add a game";
 
-/// What clicking a notification does.
+/// What clicking a notification or the tray icon does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Click {
     /// Opens Settings on the add-game wizard (its tap step then picks up
     /// the cart if it is still on the reader).
     AddGame,
+    /// Opens Settings, or brings it to the front (as the menu item does).
+    Settings,
 }
 
 /// What clicking the notification for `notice` (see [`notification`]) does.
@@ -194,6 +196,27 @@ pub fn click_action(notice: &Notice, config_problem: Option<&str>) -> Option<Cli
             Some(Click::AddGame)
         }
         _ => None,
+    }
+}
+
+/// A mouse event on the tray icon (tray-icon's own types are Windows-only
+/// here, so `app.rs` maps them to this).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IconEvent {
+    LeftDown,
+    LeftUp,
+    LeftDoubleClick,
+    /// Any other button, or the pointer moving over the icon.
+    Other,
+}
+
+/// What a tray icon event does: a left click opens Settings (or brings it to
+/// the front); the right click's menu is shown by tray-icon itself. A
+/// double-click also sends two `LeftUp`s, so it needs nothing of its own.
+pub fn on_icon_event(event: IconEvent) -> Option<Click> {
+    match event {
+        IconEvent::LeftUp => Some(Click::Settings),
+        IconEvent::LeftDown | IconEvent::LeftDoubleClick | IconEvent::Other => None,
     }
 }
 
@@ -967,5 +990,17 @@ mod tests {
             ("Reader: paused".into(), false)
         );
         assert_eq!(reader_cell(None, false), ("Reader: starting".into(), false));
+    }
+
+    #[test]
+    fn only_a_left_click_release_opens_settings() {
+        assert_eq!(on_icon_event(IconEvent::LeftUp), Some(Click::Settings));
+        for event in [
+            IconEvent::LeftDown,
+            IconEvent::LeftDoubleClick,
+            IconEvent::Other,
+        ] {
+            assert_eq!(on_icon_event(event), None, "{event:?}");
+        }
     }
 }

@@ -25,7 +25,7 @@ use mini_launcher_ui::settings::{Host, ReaderStatus};
 use mini_launcher_ui::window::{Event as WindowEvent, SettingsWindow};
 use mini_launcher_ui::wizard::Link;
 use muda::{CheckMenuItem, IsMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem};
-use tray_icon::{Icon, TrayIcon, TrayIconAttributes};
+use tray_icon::{Icon, MouseButton, MouseButtonState, TrayIcon, TrayIconAttributes, TrayIconEvent};
 use windows_sys::Win32::UI::WindowsAndMessaging as wm;
 
 use crate::model::{self, Click, Level, RateLimiter, APP};
@@ -146,6 +146,9 @@ fn run(log_dir: Option<PathBuf>, mut reopen: usize) -> Result<()> {
         TrayIconAttributes {
             icon: Some(tray_icon()),
             menu: Some(Box::new(menu)),
+            // Left click opens Settings (see `icon_event`); right click
+            // still shows the menu.
+            menu_on_left_click: false,
             ..Default::default()
         },
     )
@@ -206,7 +209,15 @@ fn run(log_dir: Option<PathBuf>, mut reopen: usize) -> Result<()> {
                     tracing::info!("new-cart notification clicked: opening Add game");
                     window.show_add_game();
                 }
+                Some(Click::Settings) => window.show(),
                 None => {}
+            }
+        }
+        // Tray icon messages arrive through `pump_messages` like the menu's.
+        while let Ok(event) = TrayIconEvent::receiver().try_recv() {
+            if model::on_icon_event(icon_event(&event)) == Some(Click::Settings) {
+                // Opens it, or brings the open one to the front.
+                window.show();
             }
         }
         while let Ok(event) = MenuEvent::receiver().try_recv() {
@@ -740,6 +751,25 @@ fn tray_icon() -> Icon {
 
 /// Dispatches pending window messages, then waits briefly for more.
 /// Returns `false` once `WM_QUIT` arrives.
+fn icon_event(event: &TrayIconEvent) -> model::IconEvent {
+    use model::IconEvent as E;
+    match event {
+        TrayIconEvent::Click {
+            button: MouseButton::Left,
+            button_state,
+            ..
+        } => match button_state {
+            MouseButtonState::Down => E::LeftDown,
+            MouseButtonState::Up => E::LeftUp,
+        },
+        TrayIconEvent::DoubleClick {
+            button: MouseButton::Left,
+            ..
+        } => E::LeftDoubleClick,
+        _ => E::Other,
+    }
+}
+
 fn pump_messages() -> bool {
     // SAFETY: plain Win32 message loop on the thread that owns the tray window.
     unsafe {
