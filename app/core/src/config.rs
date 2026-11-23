@@ -315,7 +315,9 @@ fn validate(raw: RawGame, emulators: &[Emulator]) -> Result<Game, String> {
             return Err(ctx("set one of steam_appid, battlenet, exe or emulator"))
         }
         (Some(_), Some(_), _) | (Some(_), _, Some(_)) | (_, Some(_), Some(_)) => {
-            return Err(ctx("set only one of steam_appid, exe or emulator"))
+            return Err(ctx(
+                "set only one of steam_appid, battlenet, exe or emulator",
+            ))
         }
         (None, None, Some(emulator)) => {
             if raw.args.is_some() || raw.cwd.is_some() {

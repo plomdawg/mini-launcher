@@ -344,18 +344,24 @@ fn read_bounded(path: &Path) -> std::io::Result<Option<Vec<u8>>> {
 ///
 /// A game counts when an install names its product and its folder exists,
 /// or when one of its executables is in a folder from `dirs`. A WoW flavor
-/// counts when a WoW folder (any install's folder, or one of `dirs`) has its
-/// subfolder with an `.exe` in it: the subfolder whose `.flavor.info` names
-/// the flavor's product, or else the usual subfolder name. WoW keeps every
-/// flavor under one folder, and the subfolders of flavors that aren't
-/// installed linger empty.
+/// counts when a WoW folder has its subfolder with an `.exe` in it: the
+/// subfolder whose `.flavor.info` names the flavor's product, or else the
+/// usual subfolder name. WoW keeps every flavor under one folder, and the
+/// subfolders of flavors that aren't installed linger empty.
+///
+/// Only WoW folders are searched for flavors: the folder of an install whose
+/// product is a WoW flavor, or a folder (from `installs` or `dirs`) named
+/// `World of Warcraft` or directly inside one. Other games use `_retail_`
+/// folders too (Overwatch, Call of Duty), so a bare `_x_` folder elsewhere
+/// means nothing.
 pub fn games_in(installs: &[Install], dirs: &[PathBuf]) -> Vec<BattleNetGame> {
     let mut roots: Vec<&Path> = Vec::new();
-    for dir in installs
+    let wow_installs = installs
         .iter()
-        .map(|i| i.location.as_path())
-        .chain(dirs.iter().map(PathBuf::as_path))
-    {
+        .filter(|i| is_wow_product(&i.product) || is_wow_dir(&i.location))
+        .map(|i| i.location.as_path());
+    let wow_dirs = dirs.iter().map(PathBuf::as_path).filter(|d| is_wow_dir(d));
+    for dir in wow_installs.chain(wow_dirs) {
         if !roots.contains(&dir) {
             roots.push(dir);
         }
@@ -403,6 +409,24 @@ const LOCALES: &[&str] = &[
     "enus", "engb", "dede", "eses", "esmx", "frfr", "itit", "kokr", "plpl", "ptbr", "ptpt", "ruru",
     "zhcn", "zhtw", "jajp", "thth", "trtr", "arsa",
 ];
+
+/// `product` is a WoW flavor's product.
+fn is_wow_product(product: &str) -> bool {
+    CATALOG
+        .iter()
+        .any(|k| k.flavor.is_some() && is_product(k, product))
+}
+
+/// `dir` is named `World of Warcraft`, or is a folder directly inside one
+/// (a flavor folder given as the install location).
+fn is_wow_dir(dir: &Path) -> bool {
+    let named_wow = |p: &Path| {
+        p.file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n.eq_ignore_ascii_case(WOW))
+    };
+    named_wow(dir) || dir.parent().is_some_and(named_wow)
+}
 
 /// `product` is one of `k`'s products, alone or with a locale suffix.
 fn is_product(k: &Known, product: &str) -> bool {
@@ -456,11 +480,17 @@ pub fn flavors_in(root: &Path) -> Vec<Flavor> {
         .collect()
 }
 
+/// A `.flavor.info` is two short lines; only this much of one is read.
+const MAX_FLAVOR_INFO: u64 = 4096;
+
 /// The product in a `.flavor.info`: a `Product Flavor!STRING:0` header
 /// line, then the value (`wowf`).
 fn flavor_product(dir: &Path) -> Option<String> {
-    let text = std::fs::read(dir.join(".flavor.info")).ok()?;
-    let text = String::from_utf8_lossy(&text[..text.len().min(4096)]).into_owned();
+    use std::io::Read;
+    let file = std::fs::File::open(dir.join(".flavor.info")).ok()?;
+    let mut bytes = Vec::new();
+    file.take(MAX_FLAVOR_INFO).read_to_end(&mut bytes).ok()?;
+    let text = String::from_utf8_lossy(&bytes);
     text.lines()
         .map(str::trim)
         .find(|l| !l.is_empty() && !l.contains('!'))
@@ -809,7 +839,7 @@ mod tests {
         );
 
         // A flavor folder renamed: .flavor.info still finds it.
-        let renamed = root.join("WoW2");
+        let renamed = root.join("WoW2/World of Warcraft");
         touch(&renamed.join("_forever2_/WowF.exe"), "");
         touch(
             &renamed.join("_forever2_/.flavor.info"),
@@ -822,12 +852,44 @@ mod tests {
             ("WoWF", &renamed.join("_forever2_"))
         );
         // No .flavor.info: the usual folder name; a root that is the flavor.
-        let plain = root.join("WoW3/_retail_");
+        let plain = root.join("WoW3/World of Warcraft/_retail_");
         touch(&plain.join("Wow.exe"), "");
         let got = games_in(&[], std::slice::from_ref(&plain));
         assert_eq!(got.len(), 1);
         assert_eq!((got[0].code.as_str(), &got[0].location), ("WoW", &plain));
+        // A WoW product's install folder is searched whatever its name.
+        let custom = root.join("Games/MyWoW");
+        touch(&custom.join("_classic_/WowClassic.exe"), "");
+        let got = games_in(&[install("wow_classic", &custom)], &[]);
+        assert_eq!(got.len(), 1);
+        assert_eq!(
+            (got[0].code.as_str(), &got[0].location),
+            ("WoWC", &custom.join("_classic_"))
+        );
         assert_eq!(games_in(&[], &[]), []);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn retail_folders_of_other_games_are_not_wow() {
+        let root = std::env::temp_dir().join(format!("ml-bnet-ow-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let ow = root.join("Overwatch");
+        touch(&ow.join("_retail_/Overwatch.exe"), "");
+        let cod = root.join("Call of Duty");
+        touch(&cod.join("_retail_/cod.exe"), "");
+        touch(
+            &cod.join("_retail_/.flavor.info"),
+            "Product Flavor!STRING:0\nwow\n",
+        );
+        let installs = [install("prometheus", &ow), install("auks", &cod)];
+        let dirs = [ow.clone(), cod.clone(), ow.join("_retail_")];
+        let codes: Vec<_> = games_in(&installs, &dirs)
+            .into_iter()
+            .map(|g| g.code.to_string())
+            .collect();
+        assert_eq!(codes, ["Pro"]);
+        assert!(!codes.iter().any(|c| c.starts_with("WoW")));
         std::fs::remove_dir_all(&root).unwrap();
     }
 }
