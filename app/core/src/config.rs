@@ -35,21 +35,31 @@
 //! name = "Kart Racer"
 //! emulator = "eden"
 //! rom = 'D:\Switch\kart-racer.nsp'
+//! tag = "written"                  # optional: a tag was written for this entry
+//!
+//! [settings]                       # optional, every key has a default
+//! boot_cart = "wait"
+//! font_scale = 1.0
+//!
+//! [settings.sounds]
+//! enabled = true
+//! volume = 60
 //! ```
 //!
 //! Each game has exactly one of `steam_appid`, `steam_shortcut`,
 //! `battlenet`, `exe` or `emulator` + `rom`;
 //! `args` and `cwd` are only allowed with `exe`. An emulator's `args` must
 //! contain `{rom}` as one whole argument exactly once; it is replaced by the
-//! ROM path as a single argument when the config is loaded. Unknown keys are
-//! rejected so typos surface early.
+//! ROM path as a single argument when the config is loaded. Known keys are
+//! validated strictly; unknown keys (e.g. from a newer version) are ignored
+//! with a warning, so newer configs still load.
 //! [`edit`] changes the file without losing comments; [`location`] handles
 //! the optional config folder override.
 
 pub mod edit;
 pub mod location;
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
@@ -63,6 +73,88 @@ use crate::payload::Slug;
 pub struct Config {
     pub emulators: Vec<Emulator>,
     pub games: Vec<Game>,
+    pub settings: Settings,
+}
+
+/// The validated `[settings]` table; every field has a default.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Settings {
+    pub boot_cart: BootCart,
+    /// UI text scale, [`FONT_SCALE_MIN`] to [`FONT_SCALE_MAX`].
+    pub font_scale: f32,
+    pub sounds: Sounds,
+}
+
+// `font_scale` is validated to a finite range, never NaN.
+impl Eq for Settings {}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Settings {
+            boot_cart: BootCart::Wait,
+            font_scale: 1.0,
+            sounds: Sounds::default(),
+        }
+    }
+}
+
+pub const FONT_SCALE_MIN: f32 = 0.75;
+pub const FONT_SCALE_MAX: f32 = 2.0;
+pub const VOLUME_MAX: u8 = 100;
+
+/// What to do with a cart already in the reader when the app starts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum BootCart {
+    /// Wait until it is removed and inserted again.
+    #[default]
+    Wait,
+    /// Launch it.
+    Launch,
+}
+
+impl BootCart {
+    /// The config file value.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            BootCart::Wait => "wait",
+            BootCart::Launch => "launch",
+        }
+    }
+
+    /// The value for a config file string; `None` for one this build does
+    /// not know (e.g. from a newer version).
+    pub fn from_value(s: &str) -> Option<BootCart> {
+        [BootCart::Wait, BootCart::Launch]
+            .into_iter()
+            .find(|b| b.as_str() == s)
+    }
+}
+
+/// `[settings.sounds]`: master switch, volume and one switch per event.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Sounds {
+    pub enabled: bool,
+    /// 0 to [`VOLUME_MAX`].
+    pub volume: u8,
+    pub waiting: bool,
+    pub writing: bool,
+    pub success: bool,
+    pub failure: bool,
+    pub launch: bool,
+}
+
+impl Default for Sounds {
+    fn default() -> Self {
+        Sounds {
+            enabled: true,
+            volume: 60,
+            waiting: true,
+            writing: true,
+            success: true,
+            failure: true,
+            launch: true,
+        }
+    }
 }
 
 /// One validated `[[emulators]]` entry.
@@ -87,6 +179,8 @@ pub struct Game {
     /// Tag UID bytes that map to this entry, overriding whatever the tag says.
     pub uid: Option<Vec<u8>>,
     pub plan: LaunchPlan,
+    /// `tag = "written"`: the app wrote a tag for this entry.
+    pub tag_written: bool,
 }
 
 /// Why a config could not be loaded.
@@ -109,29 +203,63 @@ pub enum ConfigError {
         index: usize,
         message: String,
     },
+    #[error("settings: {0}")]
+    Settings(String),
 }
 
+/// Keys this build does not know, kept so they can be reported.
+type Extra = BTreeMap<String, toml::Value>;
+
 #[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
 struct RawConfig {
     #[serde(default)]
     emulators: Vec<RawEmulator>,
     #[serde(default)]
     games: Vec<RawGame>,
+    #[serde(default)]
+    settings: RawSettings,
+    #[serde(flatten)]
+    extra: Extra,
+}
+
+#[derive(Deserialize, Default)]
+struct RawSettings {
+    boot_cart: Option<String>,
+    font_scale: Option<f32>,
+    #[serde(default)]
+    sounds: RawSounds,
+    #[serde(flatten)]
+    extra: Extra,
+}
+
+#[derive(Deserialize, Default)]
+struct RawSounds {
+    enabled: Option<bool>,
+    volume: Option<i64>,
+    waiting: Option<bool>,
+    writing: Option<bool>,
+    success: Option<bool>,
+    failure: Option<bool>,
+    launch: Option<bool>,
+    #[serde(flatten)]
+    extra: Extra,
 }
 
 #[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
 struct RawEmulator {
     id: String,
     name: String,
     exe: PathBuf,
     args: Vec<String>,
     cwd: Option<PathBuf>,
+    #[serde(flatten)]
+    extra: Extra,
 }
 
+/// The one `tag` value this build knows.
+pub const TAG_WRITTEN: &str = "written";
+
 #[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
 struct RawGame {
     id: String,
     name: String,
@@ -144,6 +272,9 @@ struct RawGame {
     cwd: Option<PathBuf>,
     emulator: Option<String>,
     rom: Option<PathBuf>,
+    tag: Option<String>,
+    #[serde(flatten)]
+    extra: Extra,
 }
 
 impl Config {
@@ -177,9 +308,46 @@ impl Config {
         Config::parse(&read_text_or_empty(path)?)
     }
 
-    /// Parses and validates TOML text.
+    /// Parses and validates TOML text, logging a warning for each unknown
+    /// key (which is otherwise ignored).
     pub fn parse(text: &str) -> Result<Config, ConfigError> {
+        let (config, unknown) = Config::parse_with_unknown(text)?;
+        for item in unknown {
+            tracing::warn!("config.toml: ignoring unknown `{item}` (from a newer version?)");
+        }
+        Ok(config)
+    }
+
+    /// Parses and validates TOML text; also returns what was ignored: the
+    /// paths of unknown keys (e.g. `settings.foo`, `games[2].bar`) and
+    /// unknown enum values, which fall back to the default (e.g.
+    /// `settings.boot_cart = "ask"`, `games[0].tag = "verified"`).
+    pub fn parse_with_unknown(text: &str) -> Result<(Config, Vec<String>), ConfigError> {
         let raw: RawConfig = toml::from_str(text)?;
+        let mut unknown: Vec<String> = raw.extra.keys().cloned().collect();
+        let mut note = |prefix: &str, extra: &Extra| {
+            unknown.extend(extra.keys().map(|k| format!("{prefix}.{k}")));
+        };
+        note("settings", &raw.settings.extra);
+        note("settings.sounds", &raw.settings.sounds.extra);
+        for (i, e) in raw.emulators.iter().enumerate() {
+            note(&format!("emulators[{i}]"), &e.extra);
+        }
+        for (i, g) in raw.games.iter().enumerate() {
+            note(&format!("games[{i}]"), &g.extra);
+        }
+        // Enum values this build does not know fall back to the default.
+        if let Some(v) = raw.settings.boot_cart.as_deref() {
+            if BootCart::from_value(v).is_none() {
+                unknown.push(format!("settings.boot_cart = {v:?}"));
+            }
+        }
+        for (i, g) in raw.games.iter().enumerate() {
+            if let Some(v) = g.tag.as_deref().filter(|&v| v != TAG_WRITTEN) {
+                unknown.push(format!("games[{i}].tag = {v:?}"));
+            }
+        }
+        let settings = validate_settings(raw.settings).map_err(ConfigError::Settings)?;
         let mut emulators = Vec::with_capacity(raw.emulators.len());
         for (index, raw) in raw.emulators.into_iter().enumerate() {
             let invalid = |message: String| ConfigError::Invalid {
@@ -213,7 +381,14 @@ impl Config {
             }
             games.push(game);
         }
-        Ok(Config { emulators, games })
+        Ok((
+            Config {
+                emulators,
+                games,
+                settings,
+            },
+            unknown,
+        ))
     }
 
     /// The entry with this id.
@@ -236,6 +411,42 @@ pub fn read_text_or_empty(path: &Path) -> Result<String, ConfigError> {
             source,
         }),
     }
+}
+
+fn validate_settings(raw: RawSettings) -> Result<Settings, String> {
+    let d = Settings::default();
+    let font_scale = raw.font_scale.unwrap_or(d.font_scale);
+    if !(FONT_SCALE_MIN..=FONT_SCALE_MAX).contains(&font_scale) {
+        return Err(format!(
+            "font_scale {font_scale}: must be {FONT_SCALE_MIN} to {FONT_SCALE_MAX}"
+        ));
+    }
+    let s = raw.sounds;
+    let volume = match s.volume {
+        None => d.sounds.volume,
+        Some(v) => u8::try_from(v)
+            .ok()
+            .filter(|&v| v <= VOLUME_MAX)
+            .ok_or_else(|| format!("sounds.volume {v}: must be 0 to {VOLUME_MAX}"))?,
+    };
+    let ds = d.sounds;
+    Ok(Settings {
+        boot_cart: raw
+            .boot_cart
+            .as_deref()
+            .and_then(BootCart::from_value)
+            .unwrap_or(d.boot_cart),
+        font_scale,
+        sounds: Sounds {
+            enabled: s.enabled.unwrap_or(ds.enabled),
+            volume,
+            waiting: s.waiting.unwrap_or(ds.waiting),
+            writing: s.writing.unwrap_or(ds.writing),
+            success: s.success.unwrap_or(ds.success),
+            failure: s.failure.unwrap_or(ds.failure),
+            launch: s.launch.unwrap_or(ds.launch),
+        },
+    })
 }
 
 fn validate_emulator(raw: RawEmulator) -> Result<Emulator, String> {
@@ -285,6 +496,8 @@ fn validate(raw: RawGame, emulators: &[Emulator]) -> Result<Game, String> {
     if raw.name.trim().is_empty() {
         return Err(ctx("name must not be empty"));
     }
+    // Other values (e.g. from a newer version) are reported as unknown.
+    let tag_written = raw.tag.as_deref() == Some(TAG_WRITTEN);
     let uid = raw
         .uid
         .as_deref()
@@ -321,6 +534,7 @@ fn validate(raw: RawGame, emulators: &[Emulator]) -> Result<Game, String> {
             name: raw.name,
             uid,
             plan: LaunchPlan::SteamShortcut { appid },
+            tag_written,
         });
     }
     if let Some(code) = raw.battlenet {
@@ -338,6 +552,7 @@ fn validate(raw: RawGame, emulators: &[Emulator]) -> Result<Game, String> {
             name: raw.name,
             uid,
             plan: LaunchPlan::BattleNet { code },
+            tag_written,
         });
     }
     let plan = match (raw.steam_appid, raw.exe, raw.emulator) {
@@ -398,6 +613,7 @@ fn validate(raw: RawGame, emulators: &[Emulator]) -> Result<Game, String> {
         name: raw.name,
         uid,
         plan,
+        tag_written,
     })
 }
 
@@ -548,7 +764,8 @@ mod tests {
             (g("exe = \"a\"\ncwd = \"\""), "cwd must not be empty"),
             (g("steam_appid = 1\nuid = \"zz\""), "uid \"zz\""),
             (g("steam_appid = 1\nuid = \"04a1b2c3d4e5\""), "uid"),
-            (g("steam_appid = 1\nexec = \"a\""), "unknown field `exec`"),
+            (g("exec = \"a\""), "set one of"),
+            (g("steam_appid = 1\ntag = true"), "invalid type"),
             (h("id = \"x\""), "missing field `name`"),
             (h("id = \"x\"\nname = \" \""), "name must not be empty"),
             (
@@ -556,7 +773,20 @@ mod tests {
                 "id \"../x\": invalid slug",
             ),
             (h("id = \"My\"\nname = \"X\""), "invalid slug"),
-            ("game = []".into(), "unknown field `game`"),
+            (
+                "[settings]\nfont_scale = 2.5".into(),
+                "settings: font_scale 2.5",
+            ),
+            ("[settings]\nfont_scale = 0.5".into(), "must be 0.75 to 2"),
+            ("[settings]\nfont_scale = \"big\"".into(), "invalid type"),
+            ("[settings]\nboot_cart = 1".into(), "invalid type"),
+            (
+                "[settings.sounds]\nvolume = 101".into(),
+                "sounds.volume 101",
+            ),
+            ("[settings.sounds]\nvolume = -1".into(), "must be 0 to 100"),
+            ("[settings.sounds]\nenabled = 1".into(), "invalid type"),
+            ("settings = 1".into(), "invalid type"),
             ("[[games]\n".into(), "invalid config.toml"),
             (
                 two("id = \"x\"\nname = \"X\"", "id = \"x\"\nname = \"Y\""),
@@ -655,10 +885,6 @@ mod tests {
                 e("exe = \"a\"\nargs = [\"{rom}\"]\ncwd = \"\""),
                 "cwd must not be empty",
             ),
-            (
-                e("exe = \"a\"\nargs = [\"{rom}\"]\nrom = \"r\""),
-                "unknown field `rom`",
-            ),
             (format!("{ok}\n{ok}"), "emulators[1]: duplicate id \"eden\""),
             (
                 "[[emulators]]\nid = \"Eden\"\nname = \"E\"\nexe = \"e\"\nargs = [\"{rom}\"]"
@@ -674,6 +900,105 @@ mod tests {
             let got = Config::parse(&text).unwrap_err().to_string();
             assert!(got.contains(want), "{text:?}: got {got:?}, want {want:?}");
         }
+    }
+
+    #[test]
+    fn unknown_keys_are_ignored_and_reported() {
+        let text = r#"
+            future = 1
+            [future_table]
+            x = 1
+            [settings]
+            font_scale = 1.5
+            theme = "dark"
+            [settings.sounds]
+            volume = 0
+            chime = "bell"
+            [[emulators]]
+            id = "eden"
+            name = "Eden"
+            exe = "eden"
+            args = ["{rom}"]
+            portable = true
+            [[games]]
+            id = "a"
+            name = "A"
+            steam_appid = 1
+            tag = "written"
+            [[games]]
+            id = "b"
+            name = "B"
+            exe = "b"
+            cover = { path = "b.png" }
+        "#;
+        let (cfg, unknown) = Config::parse_with_unknown(text).unwrap();
+        assert_eq!(
+            unknown,
+            [
+                "future",
+                "future_table",
+                "settings.theme",
+                "settings.sounds.chime",
+                "emulators[0].portable",
+                "games[1].cover",
+            ]
+        );
+        assert_eq!(cfg, Config::parse(text).unwrap());
+        assert_eq!(cfg.games.len(), 2);
+        assert!(cfg.games[0].tag_written && !cfg.games[1].tag_written);
+        assert_eq!(cfg.settings.font_scale, 1.5);
+        assert_eq!(cfg.settings.sounds.volume, 0);
+        assert_eq!(cfg.emulators[0].id.as_str(), "eden");
+    }
+
+    #[test]
+    fn unknown_enum_values_fall_back_to_the_default() {
+        let text = "[settings]\nboot_cart = \"ask\"\nfont_scale = 1.5\n\
+                    [[games]]\nid = \"a\"\nname = \"A\"\nsteam_appid = 1\ntag = \"verified\"\n\
+                    [[games]]\nid = \"b\"\nname = \"B\"\nsteam_shortcut = 3237998081\ntag = \"written\"\n";
+        let (cfg, unknown) = Config::parse_with_unknown(text).unwrap();
+        assert_eq!(
+            unknown,
+            [
+                "settings.boot_cart = \"ask\"",
+                "games[0].tag = \"verified\""
+            ]
+        );
+        assert_eq!(cfg.settings.boot_cart, BootCart::Wait);
+        assert_eq!(cfg.settings.font_scale, 1.5);
+        assert!(!cfg.games[0].tag_written);
+        assert!(cfg.games[1].tag_written);
+    }
+
+    #[test]
+    fn settings_default_and_parse() {
+        assert_eq!(Config::parse("").unwrap().settings, Settings::default());
+        assert_eq!(
+            Config::parse("[settings]").unwrap().settings,
+            Settings::default()
+        );
+        let cfg = Config::parse(
+            "[settings]\nboot_cart = \"launch\"\nfont_scale = 2\n\
+             [settings.sounds]\nenabled = false\nvolume = 100\nwaiting = false\nlaunch = false\n",
+        )
+        .unwrap();
+        let sounds = Sounds {
+            enabled: false,
+            volume: 100,
+            waiting: false,
+            launch: false,
+            ..Sounds::default()
+        };
+        assert_eq!(
+            cfg.settings,
+            Settings {
+                boot_cart: BootCart::Launch,
+                font_scale: 2.0,
+                sounds,
+            }
+        );
+        let lowest = Config::parse("[settings]\nfont_scale = 0.75").unwrap();
+        assert_eq!(lowest.settings.font_scale, FONT_SCALE_MIN);
     }
 
     #[test]

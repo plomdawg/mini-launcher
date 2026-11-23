@@ -255,6 +255,8 @@ pub struct Form {
     pub rom: String,
     /// The bound tag UID; cleared by Unbind.
     pub uid: Option<Vec<u8>>,
+    /// Kept from the entry being edited (not shown in the form).
+    pub tag_written: bool,
     /// Errors from the last save attempt, shown next to their fields.
     pub errors: Vec<(Field, String)>,
     /// A save error not tied to a field (e.g. the file could not be written).
@@ -274,6 +276,7 @@ impl Form {
             id: Some(game.id.clone()),
             name: game.name.clone(),
             uid: game.uid.clone(),
+            tag_written: game.tag_written,
             ..Form::default()
         };
         match &game.plan {
@@ -384,6 +387,7 @@ impl Form {
                 name: name.to_owned(),
                 uid: self.uid.clone(),
                 plan,
+                tag_written: self.tag_written,
             }),
             _ => Err(errors),
         }
@@ -681,6 +685,17 @@ mod tests {
         assert!(back.shortcut && !back.steam && !back.battlenet);
         assert_eq!(back.shortcut_id, "3237998081");
         assert_eq!(back.to_game(&config).unwrap().plan, plan);
+    }
+
+    #[test]
+    fn form_keeps_the_tag_marker() {
+        let config = Config::parse(&format!("{LIBRARY}tag = \"written\"\n")).unwrap();
+        let doom = &config.games[1];
+        assert!(doom.tag_written);
+        let mut form = Form::from_game(doom);
+        form.name = "DOOM II".into();
+        assert!(form.to_game(&config).unwrap().tag_written);
+        assert!(!Form::new().tag_written);
     }
 
     #[test]

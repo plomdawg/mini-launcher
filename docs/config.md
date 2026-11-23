@@ -4,6 +4,57 @@ The library lives in `config.toml` (format: see the quickstart, section 7, and i
 [Emulator games](windows-quickstart.md#emulator-games) part for `[[emulators]]`). `mini-launcher
 diagnose` prints the file it uses on its `Config:` line.
 
+## Settings
+
+The optional `[settings]` table holds app preferences. Every key is optional and falls back to
+its default, so an empty or missing table means "all defaults":
+
+```toml
+[settings]
+boot_cart = "wait"   # "wait" or "launch"
+font_scale = 1.0     # 0.75 to 2.0
+
+[settings.sounds]
+enabled = true       # master switch
+volume = 60          # 0 to 100
+waiting = true       # waiting for a tag
+writing = true       # writing a tag
+success = true       # a tag was written
+failure = true       # writing or reading failed
+launch = true        # a game is launching
+```
+
+- `boot_cart`: what to do with a cart that is already in the reader when the app starts:
+  `"wait"` until it is taken out and put back, or `"launch"` it.
+- `font_scale`: text size in the settings window. Values outside 0.75 to 2.0 are an error.
+- `[settings.sounds]`: `enabled` turns all sounds off at once; the other switches turn single
+  events off.
+
+Start at login is not stored here; it is the Windows "Run" entry the app manages.
+
+When the app saves settings, keys already in the file are updated in place (comments kept) and
+missing keys are only added when they differ from the default.
+
+## Tag marker
+
+A `[[games]]` entry can carry `tag = "written"`, which the app sets after writing a tag for it
+(leave the key out otherwise). Editing the entry keeps it.
+
+## Newer and older versions
+
+Newer configs load in older versions:
+
+- Unknown keys, at the top level, in `[settings]`, `[settings.sounds]`, `[[games]]` or
+  `[[emulators]]`, are ignored with a warning in the log (`ignoring unknown ...`).
+- Unknown values of a known choice (`boot_cart`, `tag`) are treated as the default, also with a
+  warning: an unknown `boot_cart` means `"wait"`, an unknown `tag` means no tag was written.
+
+Both are kept when the app saves the file; an unknown value is only replaced when you change
+that setting (or the app marks the tag as written). Everything else is still checked strictly:
+a wrong type (`volume = "loud"`) or an out-of-range number (`font_scale = 3`) is an error, since
+that is a mistake rather than a newer version. A misspelled key or value is also just a warning,
+so check the log if a setting seems to have no effect.
+
 ## How the app saves it
 
 When the app changes the config (adding a game, binding a tag), it edits the file in place and
