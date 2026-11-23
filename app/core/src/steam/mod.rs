@@ -187,13 +187,24 @@ pub fn shortcuts_in(root: &Path) -> Vec<SteamGame> {
     let Ok(users) = std::fs::read_dir(root.join("userdata")) else {
         return games;
     };
-    let users = users.flatten().filter(|e| {
-        let name = e.file_name();
-        name.to_str()
-            .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
-    });
-    for user in users.take(MAX_USERS) {
-        let file = user.path().join("config/shortcuts.vdf");
+    // Sorted by account id, so the same shortcut in two accounts always
+    // comes from the same one (directory order varies by file system).
+    let mut users: Vec<(u64, PathBuf)> = users
+        .flatten()
+        .take(MAX_USERS * 16)
+        .filter_map(|e| {
+            let name = e.file_name();
+            let name = name.to_str()?;
+            let id = Some(name)
+                .filter(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))?
+                .parse()
+                .ok()?;
+            Some((id, e.path()))
+        })
+        .collect();
+    users.sort();
+    for (_, user) in users.into_iter().take(MAX_USERS) {
+        let file = user.join("config/shortcuts.vdf");
         let doc = match read_binvdf(&file) {
             Ok(doc) => doc,
             Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
@@ -204,7 +215,7 @@ pub fn shortcuts_in(root: &Path) -> Vec<SteamGame> {
         };
         let entries = doc.get("shortcuts").map(binvdf::Value::entries);
         for (_, entry) in entries.unwrap_or_default().iter().take(MAX_SHORTCUTS) {
-            match shortcut(entry, &user.path()) {
+            match shortcut(entry, &user) {
                 Some(game) if seen.insert(game.appid) => games.push(game),
                 _ => {}
             }
