@@ -2,7 +2,8 @@
 //! export/import (see `docs/config.md`).
 //!
 //! Every edit is validated with [`Config::parse`], the same code path as
-//! loading, so a [`ConfigDocument`] always holds a loadable config.
+//! loading, so a [`ConfigDocument`] always holds a loadable config. Keys
+//! this build does not know (e.g. written by a newer version) are kept.
 
 use std::hash::{Hash, Hasher};
 use std::io::{Read, Write};
@@ -13,7 +14,10 @@ use std::sync::Mutex;
 use toml_edit::{ArrayOfTables, DocumentMut, Item, Table, Value};
 
 use super::location::{ConfigLocation, LocationError};
-use super::{format_uid, read_text_or_empty, Config, ConfigError, Emulator, Game};
+use super::{
+    format_uid, read_text_or_empty, BootCart, Config, ConfigError, Emulator, Game, Settings,
+    Sounds, TAG_WRITTEN,
+};
 use crate::launch::LaunchPlan;
 use crate::payload::Slug;
 
@@ -149,6 +153,27 @@ impl ConfigDocument {
         })
     }
 
+    /// Sets `tag = "written"` on the entry with this id, or removes it. A
+    /// `tag` value this build does not know (which loads as not written) is
+    /// only replaced when setting `written`.
+    pub fn set_tag_written(&mut self, id: &Slug, written: bool) -> Result<(), EditError> {
+        self.edit(|doc| {
+            let games = section_mut(doc, GAMES)?;
+            let i = find(games, id).ok_or_else(|| EditError::NoSuchGame(id.clone()))?;
+            let table = games.get_mut(i).expect("index from find");
+            write_tag(table, written);
+            Ok(())
+        })
+    }
+
+    /// Writes `settings` to `[settings]` / `[settings.sounds]`. A key already
+    /// in the file is updated in place (even to its default value); a missing
+    /// key is added only when its value differs from the default, so an
+    /// all-default config gets no `[settings]` table. Unknown keys are kept.
+    pub fn set_settings(&mut self, settings: &Settings) -> Result<(), EditError> {
+        self.edit(|doc| write_settings(doc, settings))
+    }
+
     /// Validates and atomically writes the document to `path`, keeping the
     /// previous file as `<path>.bak`.
     pub fn save(&self, path: &Path) -> Result<(), EditError> {
@@ -158,7 +183,7 @@ impl ConfigDocument {
     /// [`ConfigDocument::save`], creating the folder only if `create_dir`.
     fn save_at(&self, path: &Path, create_dir: bool) -> Result<(), EditError> {
         let text = self.to_string();
-        Config::parse(&text)?;
+        validate(&text)?;
         write_atomic(path, &text, true, create_dir)?;
         remember_saved(&text);
         Ok(())
@@ -219,7 +244,7 @@ impl ConfigDocument {
                 return Err(bad(format!("unknown keys in [{EXPORT_TABLE}]")));
             }
         }
-        let config = Config::parse(&doc.to_string())?;
+        let config = validate(&doc.to_string())?;
         ConfigDocument::parse(&render(&doc, uses_crlf(&text), &config))
     }
 
@@ -247,7 +272,7 @@ impl ConfigDocument {
     ) -> Result<(), EditError> {
         let mut doc = self.doc.clone();
         change(&mut doc)?;
-        self.config = Config::parse(&doc.to_string())?;
+        self.config = validate(&doc.to_string())?;
         self.doc = doc;
         Ok(())
     }
@@ -298,13 +323,22 @@ fn describes(text: &str, config: &Config) -> bool {
         return false;
     };
     let parsed = match doc.remove(EXPORT_TABLE) {
-        Some(_) => Config::parse(&doc.to_string()),
-        None => Config::parse(text),
+        Some(_) => validate(&doc.to_string()),
+        None => validate(text),
     };
     parsed.is_ok_and(|c| c == *config)
 }
 
+/// [`Config::parse`] without the unknown-key warnings, which were already
+/// logged when the document was loaded.
+fn validate(text: &str) -> Result<Config, ConfigError> {
+    Config::parse_with_unknown(text).map(|(config, _)| config)
+}
+
 const GAMES: &str = "games";
+const SETTINGS: &str = "settings";
+const SOUNDS: &str = "sounds";
+const TAG: &str = "tag";
 const EMULATORS: &str = "emulators";
 
 /// `"a", "b"` for error messages.
@@ -443,7 +477,121 @@ fn write_game(table: &mut Table, game: &Game) -> Result<(), EditError> {
     set(table, "cwd", cwd);
     set(table, "emulator", emulator);
     set(table, "rom", rom);
+    write_tag(table, game.tag_written);
     Ok(())
+}
+
+/// Sets `tag = "written"`, or removes it; an unknown `tag` value already
+/// means "not written" to this build, so that case keeps it.
+fn write_tag(table: &mut Table, written: bool) {
+    let current = table.get(TAG).and_then(Item::as_str);
+    if written || current == Some(TAG_WRITTEN) {
+        set(table, TAG, written.then(|| TAG_WRITTEN.into()));
+    }
+}
+
+/// A table key of `parent` (created implicit if missing), or an error if it
+/// is something else, e.g. an inline table, which toml_edit keeps separate.
+fn table_mut<'a>(
+    parent: &'a mut Table,
+    name: &str,
+    path: &str,
+) -> Result<&'a mut Table, EditError> {
+    let item = parent.entry(name).or_insert_with(|| {
+        let mut table = Table::new();
+        table.set_implicit(true);
+        Item::Table(table)
+    });
+    item.as_table_mut().ok_or_else(|| {
+        EditError::Unsupported(format!(
+            "`{name}` must be written as a [{path}] table to be edited by the app"
+        ))
+    })
+}
+
+fn write_settings(doc: &mut DocumentMut, settings: &Settings) -> Result<(), EditError> {
+    let (d, ds) = (Settings::default(), Sounds::default());
+    // toml_edit places a table without a position after the table before
+    // it in key order, which moves when `[[emulators]]` is first added; pin
+    // a new `[settings]` below everything instead.
+    let last = max_position(doc.as_table());
+    let root = table_mut(doc.as_table_mut(), SETTINGS, SETTINGS)?;
+    if root.position().is_none() {
+        root.set_position(Some(last.map_or(0, |p| p.saturating_add(1))));
+    }
+    let boot = settings.boot_cart;
+    // An unknown value loads as the default; keep it unless that changed.
+    let unknown_boot = root
+        .get("boot_cart")
+        .and_then(Item::as_str)
+        .is_some_and(|v| BootCart::from_value(v).is_none());
+    if !(unknown_boot && boot == d.boot_cart) {
+        put(root, "boot_cart", boot.as_str().into(), boot == d.boot_cart);
+    }
+    let scale = settings.font_scale;
+    put(
+        root,
+        "font_scale",
+        // Via the shortest decimal for the f32, so 1.1 is written as 1.1.
+        scale.to_string().parse::<f64>().unwrap_or(1.0).into(),
+        scale == d.font_scale,
+    );
+    let sounds_table = table_mut(root, SOUNDS, "settings.sounds")?;
+    let s = settings.sounds;
+    put(
+        sounds_table,
+        "enabled",
+        s.enabled.into(),
+        s.enabled == ds.enabled,
+    );
+    put(
+        sounds_table,
+        "volume",
+        i64::from(s.volume).into(),
+        s.volume == ds.volume,
+    );
+    for (key, value, default) in [
+        ("waiting", s.waiting, ds.waiting),
+        ("writing", s.writing, ds.writing),
+        ("success", s.success, ds.success),
+        ("failure", s.failure, ds.failure),
+        ("launch", s.launch, ds.launch),
+    ] {
+        put(sounds_table, key, value.into(), value == default);
+    }
+    if sounds_table.is_empty() && sounds_table.is_implicit() {
+        root.remove(SOUNDS);
+    }
+    // A new `[settings]` stays implicit (only `[settings.sounds]` shows)
+    // until it has keys of its own; a new one with nothing in it goes away.
+    let own_keys = root.iter().any(|(_, item)| !item.is_table());
+    if own_keys {
+        root.set_implicit(false);
+    }
+    if root.is_empty() && root.is_implicit() {
+        doc.remove(SETTINGS);
+    }
+    Ok(())
+}
+
+/// The largest position of any table in `table`, nested ones included.
+fn max_position(table: &Table) -> Option<isize> {
+    let nested = table.iter().filter_map(|(_, item)| match item {
+        Item::Table(t) => t.position().max(max_position(t)),
+        Item::ArrayOfTables(a) => a
+            .iter()
+            .filter_map(|t| t.position().max(max_position(t)))
+            .max(),
+        _ => None,
+    });
+    nested.max()
+}
+
+/// Updates `key` if present; adds it only if `value` is not the default.
+fn put(table: &mut Table, key: &str, value: Value, is_default: bool) {
+    if table.contains_key(key) || !is_default {
+        set(table, key, Some(value));
+    }
 }
 
 /// Sets or removes `key`, keeping an existing value's comments and spacing.
@@ -615,6 +763,7 @@ args = ["--fullscreen"]
             id: slug("new"),
             name: "New".into(),
             uid: None,
+            tag_written: false,
             plan: LaunchPlan::Exe {
                 path: r"D:\New Game\new.exe".into(),
                 args: vec![],
@@ -650,6 +799,248 @@ args = ["--fullscreen"]
         );
         assert!(text.contains("# Non-Steam\n[[games]]"), "{text}");
         assert_eq!(doc.config().games.len(), 2);
+    }
+
+    const FUTURE: &str = r#"future = "top" # from a newer version
+
+[settings]
+theme = "dark"
+
+[settings.sounds]
+chime = "bell"
+
+[future_table]
+x = 1
+
+[[emulators]]
+id = "eden"
+name = "Eden"
+exe = "eden"
+args = ["{rom}"]
+portable = true
+
+[[games]]
+id = "hl2"
+name = "Half-Life 2"
+steam_appid = 220
+cover = { path = "hl2.png" } # keep me
+[games.extra]
+y = 2
+"#;
+
+    #[test]
+    fn edits_keep_unknown_keys_and_tables() {
+        let mut doc = ConfigDocument::parse(FUTURE).unwrap();
+        assert_eq!(doc.to_string(), FUTURE);
+        let mut hl2 = doc.config().games[0].clone();
+        hl2.name = "HL2".into();
+        hl2.plan = LaunchPlan::Exe {
+            path: "hl2.exe".into(),
+            args: vec!["-novid".into()],
+            cwd: None,
+        };
+        doc.upsert_game(&hl2).unwrap();
+        doc.set_uid(&slug("hl2"), Some(&[1, 2, 3, 4])).unwrap();
+        doc.set_tag_written(&slug("hl2"), true).unwrap();
+        let mut eden = doc.config().emulators[0].clone();
+        eden.args = vec!["-f".into(), "{rom}".into()];
+        doc.upsert_emulator(&eden).unwrap();
+        let settings = Settings {
+            boot_cart: BootCart::Launch,
+            font_scale: 1.25,
+            sounds: Sounds {
+                volume: 30,
+                ..Sounds::default()
+            },
+        };
+        doc.set_settings(&settings).unwrap();
+        let text = doc.to_string();
+        for kept in [
+            "future = \"top\" # from a newer version\n",
+            "theme = \"dark\"",
+            "chime = \"bell\"",
+            "[future_table]\nx = 1\n",
+            "portable = true",
+            "cover = { path = \"hl2.png\" } # keep me",
+            "[games.extra]\ny = 2\n",
+        ] {
+            assert!(text.contains(kept), "{kept:?} lost:\n{text}");
+        }
+        let (cfg, unknown) = Config::parse_with_unknown(&text).unwrap();
+        assert_eq!(unknown.len(), 7, "{unknown:?}");
+        assert_eq!(&cfg, doc.config());
+        assert_eq!(cfg.settings, settings);
+        assert_eq!(cfg.games[0].name, "HL2");
+        assert!(cfg.games[0].tag_written);
+    }
+
+    #[test]
+    fn settings_write_only_what_differs_unless_already_present() {
+        let mut doc = ConfigDocument::parse(COMMENTED).unwrap();
+        doc.set_settings(&Settings::default()).unwrap();
+        assert_eq!(doc.to_string(), COMMENTED);
+
+        let mut settings = Settings::default();
+        settings.sounds.waiting = false;
+        doc.set_settings(&settings).unwrap();
+        let text = doc.to_string();
+        assert!(text.starts_with("# My library\n"), "{text}");
+        assert!(
+            text.ends_with("\n[settings.sounds]\nwaiting = false\n"),
+            "{text}"
+        );
+        assert!(!text.contains("[settings]\n"), "{text}");
+        assert_eq!(doc.config().settings, settings);
+
+        settings.font_scale = 1.1;
+        settings.boot_cart = BootCart::Launch;
+        doc.set_settings(&settings).unwrap();
+        let text = doc.to_string();
+        assert!(
+            text.contains("[settings]\nboot_cart = \"launch\"\nfont_scale = 1.1\n"),
+            "{text}"
+        );
+        assert_eq!(Config::parse(&text).unwrap().settings, settings);
+
+        // Back to defaults: keys already in the file stay, set to the default.
+        doc.set_settings(&Settings::default()).unwrap();
+        let text = doc.to_string();
+        assert!(text.contains("boot_cart = \"wait\""), "{text}");
+        assert!(text.contains("font_scale = 1.0"), "{text}");
+        assert!(text.contains("waiting = true"), "{text}");
+        assert!(!text.contains("volume"), "{text}");
+        assert_eq!(doc.config().settings, Settings::default());
+
+        // Comments on existing settings keys are kept.
+        let commented = "[settings]\nfont_scale = 1.0 # bigger later\n";
+        let mut doc = ConfigDocument::parse(commented).unwrap();
+        doc.set_settings(&Settings {
+            font_scale: 2.0,
+            ..Settings::default()
+        })
+        .unwrap();
+        assert_eq!(
+            doc.to_string(),
+            "[settings]\nfont_scale = 2.0 # bigger later\n"
+        );
+    }
+
+    #[test]
+    fn new_settings_stay_below_the_library() {
+        let mut doc = ConfigDocument::parse(
+            "# header\n\n[[games]]\nid = \"a\"\nname = \"A\"\nsteam_appid = 1\n",
+        )
+        .unwrap();
+        doc.set_settings(&Settings {
+            font_scale: 1.5,
+            ..Settings::default()
+        })
+        .unwrap();
+        // Adding the first emulator reorders the sections; settings stay last.
+        doc.upsert_emulator(&emulator("eden", &["{rom}"])).unwrap();
+        let text = doc.to_string();
+        assert!(text.starts_with("# header\n\n[[emulators]]"), "{text}");
+        assert!(text.ends_with("\n[settings]\nfont_scale = 1.5\n"), "{text}");
+    }
+
+    #[test]
+    fn invalid_settings_are_rejected() {
+        let mut doc = ConfigDocument::parse(COMMENTED).unwrap();
+        for bad in [
+            Settings {
+                font_scale: 3.0,
+                ..Settings::default()
+            },
+            Settings {
+                sounds: Sounds {
+                    volume: 101,
+                    ..Sounds::default()
+                },
+                ..Settings::default()
+            },
+        ] {
+            assert!(doc.set_settings(&bad).is_err());
+            assert_eq!(doc.to_string(), COMMENTED);
+        }
+        let mut doc = ConfigDocument::parse("settings = { font_scale = 1.5 }\n").unwrap();
+        let err = doc.set_settings(&Settings::default()).unwrap_err();
+        assert!(err.to_string().contains("[settings] table"), "{err}");
+        let mut doc = ConfigDocument::parse("[settings]\nsounds = { volume = 5 }\n").unwrap();
+        let err = doc.set_settings(&Settings::default()).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("`sounds` must be written as a [settings.sounds] table"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn tag_marker_round_trips_through_edits() {
+        let mut doc = ConfigDocument::parse(COMMENTED).unwrap();
+        doc.set_tag_written(&slug("my-game"), true).unwrap();
+        assert!(doc
+            .to_string()
+            .contains("args = [\"--fullscreen\"]\ntag = \"written\"\n"));
+        // Re-saving the entry (as the edit form does) keeps the marker.
+        let mut game = doc.config().games[1].clone();
+        assert!(game.tag_written);
+        game.name = "Renamed".into();
+        doc.upsert_game(&game).unwrap();
+        assert!(doc.to_string().contains("tag = \"written\""));
+        assert!(doc.config().games[1].tag_written);
+        doc.set_tag_written(&slug("my-game"), false).unwrap();
+        assert!(!doc.to_string().contains("tag"));
+        assert!(matches!(
+            doc.set_tag_written(&slug("nope"), true),
+            Err(EditError::NoSuchGame(_))
+        ));
+    }
+
+    #[test]
+    fn unknown_enum_values_survive_edits_that_do_not_change_them() {
+        let text = "[settings]\nboot_cart = \"ask\"\n\n\
+                    [[games]]\nid = \"a\"\nname = \"A\"\nsteam_appid = 1\ntag = \"verified\"\n";
+        let mut doc = ConfigDocument::parse(text).unwrap();
+        let mut a = doc.config().games[0].clone();
+        assert!(!a.tag_written);
+        a.name = "A2".into();
+        doc.upsert_game(&a).unwrap();
+        doc.set_tag_written(&slug("a"), false).unwrap();
+        let mut settings = doc.config().settings;
+        settings.font_scale = 1.5;
+        doc.set_settings(&settings).unwrap();
+        let text = doc.to_string();
+        assert!(text.contains("tag = \"verified\""), "{text}");
+        assert!(text.contains("boot_cart = \"ask\""), "{text}");
+
+        // Actually changing them replaces the unknown value.
+        doc.set_tag_written(&slug("a"), true).unwrap();
+        settings.boot_cart = BootCart::Launch;
+        doc.set_settings(&settings).unwrap();
+        let text = doc.to_string();
+        assert!(text.contains("tag = \"written\""), "{text}");
+        assert!(text.contains("boot_cart = \"launch\""), "{text}");
+        doc.set_tag_written(&slug("a"), false).unwrap();
+        assert!(!doc.to_string().contains("tag ="));
+    }
+
+    #[test]
+    fn steam_shortcut_games_keep_the_tag_marker() {
+        let mut doc = ConfigDocument::parse(
+            "[[games]]\nid = \"doom\"\nname = \"Doom\"\nsteam_shortcut = 3237998081\n",
+        )
+        .unwrap();
+        doc.set_tag_written(&slug("doom"), true).unwrap();
+        let mut game = doc.config().games[0].clone();
+        assert!(game.tag_written);
+        game.name = "DOOM".into();
+        doc.upsert_game(&game).unwrap();
+        let text = doc.to_string();
+        assert!(
+            text.contains("steam_shortcut = 3237998081\ntag = \"written\"\n"),
+            "{text}"
+        );
+        assert_eq!(Config::parse(&text).unwrap().games[0], game);
     }
 
     #[test]
@@ -710,6 +1101,7 @@ rom = 'D:\Switch\botw.nsp'
             id: slug(id),
             name: id.into(),
             uid: None,
+            tag_written: false,
             plan: LaunchPlan::Emulator {
                 emulator: slug(emulator),
                 rom: rom.into(),
@@ -990,6 +1382,7 @@ args = [
             id: slug("two"),
             name: "line1\nline2".into(),
             uid: None,
+            tag_written: false,
             plan: LaunchPlan::Steam { appid: 5 },
         })
         .unwrap();

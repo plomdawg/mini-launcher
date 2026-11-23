@@ -306,8 +306,8 @@ Rules:
 - `.bat` and `.cmd` files work as `exe` too. Windows runs them through `cmd.exe`.
 - `uid` (optional): a tag UID in hex, with or without `:` between the bytes. A UID mapping
   **always wins** over what the tag says.
-- `args` and `cwd` are only allowed with `exe`. Unknown keys are an error, so typos show up right
-  away.
+- `args` and `cwd` are only allowed with `exe`. Unknown keys (e.g. from a newer version, or a
+  typo) are ignored with a warning in the log; see [config.md](config.md#newer-and-older-versions).
 
 ### Non-Steam games added to Steam
 

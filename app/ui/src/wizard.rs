@@ -266,6 +266,7 @@ impl Wizard {
                 name: installed.name,
                 uid: None,
                 plan: installed.plan,
+                tag_written: false,
             },
         };
         self.game = Some(game);
@@ -477,6 +478,7 @@ impl Wizard {
             name,
             uid: None,
             plan: emulator_plan(emulator, rom),
+            tag_written: false,
         });
         true
     }
