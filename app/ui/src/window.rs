@@ -28,6 +28,16 @@ use crate::theme;
 
 const ICON: &[u8] = include_bytes!("../../assets/icon/mini-launcher.png");
 
+/// What a request to open the window should show.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Open {
+    /// The library (or, if open, whatever it shows now).
+    Settings,
+    /// The add-game wizard, e.g. from the new-cart notification (see
+    /// [`Settings::from_tray_add`]).
+    AddGame,
+}
+
 /// What the window thread reports back.
 #[derive(Debug)]
 pub enum Event {
@@ -43,8 +53,10 @@ pub enum Event {
 /// (`with_any_thread`); on other platforms winit would refuse it, so a
 /// Linux port must add the X11/Wayland equivalents first.
 pub struct SettingsWindow {
-    requests: Option<mpsc::Sender<()>>,
+    requests: Option<mpsc::Sender<Open>>,
     thread: Option<JoinHandle<()>>,
+    /// An [`Open::AddGame`] for the open window, taken by its next frame.
+    pending: Arc<Mutex<Option<Open>>>,
     /// Set from an open request until the window has closed again.
     open: Arc<AtomicBool>,
     /// The open window's context, to focus or close it from another thread.
@@ -130,7 +142,8 @@ impl Nudge {
 impl SettingsWindow {
     /// Starts the (idle) window thread; `events` receives its [`Event`]s.
     pub fn spawn(host: Arc<dyn Host>, events: mpsc::Sender<Event>) -> std::io::Result<Self> {
-        let (requests, rx) = mpsc::channel::<()>();
+        let (requests, rx) = mpsc::channel::<Open>();
+        let pending = Arc::new(Mutex::new(None));
         let open = Arc::new(AtomicBool::new(false));
         let ctx = Arc::new(Mutex::new(None));
         let nudge = Nudge::default();
@@ -138,6 +151,7 @@ impl SettingsWindow {
             .name("settings-window".into())
             .spawn({
                 let (open, ctx, nudge) = (open.clone(), ctx.clone(), nudge.clone());
+                let pending = pending.clone();
                 move || {
                     #[cfg(windows)]
                     nudge.thread_id.store(
@@ -145,9 +159,12 @@ impl SettingsWindow {
                         unsafe { windows_sys::Win32::System::Threading::GetCurrentThreadId() },
                         Ordering::SeqCst,
                     );
-                    while rx.recv().is_ok() {
+                    while let Ok(what) = rx.recv() {
                         let _ = events.send(Event::Opened);
-                        let result = run(&ctx, &host, &nudge).map_err(|e| e.to_string());
+                        // A request for the previous opening is stale now.
+                        lock(&pending).take();
+                        let result =
+                            run(&ctx, &host, &nudge, what, &pending).map_err(|e| e.to_string());
                         *lock(&ctx) = None;
                         nudge.finish();
                         open.store(false, Ordering::SeqCst);
@@ -158,6 +175,7 @@ impl SettingsWindow {
         Ok(SettingsWindow {
             requests: Some(requests),
             thread: Some(thread),
+            pending,
             open,
             ctx,
             nudge,
@@ -166,7 +184,21 @@ impl SettingsWindow {
 
     /// Opens the window, or brings the open one to the front.
     pub fn show(&self) {
+        self.request(Open::Settings);
+    }
+
+    /// Opens the window on the add-game wizard. An open window is brought
+    /// to the front and switches to the wizard only if that loses nothing
+    /// (see [`Settings::from_tray_add`]).
+    pub fn show_add_game(&self) {
+        self.request(Open::AddGame);
+    }
+
+    fn request(&self, what: Open) {
         if self.open.swap(true, Ordering::SeqCst) {
+            if what == Open::AddGame {
+                *lock(&self.pending) = Some(what);
+            }
             // Still closing: make sure the loop gets to finish.
             if self.nudge.closing.load(Ordering::SeqCst) {
                 self.nudge.wake();
@@ -174,9 +206,10 @@ impl SettingsWindow {
             if let Some(ctx) = lock(&self.ctx).as_ref() {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
                 ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                ctx.request_repaint();
             }
         } else if let Some(requests) = &self.requests {
-            let _ = requests.send(());
+            let _ = requests.send(what);
         }
     }
 
@@ -238,6 +271,8 @@ fn run(
     ctx_slot: &Arc<Mutex<Option<egui::Context>>>,
     host: &Arc<dyn Host>,
     nudge: &Nudge,
+    what: Open,
+    pending: &Arc<Mutex<Option<Open>>>,
 ) -> Result<(), eframe::Error> {
     let mut viewport = egui::ViewportBuilder::default()
         .with_title("Mini Launcher")
@@ -263,21 +298,29 @@ fn run(
         ..Default::default()
     };
     let (ctx_slot, host, nudge) = (ctx_slot.clone(), host.clone(), nudge.clone());
+    let pending = pending.clone();
     eframe::run_native(
         "mini-launcher-settings",
         options,
         Box::new(move |cc| {
             theme::install(&cc.egui_ctx);
             *lock(&ctx_slot) = Some(cc.egui_ctx.clone());
-            Ok(Box::new(App(Settings::new(host), nudge)))
+            let mut settings = Settings::new(host);
+            if what == Open::AddGame {
+                settings.from_tray_add();
+            }
+            Ok(Box::new(App(settings, nudge, pending)))
         }),
     )
 }
 
-struct App(Settings, Nudge);
+struct App(Settings, Nudge, Arc<Mutex<Option<Open>>>);
 
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
+        if lock(&self.2).take() == Some(Open::AddGame) {
+            self.0.from_tray_add();
+        }
         settings::show(ui, &mut self.0);
         if let Some((pick, start)) = self.0.take_browse() {
             let types = self.0.game_file_types();

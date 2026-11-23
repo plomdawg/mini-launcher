@@ -132,6 +132,15 @@ impl Settings {
         self.screen = Screen::Wizard;
     }
 
+    /// The new-cart notification was clicked: opens the add-game wizard,
+    /// unless that would throw something away (a wizard already running,
+    /// or an edit form), in which case the window is only focused.
+    pub fn from_tray_add(&mut self) {
+        if self.wizard.is_none() && matches!(self.screen, Screen::Library | Screen::Emulators) {
+            self.add();
+        }
+    }
+
     /// The edit form's "Write tag...": validates the form, then opens the
     /// wizard on its tap step for that game.
     pub fn write_tag(&mut self) {
