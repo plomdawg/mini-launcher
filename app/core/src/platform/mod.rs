@@ -45,4 +45,26 @@ mod other {
     pub(crate) fn steam_paths() -> Vec<std::path::PathBuf> {
         Vec::new()
     }
+
+    /// Battle.net is Windows-only.
+    pub(crate) fn blizzard_uninstalls() -> Vec<crate::battlenet::Uninstall> {
+        Vec::new()
+    }
+
+    pub(crate) fn program_files() -> Vec<std::path::PathBuf> {
+        Vec::new()
+    }
+
+    pub(crate) fn battlenet_dirs() -> Vec<std::path::PathBuf> {
+        Vec::new()
+    }
+
+    /// Process listing is only needed for Battle.net, which is Windows-only.
+    pub(crate) fn process_ids(_exe_name: &str) -> Vec<u32> {
+        Vec::new()
+    }
+
+    pub(crate) fn has_visible_window(_pids: &[u32]) -> bool {
+        false
+    }
 }

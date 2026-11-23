@@ -1,5 +1,6 @@
 //! Win32 calls: a named mutex for single instance, the per-user `Run` key
-//! for start at login and Steam's install path. No admin rights needed.
+//! for start at login, Steam's install path and Battle.net's uninstall
+//! entries, and Battle.net process/window checks. No admin rights needed.
 
 use std::io;
 use std::path::PathBuf;
@@ -11,7 +12,8 @@ use windows_sys::Win32::Foundation::{
     ERROR_MORE_DATA, ERROR_SUCCESS, HANDLE,
 };
 use windows_sys::Win32::System::Registry::{
-    RegDeleteKeyValueW, RegGetValueW, RegSetKeyValueW, HKEY, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE,
+    RegCloseKey, RegDeleteKeyValueW, RegEnumKeyExW, RegGetValueW, RegOpenKeyExW, RegSetKeyValueW,
+    HKEY, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_READ, KEY_WOW64_32KEY, KEY_WOW64_64KEY,
     REG_EXPAND_SZ, REG_SZ, RRF_NOEXPAND, RRF_RT_ANY,
 };
 use windows_sys::Win32::System::Threading::{
@@ -174,6 +176,120 @@ pub(crate) fn steam_paths() -> Vec<PathBuf> {
     .collect()
 }
 
+const UNINSTALL_KEY: &str = r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall";
+/// Uninstall subkeys read per view; a sane bound for untrusted data.
+const MAX_UNINSTALL_KEYS: u32 = 10_000;
+
+/// An open registry key, closed on drop.
+struct Key(HKEY);
+
+impl Key {
+    /// `None` if the key does not exist or cannot be read.
+    fn open(root: HKEY, path: &str, view: u32) -> Option<Key> {
+        let path = wide(path);
+        let mut key: HKEY = ptr::null_mut();
+        // SAFETY: `path` is NUL-terminated; `key` is a valid out pointer.
+        let code = unsafe { RegOpenKeyExW(root, path.as_ptr(), 0, KEY_READ | view, &mut key) };
+        (code == ERROR_SUCCESS).then_some(Key(key))
+    }
+
+    /// The names of its direct subkeys (at most `max`).
+    fn subkeys(&self, max: u32) -> Vec<String> {
+        let mut names = Vec::new();
+        // Key names are at most 255 characters.
+        let mut buf = [0u16; 256];
+        for index in 0..max {
+            let mut len = buf.len() as u32;
+            // SAFETY: `buf` holds `len` characters; the optional out
+            // pointers are null.
+            let code = unsafe {
+                RegEnumKeyExW(
+                    self.0,
+                    index,
+                    buf.as_mut_ptr(),
+                    &mut len,
+                    ptr::null(),
+                    ptr::null_mut(),
+                    ptr::null_mut(),
+                    ptr::null_mut(),
+                )
+            };
+            if code != ERROR_SUCCESS {
+                // ERROR_NO_MORE_ITEMS, or a key that vanished meanwhile.
+                break;
+            }
+            names.push(String::from_utf16_lossy(&buf[..len as usize]));
+        }
+        names
+    }
+}
+
+impl Drop for Key {
+    fn drop(&mut self) {
+        // SAFETY: we own the open key and close it exactly once.
+        unsafe { RegCloseKey(self.0) };
+    }
+}
+
+/// The uninstall entries of Battle.net games, from the 32- and 64-bit
+/// machine views and the user's own.
+pub(crate) fn blizzard_uninstalls() -> Vec<crate::battlenet::Uninstall> {
+    use crate::battlenet::{is_blizzard_uninstaller, uninstall_uid, Uninstall};
+    let views = [
+        (HKEY_LOCAL_MACHINE, KEY_WOW64_32KEY),
+        (HKEY_LOCAL_MACHINE, KEY_WOW64_64KEY),
+        (HKEY_CURRENT_USER, 0),
+    ];
+    let mut found: Vec<Uninstall> = Vec::new();
+    for (root, view) in views {
+        let Some(key) = Key::open(root, UNINSTALL_KEY, view) else {
+            continue;
+        };
+        for name in key.subkeys(MAX_UNINSTALL_KEYS) {
+            let value = |v| reg_string(key.0, &name, v).ok().flatten();
+            let Some(command) = value("UninstallString") else {
+                continue;
+            };
+            let location = value("InstallLocation").filter(|l| !l.trim().is_empty());
+            if let (true, Some(location)) = (is_blizzard_uninstaller(&command), location) {
+                let entry = Uninstall {
+                    location: PathBuf::from(location.trim().trim_matches('"')),
+                    uid: uninstall_uid(&command),
+                };
+                if !found.contains(&entry) {
+                    found.push(entry);
+                }
+            }
+        }
+    }
+    found
+}
+
+/// `%ProgramFiles(x86)%` and `%ProgramFiles%`.
+pub(crate) fn program_files() -> Vec<PathBuf> {
+    ["ProgramFiles(x86)", "ProgramFiles"]
+        .into_iter()
+        .filter_map(std::env::var_os)
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .collect()
+}
+
+/// Where Battle.net may be installed: its uninstall entry's folder, then
+/// the default folders.
+pub(crate) fn battlenet_dirs() -> Vec<PathBuf> {
+    let registered = [KEY_WOW64_32KEY, KEY_WOW64_64KEY]
+        .into_iter()
+        .filter_map(|view| {
+            let key = Key::open(HKEY_LOCAL_MACHINE, UNINSTALL_KEY, view)?;
+            let location = reg_string(key.0, "Battle.net", "InstallLocation").ok()??;
+            let location = location.trim().trim_matches('"');
+            (!location.is_empty()).then(|| PathBuf::from(location))
+        });
+    let defaults = program_files().into_iter().map(|p| p.join("Battle.net"));
+    registered.chain(defaults).collect()
+}
+
 /// A string value, or `Ok(None)` if the key or value does not exist.
 fn reg_string(root: HKEY, key: &str, name: &str) -> io::Result<Option<String>> {
     let (key, name) = (wide(key), wide(name));
@@ -240,4 +356,83 @@ pub(crate) fn delete_run_value(name: &str) -> Option<io::Result<()>> {
     } else {
         check(code)
     })
+}
+
+/// Ids of the running processes whose executable is named `exe_name`
+/// (case-insensitive, e.g. `Battle.net.exe`).
+pub(crate) fn process_ids(exe_name: &str) -> Vec<u32> {
+    use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
+        TH32CS_SNAPPROCESS,
+    };
+    // SAFETY: no pointer arguments; the handle is checked and closed below.
+    let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
+    if snapshot == INVALID_HANDLE_VALUE || snapshot.is_null() {
+        tracing::debug!("process snapshot failed: {}", io::Error::last_os_error());
+        return Vec::new();
+    }
+    let mut ids = Vec::new();
+    let mut entry = PROCESSENTRY32W {
+        dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
+        ..Default::default()
+    };
+    // SAFETY: `snapshot` is a valid process snapshot and `entry` is a
+    // `PROCESSENTRY32W` with `dwSize` set, as both calls require.
+    let mut ok = unsafe { Process32FirstW(snapshot, &mut entry) };
+    while ok != 0 {
+        let len = entry
+            .szExeFile
+            .iter()
+            .position(|&c| c == 0)
+            .unwrap_or(entry.szExeFile.len());
+        let name = String::from_utf16_lossy(&entry.szExeFile[..len]);
+        if name.eq_ignore_ascii_case(exe_name) {
+            ids.push(entry.th32ProcessID);
+        }
+        // SAFETY: as above.
+        ok = unsafe { Process32NextW(snapshot, &mut entry) };
+    }
+    // SAFETY: `snapshot` is a handle we own and close once.
+    unsafe { CloseHandle(snapshot) };
+    ids
+}
+
+/// Whether any process in `pids` owns a visible top-level window.
+pub(crate) fn has_visible_window(pids: &[u32]) -> bool {
+    use windows_sys::core::BOOL;
+    use windows_sys::Win32::Foundation::{HWND, LPARAM};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        EnumWindows, GetWindowThreadProcessId, IsWindowVisible,
+    };
+
+    struct Search<'a> {
+        pids: &'a [u32],
+        found: bool,
+    }
+
+    unsafe extern "system" fn visit(hwnd: HWND, lparam: LPARAM) -> BOOL {
+        // SAFETY: `lparam` is the `&mut Search` passed to `EnumWindows`
+        // below, which outlives the enumeration.
+        let search = unsafe { &mut *(lparam as *mut Search) };
+        let mut pid = 0u32;
+        // SAFETY: `hwnd` comes from `EnumWindows`; `pid` is a valid out pointer.
+        unsafe { GetWindowThreadProcessId(hwnd, &mut pid) };
+        // SAFETY: `hwnd` comes from `EnumWindows`.
+        if search.pids.contains(&pid) && unsafe { IsWindowVisible(hwnd) } != 0 {
+            search.found = true;
+            return 0; // stop enumerating
+        }
+        1
+    }
+
+    if pids.is_empty() {
+        return false;
+    }
+    let mut search = Search { pids, found: false };
+    // SAFETY: `visit` matches `WNDENUMPROC`; `search` outlives the call.
+    // The return value is 0 both on error and when `visit` stops early, so
+    // `found` is the answer either way.
+    unsafe { EnumWindows(Some(visit), &mut search as *mut Search as LPARAM) };
+    search.found
 }
