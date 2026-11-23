@@ -187,6 +187,17 @@ pub fn label_at(ui: &Ui, row: Rect, x: f32, label: &str, color: Color32) {
     ui.painter().galley(pos, g, color);
 }
 
+/// [`label_at`], cut short with "…" where it would pass `right` (the next
+/// column).
+pub fn label_fit(ui: &Ui, row: Rect, x: f32, right: f32, label: &str, color: Color32) {
+    let mut job =
+        egui::text::LayoutJob::simple_singleline(label.to_owned(), FontId::monospace(TEXT), color);
+    job.wrap = egui::text::TextWrapping::truncate_at_width((right - x).max(0.0));
+    let g = ui.painter().layout_job(job);
+    let pos = pos2(x, row.center().y - g.size().y / 2.0).round();
+    ui.painter().galley(pos, g, color);
+}
+
 /// A 6-point status square at `x` on `row`, filled with [`SIGNAL`] when
 /// `on`. Returns where the text after it starts.
 pub fn mark(p: &Painter, row: Rect, x: f32, on: bool, edge: Color32) -> f32 {

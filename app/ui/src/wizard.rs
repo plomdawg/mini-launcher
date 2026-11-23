@@ -517,11 +517,7 @@ impl Wizard {
     /// What goes on the tag: `steam://<appid>`, or `id:<slug>` for
     /// everything else (programs, emulator and Battle.net games).
     pub fn payload(&self) -> Option<Payload> {
-        let game = self.game.as_ref()?;
-        Some(match &game.plan {
-            LaunchPlan::Steam { appid } => Payload::Steam(*appid),
-            _ => Payload::Id(game.id.clone()),
-        })
+        self.game.as_ref().map(tag_payload)
     }
 
     /// Handles what the run loop sent.
@@ -716,6 +712,9 @@ impl Wizard {
                 library.save_game_taking_uid(&game, uid.as_bytes())
             }
             Outcome::Written { uid } | Outcome::AlreadyThere { uid } => {
+                // The tag now says which game it is: the library shows that
+                // instead of "no tag yet".
+                game.tag_written = true;
                 library.save_game_taking_uid(&game, uid.as_bytes())
             }
             Outcome::Skipped => library.save_game(&game),
@@ -799,6 +798,16 @@ const NO_READER: &str =
     "This app has no reader to write with. Use Skip to add the game without a tag.";
 const LINK_CLOSED: &str =
     "The reader is no longer available to the wizard. Cancel and start again, or Skip.";
+
+/// What the wizard writes on `game`'s tag: `steam://<appid>`, or
+/// `id:<slug>` for everything else (programs, emulator, Battle.net games and
+/// Steam shortcuts).
+pub fn tag_payload(game: &Game) -> Payload {
+    match &game.plan {
+        LaunchPlan::Steam { appid } => Payload::Steam(*appid),
+        _ => Payload::Id(game.id.clone()),
+    }
+}
 
 /// A payload as written on a tag.
 pub fn payload_text(payload: &Payload) -> String {
@@ -1044,6 +1053,7 @@ mod tests {
         let celeste = celeste.unwrap();
         assert_eq!(celeste.id.as_str(), "celeste");
         assert_eq!(celeste.uid, None, "a written tag carries the game itself");
+        assert!(celeste.tag_written, "the library shows what the tag says");
     }
 
     #[test]
@@ -1067,6 +1077,7 @@ mod tests {
             let config = r.config();
             let game = config.by_uid(uid(A).as_bytes()).unwrap();
             assert_eq!(game.name, "Celeste");
+            assert!(!game.tag_written, "the tag still says nothing usable");
             assert!(r.released());
         }
     }
@@ -1150,7 +1161,9 @@ mod tests {
             }
         );
         assert_eq!(r.sent(), []);
-        assert!(r.config().games.iter().any(|g| g.name == "Celeste"));
+        let config = r.config();
+        let celeste = config.games.iter().find(|g| g.name == "Celeste");
+        assert!(celeste.unwrap().tag_written);
     }
 
     #[test]
@@ -1195,7 +1208,9 @@ mod tests {
                 outcome: Outcome::Skipped
             }
         );
-        assert!(r.config().games.iter().any(|g| g.name == "Celeste"));
+        let config = r.config();
+        let celeste = config.games.iter().find(|g| g.name == "Celeste").unwrap();
+        assert!(celeste.uid.is_none() && !celeste.tag_written);
     }
 
     #[test]

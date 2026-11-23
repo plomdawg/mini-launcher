@@ -11,7 +11,7 @@ use std::sync::Arc;
 use egui::{pos2, vec2, Align, Layout, Rect, Sense, Ui};
 use mini_launcher_core::battlenet::BattleNetGame;
 use mini_launcher_core::config::location::ConfigLocation;
-use mini_launcher_core::config::{format_uid, Config};
+use mini_launcher_core::config::{format_uid, Config, Emulator, Game};
 use mini_launcher_core::emulators::EmulatorPreset;
 use mini_launcher_core::launch::LaunchPlan;
 use mini_launcher_core::payload::Slug;
@@ -20,7 +20,7 @@ use mini_launcher_core::steam::SteamGame;
 
 use crate::library::{Field, Form, Library};
 use crate::theme::{self, BIG, BLUE, FACE, INK, PAPER, ROW, SHADE, SIGNAL, TEXT, U};
-use crate::wizard::{Link, Step, Wizard};
+use crate::wizard::{payload_text, tag_payload, Link, Step, Wizard};
 
 /// What the window needs from the app hosting it (the tray).
 pub trait Host: Send + Sync {
@@ -39,7 +39,8 @@ pub trait Host: Send + Sync {
     fn battlenet_games(&self) -> Vec<BattleNetGame> {
         Vec::new()
     }
-    /// Starts `plan` now (the wizard's "Launch now").
+    /// Starts `plan` now (the wizard's "Launch now", the edit form's
+    /// Launch).
     fn launch(&self, plan: &LaunchPlan) -> Result<(), String>;
     /// The default config folder, where `location.toml` lives.
     fn default_dir(&self) -> Option<PathBuf> {
@@ -102,6 +103,9 @@ pub struct Settings {
     /// Export / import / config folder dialogs.
     pub transfer: backup::Transfer,
     pub emulators: emulators::Emulators,
+    /// What the edit form's Launch did last (cleared when the form opens
+    /// or closes).
+    pub launched: Option<Result<(), String>>,
 }
 
 impl Settings {
@@ -120,6 +124,7 @@ impl Settings {
             browse: None,
             transfer: backup::Transfer::default(),
             emulators: emulators::Emulators::default(),
+            launched: None,
         }
     }
 
@@ -128,6 +133,7 @@ impl Settings {
         if let Some(game) = self.library.games().get(i) {
             self.selected = Some(i);
             self.form = Form::from_game(game);
+            self.launched = None;
             self.screen = Screen::Edit;
         }
     }
@@ -245,6 +251,23 @@ impl Settings {
         }
     }
 
+    /// The edit form's Launch: starts the game as the form describes it
+    /// now, without saving it, so launch options can be tried first.
+    pub fn launch_form(&mut self) {
+        let Some(config) = self.library.config() else {
+            return;
+        };
+        self.form.problem = None;
+        self.launched = None;
+        match self.form.to_game(config) {
+            Ok(game) => {
+                self.form.errors.clear();
+                self.launched = Some(self.host.launch(&game.plan));
+            }
+            Err(errors) => self.form.errors = errors,
+        }
+    }
+
     /// Lets the wizard handle what the run loop sent.
     fn poll_wizard(&mut self) {
         if let Some(w) = &mut self.wizard {
@@ -274,6 +297,7 @@ impl Settings {
             Ok(()) => {
                 self.host.saved();
                 self.selected = self.library.games().iter().position(|g| g.id == game.id);
+                self.launched = None;
                 self.screen = Screen::Library;
             }
             Err(e) => self.form.problem = Some(format!("Not saved: {e}")),
@@ -490,11 +514,11 @@ const CREDIT: &str = "<3 plomdawg";
 
 fn status_bar(ui: &mut Ui, s: &Settings) {
     let games = s.library.games();
-    let bound = games.iter().filter(|g| g.uid.is_some()).count();
+    let tagged = games.iter().filter(|g| tag_label(g).is_some()).count();
     let reader = s.host.reader();
     let cells = [
         format!("{} games", games.len()),
-        format!("{bound} tagged"),
+        format!("{tagged} tagged"),
         reader.text,
     ];
     ui.horizontal(|ui| {
@@ -550,11 +574,12 @@ fn library(ui: &mut Ui, s: &mut Settings) {
         theme::warning(ui, 0.0, problem);
     }
     let games = s.library.games();
+    let emulators = s.library.emulators();
     let mut clicked = None;
     let mut open = None;
     let body = theme::list(
         ui,
-        &[0.0, 0.40, 0.66],
+        &[0.0, 0.34, 0.66],
         &["NAME", "LAUNCH", "TAG"],
         games.len(),
         |ui, i, row, cols| {
@@ -567,12 +592,17 @@ fn library(ui: &mut Ui, s: &mut Settings) {
             if resp.double_clicked() {
                 open = Some(i);
             }
-            theme::label_at(ui, row, cols[0] + 2.0 * U, &game.name, fg);
-            theme::label_at(ui, row, cols[1] + 2.0 * U, &launch_label(&game.plan), fg);
-            let uid = game.uid.as_deref().map(format_uid);
-            let x = theme::mark(ui.painter(), row, cols[2] + 2.0 * U, uid.is_some(), fg);
-            let color = if uid.is_some() { fg } else { weak };
-            theme::label_at(ui, row, x, uid.as_deref().unwrap_or("not bound"), color);
+            let ends = [cols[1] - U, cols[2] - U, row.max.x - U];
+            theme::label_fit(ui, row, cols[0] + 2.0 * U, ends[0], &game.name, fg);
+            let launch = launch_label(&game.plan, emulators);
+            theme::label_fit(ui, row, cols[1] + 2.0 * U, ends[1], &launch, fg);
+            let tag = tag_label(game);
+            let x = theme::mark(ui.painter(), row, cols[2] + 2.0 * U, tag.is_some(), fg);
+            let (text, color) = match &tag {
+                Some(tag) => (tag.as_str(), fg),
+                None => (NO_TAG, weak),
+            };
+            theme::label_fit(ui, row, x, ends[2], text, color);
         },
     );
     if games.is_empty() {
@@ -606,42 +636,112 @@ fn library(ui: &mut Ui, s: &mut Settings) {
     }
 }
 
-/// The library's LAUNCH column.
-pub fn launch_label(plan: &LaunchPlan) -> String {
-    match plan {
-        LaunchPlan::Steam { appid } => format!("Steam {appid}"),
-        LaunchPlan::SteamShortcut { .. } => "Steam shortcut".to_owned(),
-        LaunchPlan::BattleNet { code } => format!("Battle.net {code}"),
-        LaunchPlan::Exe { .. } => "Program".to_owned(),
-        LaunchPlan::Emulator { .. } => "Emulator".to_owned(),
+/// The TAG column (and the edit form's) for a game with no tag yet.
+pub const NO_TAG: &str = "no tag yet";
+
+/// The library's TAG column: how the launcher knows `game`'s cart. Its UID
+/// binding (which overrides whatever the tag says), else what the wizard
+/// wrote on the tag (`steam://<appid>` or `id:<slug>`); `None` for no tag
+/// yet.
+pub fn tag_label(game: &Game) -> Option<String> {
+    match &game.uid {
+        Some(uid) => Some(format!("UID {}", format_uid(uid))),
+        None => game.tag_written.then(|| payload_text(&tag_payload(game))),
     }
+}
+
+/// The library's LAUNCH column: what starts the game (for display only;
+/// nothing here is opened or run).
+pub fn launch_label(plan: &LaunchPlan, emulators: &[Emulator]) -> String {
+    match plan {
+        LaunchPlan::Steam { appid } => format!("steam://{appid}"),
+        LaunchPlan::SteamShortcut { appid } => format!("Steam shortcut {appid}"),
+        LaunchPlan::BattleNet { code } => format!("battlenet://{code}"),
+        LaunchPlan::Exe { path, .. } => format!("Program: {}", file_name(path)),
+        LaunchPlan::Emulator { emulator, rom, .. } => {
+            let e = emulators.iter().find(|e| &e.id == emulator);
+            let name = e.map_or(emulator.as_str(), |e| e.name.as_str());
+            format!("{name}: {}", file_name(rom))
+        }
+    }
+}
+
+/// The last part of `path`, written for either OS.
+fn file_name(path: &std::path::Path) -> String {
+    let path = path.to_string_lossy();
+    path.rsplit(['/', '\\'])
+        .next()
+        .unwrap_or_default()
+        .to_owned()
 }
 
 fn edit(ui: &mut Ui, s: &mut Settings) {
     let problem = s.form.problem.clone();
-    let (save, cancel) = form_screen(ui, problem.as_deref(), |ui| form(ui, s));
-    if cancel {
+    let failed = match &s.launched {
+        Some(Err(e)) => format!("Not launched: {e}"),
+        _ => String::new(),
+    };
+    let note = match &s.launched {
+        Some(Ok(())) => Some(Ok(LAUNCHED)),
+        Some(Err(_)) => Some(Err(failed.as_str())),
+        None => None,
+    };
+    let buttons = form_screen(ui, problem.as_deref(), note, Some("Launch"), |ui| {
+        form(ui, s)
+    });
+    if buttons.cancel {
+        s.launched = None;
         s.screen = Screen::Library;
-    } else if save {
+    } else if buttons.save {
         s.save();
+    } else if buttons.extra {
+        s.launch_form();
     }
 }
 
-/// A form screen: `form` scrolls above the problem line and Save / Cancel.
-/// Returns (save, cancel) clicked.
-fn form_screen(ui: &mut Ui, problem: Option<&str>, form: impl FnOnce(&mut Ui)) -> (bool, bool) {
+const LAUNCHED: &str = "Launched: check the game started with the right options.";
+
+/// What was clicked on a [`form_screen`].
+#[derive(Default)]
+struct FormButtons {
+    save: bool,
+    cancel: bool,
+    /// The extra button on the left, if the screen has one.
+    extra: bool,
+}
+
+/// A form screen: `form` scrolls above the problem line and Save / Cancel
+/// (and the `extra` button on the left, if given). `note` is a line above
+/// the buttons: `Ok` plain, `Err` as a warning; `problem` wins over it.
+fn form_screen(
+    ui: &mut Ui,
+    problem: Option<&str>,
+    note: Option<Result<&str, &str>>,
+    extra: Option<&str>,
+    form: impl FnOnce(&mut Ui),
+) -> FormButtons {
     // Buttons first, from the bottom up, so inline errors never push them
     // out of the window: the form scrolls instead.
-    let (mut save, mut cancel) = (false, false);
+    let mut clicked = FormButtons::default();
     ui.with_layout(Layout::bottom_up(Align::Max), |ui| {
-        ui.horizontal(|ui| {
+        let bar = vec2(ui.available_width(), ROW);
+        ui.allocate_ui_with_layout(bar, Layout::left_to_right(Align::Center), |ui| {
+            if let Some(extra) = extra {
+                clicked.extra = theme::button(ui, extra, true, false).clicked();
+            }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                cancel = theme::button(ui, "Cancel", true, false).clicked();
-                save = theme::button(ui, "Save", true, true).clicked();
+                clicked.cancel = theme::button(ui, "Cancel", true, false).clicked();
+                clicked.save = theme::button(ui, "Save", true, true).clicked();
             });
         });
-        if let Some(problem) = problem {
-            theme::warning(ui, 0.0, problem);
+        match (problem, note) {
+            (Some(problem), _) | (None, Some(Err(problem))) => theme::warning(ui, 0.0, problem),
+            (None, Some(Ok(note))) => {
+                ui.horizontal(|ui| {
+                    ui.add(egui::Label::new(note).wrap());
+                });
+            }
+            (None, None) => {}
         }
         ui.with_layout(Layout::top_down(Align::Min), |ui| {
             egui::ScrollArea::vertical()
@@ -649,7 +749,7 @@ fn form_screen(ui: &mut Ui, problem: Option<&str>, form: impl FnOnce(&mut Ui)) -
                 .show(ui, form);
         });
     });
-    (save, cancel)
+    clicked
 }
 
 pub(crate) const LABEL_W: f32 = 22.0 * U;
@@ -677,6 +777,13 @@ pub(crate) fn field_w(ui: &Ui, button: bool) -> f32 {
 fn form(ui: &mut Ui, s: &mut Settings) {
     let indent = LABEL_W + ui.spacing().item_spacing.x;
     let emulators = s.library.emulators();
+    // A written tag says what the saved entry was, whatever the form now
+    // says (a changed launch type needs the tag written again).
+    let saved = (s.library.config(), s.form.id.as_ref());
+    let written = match saved {
+        (Some(config), Some(id)) => config.by_id(id).map(|g| payload_text(&tag_payload(g))),
+        _ => None,
+    };
     let f = &mut s.form;
     let mut browse = None;
     let mut write = false;
@@ -779,16 +886,17 @@ fn form(ui: &mut Ui, s: &mut Settings) {
     ui.add_space(U);
     theme::group(ui, "Tag", |ui| {
         ui.horizontal(|ui| {
-            theme::form_label(ui, LABEL_W, "Bound to");
+            theme::form_label(ui, LABEL_W, "Detected by");
             let (well, _) = ui.allocate_exact_size(vec2(field_w(ui, true), ROW), Sense::hover());
             theme::sunken(ui.painter(), well, FACE);
-            let uid = f.uid.as_deref().map(format_uid);
-            let x = theme::mark(ui.painter(), well, well.min.x + 2.0 * U, uid.is_some(), INK);
-            let (text, color) = match &uid {
-                Some(uid) => (uid.as_str(), INK),
-                None => ("not bound", SHADE),
+            let uid = f.uid.as_deref().map(|u| format!("UID {}", format_uid(u)));
+            let tag = uid.clone().or(written.filter(|_| f.tag_written));
+            let x = theme::mark(ui.painter(), well, well.min.x + 2.0 * U, tag.is_some(), INK);
+            let (text, color) = match &tag {
+                Some(tag) => (tag.as_str(), INK),
+                None => (NO_TAG, SHADE),
             };
-            theme::label_at(ui, well, x, text, color);
+            theme::label_fit(ui, well, x, well.max.x - U, text, color);
             if theme::button(ui, "Unbind", uid.is_some(), false).clicked() {
                 f.uid = None;
             }

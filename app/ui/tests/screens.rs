@@ -445,10 +445,10 @@ fn emulator_games_are_labelled_and_edited_in_the_form() {
     let mut h = harness(host.clone(), 1.0);
     h.run();
     let mk8 = h.state().library.games().last().unwrap().clone();
-    assert_eq!(settings::launch_label(&mk8.plan), "Emulator");
+    let emulators = h.state().library.emulators().to_vec();
     assert_eq!(
-        settings::launch_label(&LaunchPlan::Steam { appid: 620 }),
-        "Steam 620"
+        settings::launch_label(&mk8.plan, &emulators),
+        "Eden: mk8.nsp"
     );
     h.get_by_label("MK8").click();
     h.run();
@@ -490,7 +490,10 @@ fn steam_shortcuts_are_labelled_and_edited_in_the_form() {
     let mut h = harness(host.clone(), 1.0);
     h.run();
     let game = h.state().library.games().last().unwrap().clone();
-    assert_eq!(settings::launch_label(&game.plan), "Steam shortcut");
+    assert_eq!(
+        settings::launch_label(&game.plan, &[]),
+        "Steam shortcut 3237998081"
+    );
     let i = h.state().library.games().len() - 1;
     h.state_mut().edit(i);
     h.run();
@@ -631,7 +634,11 @@ fn wizard_adds_a_steam_game_by_writing_the_tag_while_launches_wait() {
     // Saving gave the reader back; the run loop notices on its next tick.
     run_loop.pump(1);
     assert!(!run_loop.server.is_active());
-    assert!(host.config().contains("steam_appid = 1794680"));
+    let text = host.config();
+    assert!(
+        text.contains("steam_appid = 1794680\ntag = \"written\""),
+        "{text}"
+    );
     assert_eq!(host.saves.load(Ordering::SeqCst), 1);
     h.get_by_label("Launch now").click();
     h.run();
@@ -782,6 +789,137 @@ fn write_tag_from_the_edit_form_and_cancel_goes_back_to_it() {
 }
 
 #[test]
+fn write_tag_from_the_edit_form_records_the_written_tag() {
+    let (host, mut run_loop) = host_with_loop("rewrite-tag");
+    let mut h = harness(host.clone(), 1.0);
+    h.state_mut().edit(3);
+    h.run();
+    assert_eq!(settings::tag_label(&h.state().library.games()[3]), None);
+    h.get_by_label("Write tag...").click();
+    h.run();
+    run_loop.pump(1);
+    h.run();
+    run_loop.line("insert 04a1b2c3d4e5f6");
+    run_loop.pump(2);
+    h.run();
+    run_loop.pump(1);
+    h.run();
+    h.get_by_label("SAVED");
+    let text = host.config();
+    assert!(
+        text.contains("name = \"Hollow Knight\"\nsteam_appid = 367520\ntag = \"written\""),
+        "{text}"
+    );
+    let game = h.state().library.games()[3].clone();
+    assert_eq!(
+        settings::tag_label(&game).as_deref(),
+        Some("steam://367520")
+    );
+}
+
+#[test]
+fn library_shows_how_each_game_is_detected() {
+    let host = host("tag-states");
+    // Factorio's tag was written; Hades has a UID too, which wins.
+    let text = host.config();
+    let text = text
+        .replace(
+            "steam_appid = 427520\n",
+            "steam_appid = 427520\ntag = \"written\"\n",
+        )
+        .replace(
+            "steam_appid = 1145360\n",
+            "steam_appid = 1145360\ntag = \"written\"\n",
+        )
+        .replace(
+            "args = [\"-iwad\", \"doom2.wad\"]\n",
+            "args = [\"-iwad\", \"doom2.wad\"]\ntag = \"written\"\n",
+        );
+    // DOOM keeps its UID; an exe game written without one shows its id.
+    let text = text.replace("uid = \"04:77:A0:4E:B8:80:00\"\n", "");
+    std::fs::write(host.dir.join("config.toml"), text).unwrap();
+    let mut h = harness(host.clone(), 1.0);
+    h.run();
+    let tag = |id: &str| {
+        let games = h.state().library.games();
+        let game = games.iter().find(|g| g.id.as_str() == id).unwrap();
+        settings::tag_label(game)
+    };
+    assert_eq!(tag("hades").as_deref(), Some("UID 04:A2:3B:1C:5D:80:00"));
+    assert_eq!(tag("factorio").as_deref(), Some("steam://427520"));
+    assert_eq!(tag("doom").as_deref(), Some("id:doom"));
+    assert_eq!(tag("hollow-knight"), None);
+    // Unbinding a UID in the form keeps the written tag.
+    h.state_mut().edit(0);
+    h.run();
+    h.get_by_label("Detected by");
+    h.get_by_label("Unbind").click();
+    h.run();
+    assert!(h.state().form.uid.is_none() && h.state().form.tag_written);
+}
+
+#[test]
+fn launch_labels_show_what_starts_the_game() {
+    use mini_launcher_core::battlenet::Code;
+    use std::path::PathBuf;
+    let label = |plan: LaunchPlan| settings::launch_label(&plan, &[]);
+    assert_eq!(label(LaunchPlan::Steam { appid: 620 }), "steam://620");
+    assert_eq!(
+        label(LaunchPlan::SteamShortcut { appid: 3237998081 }),
+        "Steam shortcut 3237998081"
+    );
+    let code = Code::new("WoWF").unwrap();
+    assert_eq!(label(LaunchPlan::BattleNet { code }), "battlenet://WoWF");
+    for path in ["C:\\Games\\GZDoom\\gzdoom.exe", "/opt/gzdoom/gzdoom.exe"] {
+        let plan = LaunchPlan::Exe {
+            path: PathBuf::from(path),
+            args: vec!["-iwad".into()],
+            cwd: None,
+        };
+        assert_eq!(label(plan), "Program: gzdoom.exe");
+    }
+    // An emulator missing from the list (never in a loaded config) shows
+    // its id.
+    let plan = LaunchPlan::Emulator {
+        emulator: mini_launcher_core::payload::Slug::new("eden").unwrap(),
+        rom: PathBuf::from("D:\\Switch\\Sky Drifter.nsp"),
+        path: PathBuf::from("eden.exe"),
+        args: Vec::new(),
+        cwd: None,
+    };
+    assert_eq!(label(plan), "eden: Sky Drifter.nsp");
+}
+
+#[test]
+fn launch_in_the_edit_form_tries_the_unsaved_options() {
+    let host = host("form-launch");
+    let before = host.config();
+    let mut h = harness(host.clone(), 1.0);
+    h.state_mut().edit(6);
+    h.run();
+    assert_eq!(h.state().form.name, "DOOM (GZDoom)");
+    h.state_mut().form.args = "-iwad plutonia.wad".into();
+    h.get_by_label("Launch").click();
+    h.run();
+    match &host.launches.lock().unwrap()[..] {
+        [LaunchPlan::Exe { args, .. }] => assert_eq!(args, &["-iwad", "plutonia.wad"]),
+        other => panic!("{other:?}"),
+    }
+    h.get_by_label_contains("Launched: check the game started");
+    assert_eq!(h.state().screen, Screen::Edit);
+    assert_eq!(host.saves.load(Ordering::SeqCst), 0);
+    assert_eq!(host.config(), before);
+    // A form that can't make a game shows why and launches nothing.
+    h.state_mut().form.exe = String::new();
+    h.get_by_label("Launch").click();
+    h.run();
+    h.get_by_label("Choose the program to start.");
+    assert!(h.query_by_label_contains("Launched:").is_none());
+    assert_eq!(host.launches.lock().unwrap().len(), 1);
+    assert_eq!(host.config(), before);
+}
+
+#[test]
 fn export_and_import_with_summary_and_confirm() {
     let host = host("import");
     let out = host.dir.join("backup.toml");
@@ -873,7 +1011,10 @@ fn design_screenshots() {
     type Setup = fn(&mut Settings);
     let shots: [(&str, Setup); 18] = [
         ("library", |_| {}),
-        ("edit-game", |s| s.edit(0)),
+        ("edit-game", |s| {
+            s.edit(0);
+            s.launched = Some(Ok(()));
+        }),
         ("add-game-errors", |s| {
             // The edit form for a new entry (Add game opens the wizard).
             s.screen = Screen::Edit;

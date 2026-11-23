@@ -54,6 +54,13 @@ When you insert a cart that has no game yet, the tray shows a **New cart — cli
 notification. Click it to open **Settings** on **Add game**: pick the game, and if the cart is
 still in the reader it is written (or bound) right away.
 
+The library's **LAUNCH** column shows what starts each game (`steam://440`, `Program: game.exe`,
+`Eden: game.nsp`, ...), and its **TAG** column shows how the cart is recognised: `UID 04:A1:...`
+when it's bound by its serial number, what the tag was written with (`steam://<appid>` or
+`id:<name>`), or *no tag yet* (also shown for carts written by an older version, until they're
+written again with **Edit → Write tag...**). In a game's **Edit** form, **Launch** starts the game with
+what's in the form, without saving it, so you can try out launch options first.
+
 **Updating:** run the newer setup; it replaces the installed version and keeps your settings.
 If the tray app is running, setup closes it and starts the new version when it's done. If
 **Settings** is open, setup leaves it alone so nothing you haven't saved is lost: the window comes
