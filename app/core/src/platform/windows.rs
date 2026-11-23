@@ -464,7 +464,8 @@ pub(crate) fn version_info(path: &std::path::Path) -> Option<crate::program::Ver
     if ok == 0 {
         return None;
     }
-    let mut languages: Vec<String> = query(&block, r"\VarFileInfo\Translation", 1)
+    let mut languages: Vec<String> = query(&mut block, r"\VarFileInfo\Translation", 1)
+        .map(|r| block[r].to_vec())
         .unwrap_or_default()
         .as_chunks::<4>()
         .0
@@ -477,10 +478,10 @@ pub(crate) fn version_info(path: &std::path::Path) -> Option<crate::program::Ver
         })
         .collect();
     languages.extend(["040904B0".into(), "040904E4".into()]);
-    let string = |name: &str| {
+    let mut string = |name: &str| {
         languages.iter().find_map(|l| {
-            let bytes = query(&block, &format!(r"\StringFileInfo\{l}\{name}"), 2)?;
-            let units: Vec<u16> = bytes
+            let range = query(&mut block, &format!(r"\StringFileInfo\{l}\{name}"), 2)?;
+            let units: Vec<u16> = block[range]
                 .as_chunks::<2>()
                 .0
                 .iter()
@@ -498,27 +499,48 @@ pub(crate) fn version_info(path: &std::path::Path) -> Option<crate::program::Ver
     })
 }
 
-/// The bytes `VerQueryValueW` finds at `sub` in `block`, clipped to it.
+/// Where in `block` `VerQueryValueW` finds `sub`, clipped to the block.
 /// Its length comes in `unit`s: UTF-16 units (2) for strings, bytes (1)
-/// for the translation table.
-fn query<'b>(block: &'b [u8], sub: &str, unit: usize) -> Option<&'b [u8]> {
+/// for the translation table. `block` is passed mutably: Windows may
+/// convert it in place (16-bit images), so it must not sit behind `&`.
+fn query(block: &mut [u8], sub: &str, unit: usize) -> Option<std::ops::Range<usize>> {
     use windows_sys::Win32::Storage::FileSystem::VerQueryValueW;
 
     let sub = wide(sub);
     let mut ptr = ptr::null_mut();
     let mut len = 0u32;
-    // SAFETY: `block` came from GetFileVersionInfoW; `sub` is NUL-terminated;
-    // the out pointers are valid. The result points into `block`.
-    let ok = unsafe { VerQueryValueW(block.as_ptr().cast(), sub.as_ptr(), &mut ptr, &mut len) };
+    let base = block.as_mut_ptr();
+    // SAFETY: `block` came from GetFileVersionInfoW and is exclusively
+    // borrowed for the call; `sub` is NUL-terminated; the out pointers are
+    // valid. The result points into `block` (checked below).
+    let ok = unsafe { VerQueryValueW(base.cast_const().cast(), sub.as_ptr(), &mut ptr, &mut len) };
     if ok == 0 || ptr.is_null() {
         return None;
     }
-    let start = (ptr as usize).checked_sub(block.as_ptr() as usize)?;
+    let start = (ptr as usize).checked_sub(base as usize)?;
     if start >= block.len() {
         return None;
     }
     let end = start
         .saturating_add((len as usize).saturating_mul(unit))
         .min(block.len());
-    Some(&block[start..end])
+    Some(start..end)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn version_info_reads_a_system_exe() {
+        let windir = std::env::var_os("SystemRoot").unwrap_or_else(|| r"C:\Windows".into());
+        let notepad = PathBuf::from(windir).join(r"System32\notepad.exe");
+        let info = version_info(&notepad).expect("notepad.exe has version info");
+        let description = info.file_description.unwrap_or_default();
+        let product = info.product_name.unwrap_or_default();
+        assert!(!description.trim().is_empty(), "{description:?}");
+        assert!(!product.trim().is_empty(), "{product:?}");
+        assert!(version_info(Path::new(r"C:\no-such-dir\game.exe")).is_none());
+    }
 }

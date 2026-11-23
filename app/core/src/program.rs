@@ -64,7 +64,7 @@ pub fn choose_name(info: &VersionInfo, stem: &str) -> String {
         .find(|s| {
             s.chars().any(char::is_alphanumeric) && !NOT_A_GAME.contains(&s.to_lowercase().as_str())
         })
-        .unwrap_or_else(|| display_name(stem))
+        .unwrap_or_else(|| display_name(&stem.replace(is_format, "")))
 }
 
 /// `s` without control characters, trademark marks and extra spaces, at
@@ -79,12 +79,27 @@ fn clean(s: &str) -> String {
         }
     }
     let s = s.replace(char::is_control, " ");
+    // Invisible direction and format marks could disguise the name.
+    let s = s.replace(is_format, "");
     let s = s.split_whitespace().collect::<Vec<_>>().join(" ");
     s.chars()
         .take(MAX_NAME)
         .collect::<String>()
         .trim()
         .to_owned()
+}
+
+/// Bidi controls, zero-width characters and the BOM: invisible, and able
+/// to make a name read differently from what it is.
+fn is_format(c: char) -> bool {
+    matches!(
+        c,
+        '\u{200B}'..='\u{200F}'
+            | '\u{202A}'..='\u{202E}'
+            | '\u{2060}'..='\u{2069}'
+            | '\u{061C}'
+            | '\u{FEFF}'
+    )
 }
 
 #[cfg(test)]
@@ -144,6 +159,18 @@ mod tests {
             choose_name(&info(Some(&wide), None), "x").chars().count(),
             MAX_NAME
         );
+    }
+
+    #[test]
+    fn bidi_and_zero_width_marks_are_removed() {
+        let tricky = "\u{202E}Slay\u{200B} the\u{2066} Spire\u{2069}\u{200F}\u{FEFF}";
+        assert_eq!(
+            choose_name(&info(Some(tricky), None), "x"),
+            "Slay the Spire"
+        );
+        // Marks alone are not a name.
+        let marks = info(Some("\u{202A}\u{200E}"), Some("\u{2067}"));
+        assert_eq!(choose_name(&marks, "do\u{202E}om"), "doom");
     }
 
     #[test]
