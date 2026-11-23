@@ -17,6 +17,7 @@ pub mod payload;
 mod platform;
 pub mod pn532;
 pub mod ports;
+pub mod program;
 pub mod reader;
 pub mod reconnect;
 pub mod runner;

@@ -125,6 +125,9 @@ pub struct Wizard {
     pub slug: String,
     /// Whether `slug` still follows the name.
     pub auto_slug: bool,
+    /// Whether the program form's name was filled in from its exe (so
+    /// picking another exe may replace it); cleared when the user types.
+    pub auto_name: bool,
     pub slug_error: Option<String>,
     /// The game being added or tagged.
     pub game: Option<Game>,
@@ -161,6 +164,7 @@ impl Wizard {
             selected: None,
             slug: String::new(),
             auto_slug: true,
+            auto_name: false,
             slug_error: None,
             game: None,
             emu: EmuPick::default(),
@@ -278,9 +282,23 @@ impl Wizard {
         *form = Form::new();
         form.steam = false;
         self.auto_slug = true;
+        self.auto_name = false;
         self.slug_error = None;
         self.follow_name(form, config);
         self.step = Step::Program;
+    }
+
+    /// An exe was picked on the program form: `name` (see
+    /// [`mini_launcher_core::program::exe_name`]) becomes the game's name,
+    /// unless the user typed one.
+    pub fn exe_picked(&mut self, form: &mut Form, name: String, config: &Config) {
+        let typed = !self.auto_name && !form.name.trim().is_empty();
+        if typed || name.trim().is_empty() {
+            return;
+        }
+        form.name = name;
+        self.auto_name = true;
+        self.follow_name(form, config);
     }
 
     /// Keeps the id in step with the name until the user edits it.
@@ -1338,9 +1356,43 @@ mod tests {
             w.payload(),
             Some(Payload::Id(Slug::new("my-hades").unwrap()))
         );
+        // A typed name is kept when an exe is picked.
+        w.exe_picked(&mut form, "Hades Launcher".into(), &config);
+        assert_eq!(form.name, "Hades");
         // No reader in this host: only Skip.
         w.begin(None);
         assert_eq!(w.problem.as_deref(), Some(NO_READER));
+    }
+
+    #[test]
+    fn a_picked_exe_names_the_program_until_the_user_types_a_name() {
+        let r = rig("exe-name");
+        let config = r.library.config().unwrap().clone();
+        let mut w = Wizard::new(Ok(Vec::new()));
+        let mut form = Form::new();
+        w.program(&mut form, &config);
+        w.exe_picked(&mut form, "Sky Drifter".into(), &config);
+        assert_eq!(
+            (form.name.as_str(), w.slug.as_str()),
+            ("Sky Drifter", "sky-drifter")
+        );
+        // Another exe replaces a name filled in from the last one.
+        w.exe_picked(&mut form, "Hades".into(), &config);
+        assert_eq!(form.name, "Hades");
+        assert_eq!(w.slug, "hades-2", "the library has hades");
+        // Nothing to name it after: the name stays.
+        w.exe_picked(&mut form, " ".into(), &config);
+        assert_eq!(form.name, "Hades");
+        // Once the user types (the view clears auto_name), it is theirs.
+        w.auto_name = false;
+        form.name = "My Tumble".into();
+        w.exe_picked(&mut form, "Sky Drifter".into(), &config);
+        assert_eq!(form.name, "My Tumble");
+        // A name typed and then cleared is filled in again.
+        form.name.clear();
+        w.exe_picked(&mut form, "Sky Drifter".into(), &config);
+        assert_eq!(form.name, "Sky Drifter");
+        assert!(w.auto_name);
     }
 
     const EDEN: &str = "[[emulators]]\nid = \"eden\"\nname = \"Eden\"\nexe = 'C:\\Eden\\eden.exe'\nargs = [\"-g\", \"{rom}\"]\n\n[[games]]\nid = \"tile-tumble\"\nname = \"Tile Tumble\"\nemulator = \"eden\"\nrom = '/roms/tile-tumble.nsp'\n\n";

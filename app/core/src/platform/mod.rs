@@ -67,4 +67,9 @@ mod other {
     pub(crate) fn has_visible_window(_pids: &[u32]) -> bool {
         false
     }
+
+    /// Version info is a Windows resource.
+    pub(crate) fn version_info(_path: &std::path::Path) -> Option<crate::program::VersionInfo> {
+        None
+    }
 }

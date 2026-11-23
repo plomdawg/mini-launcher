@@ -436,3 +436,89 @@ pub(crate) fn has_visible_window(pids: &[u32]) -> bool {
     unsafe { EnumWindows(Some(visit), &mut search as *mut Search as LPARAM) };
     search.found
 }
+
+/// The largest version-info block read (real ones are a few KB).
+const MAX_VERSION_INFO: u32 = 1 << 20;
+
+/// The exe's `FileDescription` and `ProductName`, in the language its
+/// `\VarFileInfo\Translation` lists first, else US English.
+pub(crate) fn version_info(path: &std::path::Path) -> Option<crate::program::VersionInfo> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{GetFileVersionInfoSizeW, GetFileVersionInfoW};
+
+    let path: Vec<u16> = path.as_os_str().encode_wide().collect();
+    if path.contains(&0) {
+        return None;
+    }
+    let path: Vec<u16> = path.into_iter().chain([0]).collect();
+    let mut handle = 0;
+    // SAFETY: `path` is NUL-terminated and outlives the call.
+    let size = unsafe { GetFileVersionInfoSizeW(path.as_ptr(), &mut handle) };
+    if size == 0 || size > MAX_VERSION_INFO {
+        return None;
+    }
+    let mut block = vec![0u8; size as usize];
+    // SAFETY: `block` is `size` bytes, as the call is told. The file is
+    // loaded as data only; none of its code runs.
+    let ok = unsafe { GetFileVersionInfoW(path.as_ptr(), 0, size, block.as_mut_ptr().cast()) };
+    if ok == 0 {
+        return None;
+    }
+    let mut languages: Vec<String> = query(&block, r"\VarFileInfo\Translation", 1)
+        .unwrap_or_default()
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .take(8)
+        .map(|p| {
+            let lang = u16::from_le_bytes([p[0], p[1]]);
+            let codepage = u16::from_le_bytes([p[2], p[3]]);
+            format!("{lang:04X}{codepage:04X}")
+        })
+        .collect();
+    languages.extend(["040904B0".into(), "040904E4".into()]);
+    let string = |name: &str| {
+        languages.iter().find_map(|l| {
+            let bytes = query(&block, &format!(r"\StringFileInfo\{l}\{name}"), 2)?;
+            let units: Vec<u16> = bytes
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|&c| u16::from_le_bytes(c))
+                .take_while(|&u| u != 0)
+                .take(1024)
+                .collect();
+            let s = String::from_utf16_lossy(&units);
+            (!s.trim().is_empty()).then_some(s)
+        })
+    };
+    Some(crate::program::VersionInfo {
+        file_description: string("FileDescription"),
+        product_name: string("ProductName"),
+    })
+}
+
+/// The bytes `VerQueryValueW` finds at `sub` in `block`, clipped to it.
+/// Its length comes in `unit`s: UTF-16 units (2) for strings, bytes (1)
+/// for the translation table.
+fn query<'b>(block: &'b [u8], sub: &str, unit: usize) -> Option<&'b [u8]> {
+    use windows_sys::Win32::Storage::FileSystem::VerQueryValueW;
+
+    let sub = wide(sub);
+    let mut ptr = ptr::null_mut();
+    let mut len = 0u32;
+    // SAFETY: `block` came from GetFileVersionInfoW; `sub` is NUL-terminated;
+    // the out pointers are valid. The result points into `block`.
+    let ok = unsafe { VerQueryValueW(block.as_ptr().cast(), sub.as_ptr(), &mut ptr, &mut len) };
+    if ok == 0 || ptr.is_null() {
+        return None;
+    }
+    let start = (ptr as usize).checked_sub(block.as_ptr() as usize)?;
+    if start >= block.len() {
+        return None;
+    }
+    let end = start
+        .saturating_add((len as usize).saturating_mul(unit))
+        .min(block.len());
+    Some(&block[start..end])
+}

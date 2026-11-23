@@ -215,6 +215,8 @@ fn pick(ui: &mut Ui, s: &mut Settings, c: &mut Clicks) {
     }
 }
 
+/// The program form: the exe first (its name fills in Name and Tag ID),
+/// then the rest.
 fn program(ui: &mut Ui, s: &mut Settings) {
     let label_w = 22.0 * U;
     let indent = label_w + ui.spacing().item_spacing.x;
@@ -237,8 +239,23 @@ fn program(ui: &mut Ui, s: &mut Settings) {
                     }
                 };
                 ui.horizontal(|ui| {
+                    ui.add_space(indent);
+                    let first = f.exe.trim().is_empty();
+                    if theme::button(ui, "Choose program...", true, first).clicked() {
+                        browse = Some(Pick::Exe);
+                    }
+                    ui.colored_label(SHADE, "fills in the name and tag ID");
+                });
+                ui.horizontal(|ui| {
+                    let l = theme::form_label(ui, label_w, "Exe path");
+                    theme::field(ui, &mut f.exe, field_w(ui, false), true, l.id);
+                });
+                note(ui, Field::Exe);
+                ui.horizontal(|ui| {
                     let l = theme::form_label(ui, label_w, "Name");
-                    theme::field(ui, &mut f.name, field_w(ui, false), true, l.id);
+                    if theme::field(ui, &mut f.name, field_w(ui, false), true, l.id).changed() {
+                        w.auto_name = false;
+                    }
                 });
                 note(ui, Field::Name);
                 ui.horizontal(|ui| {
@@ -252,14 +269,6 @@ fn program(ui: &mut Ui, s: &mut Settings) {
                 if let Some(e) = &w.slug_error {
                     theme::warning(ui, indent, e);
                 }
-                ui.horizontal(|ui| {
-                    let l = theme::form_label(ui, label_w, "Exe path");
-                    theme::field(ui, &mut f.exe, field_w(ui, true), true, l.id);
-                    if theme::button(ui, "Browse", true, false).clicked() {
-                        browse = Some(Pick::Exe);
-                    }
-                });
-                note(ui, Field::Exe);
                 ui.horizontal(|ui| {
                     let l = theme::form_label(ui, label_w, "Arguments");
                     theme::field(ui, &mut f.args, field_w(ui, false), true, l.id);
