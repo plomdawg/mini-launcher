@@ -18,6 +18,32 @@ keeps your comments, blank lines and key order. Every save:
 
 To undo the last save, replace `config.toml` with `config.toml.bak`.
 
+## Launch keys
+
+Each `[[games]]` entry has an `id`, a `name`, an optional `uid`, and exactly one way to launch:
+
+| Key | Launches | Notes |
+|---|---|---|
+| `steam_appid = 220` | a Steam store game | `steam://rungameid/<appid>` |
+| `steam_shortcut = 3237998081` | a non-Steam game added to Steam (a *shortcut*) | through Steam, so the Steam overlay, Steam Input and Proton still apply |
+| `battlenet = "WoWF"` | a Battle.net game (Windows only) | the game's launch code |
+| `exe = '...'` | a program | optional `args` and `cwd`; only this key allows them |
+| `emulator = "..."` + `rom = '...'` | a game file on an `[[emulators]]` entry | |
+
+`steam_shortcut` is the shortcut's 32-bit app ID (1 to 4294967295) from Steam's
+`userdata/<account>/config/shortcuts.vdf`; **Add game** fills it in for you, and
+`mini-launcher steam list` prints it next to `(shortcut)`. Mini Launcher opens
+`steam://rungameid/<appid × 2³² + 0x02000000>`, the 64-bit id Steam uses for shortcuts, built
+from that number. A tag for a shortcut says `id:<id>`, like every entry that isn't a Steam store
+game; `steam://` tags only ever launch store games.
+
+```toml
+[[games]]
+id = "doom"
+name = "Doom"
+steam_shortcut = 3237998081
+```
+
 ## Export and import
 
 An export is a single, human-readable TOML file: your `config.toml` as is, with a header table on

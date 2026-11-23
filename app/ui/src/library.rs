@@ -216,6 +216,8 @@ fn chain(e: &dyn std::error::Error) -> String {
 pub enum Field {
     Name,
     AppId,
+    /// A Steam shortcut's appid.
+    ShortcutId,
     /// A Battle.net launch code.
     Code,
     /// The id a new program gets (`id:<slug>` on its tag).
@@ -236,6 +238,11 @@ pub struct Form {
     pub name: String,
     pub steam: bool,
     pub app_id: String,
+    /// Launch a non-Steam game added to Steam (wins over `steam`;
+    /// Battle.net and the emulator win over it).
+    pub shortcut: bool,
+    /// The Steam shortcut's appid, as typed.
+    pub shortcut_id: String,
     /// Launch with Battle.net (wins over `steam`; the emulator wins over it).
     pub battlenet: bool,
     /// The Battle.net launch code, as typed.
@@ -273,6 +280,10 @@ impl Form {
             LaunchPlan::Steam { appid } => {
                 form.steam = true;
                 form.app_id = appid.to_string();
+            }
+            LaunchPlan::SteamShortcut { appid } => {
+                form.shortcut = true;
+                form.shortcut_id = appid.to_string();
             }
             LaunchPlan::BattleNet { code } => {
                 form.battlenet = true;
@@ -330,6 +341,15 @@ impl Form {
                 Err(_) => {
                     let e = "Enter the Battle.net launch code (letters, digits or _, e.g. WoWF).";
                     errors.push((Field::Code, e.to_owned()));
+                    None
+                }
+            }
+        } else if self.shortcut {
+            match self.shortcut_id.trim().parse::<u32>() {
+                Ok(appid) if appid > 0 => Some(LaunchPlan::SteamShortcut { appid }),
+                _ => {
+                    let e = "Enter the shortcut's Steam app ID (a number, as Add game found it).";
+                    errors.push((Field::ShortcutId, e.to_owned()));
                     None
                 }
             }
@@ -635,6 +655,32 @@ mod tests {
         assert!(back.battlenet && !back.steam);
         assert_eq!(back.code, "WoWF");
         assert_eq!(back.to_game(&config).unwrap().plan, game.plan);
+    }
+
+    #[test]
+    fn steam_shortcut_form_round_trips() {
+        let config = Config::default();
+        let mut form = Form::new();
+        form.name = "Doom".into();
+        form.shortcut = true;
+        for bad in ["", "0", "-1", "4294967296", "steam://1", "1 2"] {
+            form.shortcut_id = bad.into();
+            assert_eq!(
+                form.to_game(&config).unwrap_err()[0].0,
+                Field::ShortcutId,
+                "{bad:?}"
+            );
+        }
+        form.shortcut_id = " 3237998081 ".into();
+        let game = form.to_game(&config).unwrap();
+        let plan = LaunchPlan::SteamShortcut {
+            appid: 3_237_998_081,
+        };
+        assert_eq!(game.plan, plan);
+        let back = Form::from_game(&game);
+        assert!(back.shortcut && !back.steam && !back.battlenet);
+        assert_eq!(back.shortcut_id, "3237998081");
+        assert_eq!(back.to_game(&config).unwrap().plan, plan);
     }
 
     #[test]

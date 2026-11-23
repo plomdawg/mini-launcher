@@ -74,7 +74,7 @@ enum Command {
         #[command(subcommand)]
         action: AutostartAction,
     },
-    /// Installed Steam games.
+    /// Installed Steam games and non-Steam shortcuts.
     Steam {
         #[command(subcommand)]
         action: SteamAction,
@@ -89,7 +89,8 @@ enum Command {
 
 #[derive(Debug, Subcommand)]
 enum SteamAction {
-    /// List installed games (appid and name), sorted by name.
+    /// List installed games and non-Steam shortcuts (appid and name),
+    /// sorted by name.
     List,
 }
 

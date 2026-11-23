@@ -15,7 +15,7 @@ use mini_launcher_core::reader::{Simulated, Uid};
 use mini_launcher_core::reconnect::{Backoff, Reconnector};
 use mini_launcher_core::runner::{Notice, Runner};
 use mini_launcher_core::session::{self, SessionServer, Sessions, WriteFailure};
-use mini_launcher_core::steam::SteamGame;
+use mini_launcher_core::steam::{SteamGame, SteamKind};
 use mini_launcher_ui::library::EmuForm;
 use mini_launcher_ui::settings::{self, Host, Pick, ReaderStatus, Screen, Settings};
 use mini_launcher_ui::theme;
@@ -123,6 +123,7 @@ impl Host for TestHost {
                 name: name.into(),
                 installdir: name.into(),
                 library: "C:\\Program Files (x86)\\Steam".into(),
+                kind: SteamKind::App,
             })
             .collect())
     }
@@ -437,6 +438,63 @@ fn emulator_games_are_labelled_and_edited_in_the_form() {
         matches!(hades.plan, LaunchPlan::Emulator { .. }),
         "{hades:?}"
     );
+}
+
+#[test]
+fn steam_shortcuts_are_labelled_and_edited_in_the_form() {
+    let host = host("steam-shortcut");
+    let doom = "\n[[games]]\nid = \"gzdoom\"\nname = \"GZDoom\"\nsteam_shortcut = 3237998081\n";
+    std::fs::write(host.dir.join("config.toml"), host.config() + doom).unwrap();
+    let mut h = harness(host.clone(), 1.0);
+    h.run();
+    let game = h.state().library.games().last().unwrap().clone();
+    assert_eq!(settings::launch_label(&game.plan), "Steam shortcut");
+    let i = h.state().library.games().len() - 1;
+    h.state_mut().edit(i);
+    h.run();
+    assert_eq!(h.state().screen, Screen::Edit);
+    h.get_by_label("Shortcut ID");
+    assert_eq!(h.state().form.shortcut_id, "3237998081");
+    h.state_mut().form.shortcut_id = "x".into();
+    h.get_by_label("Save").click();
+    h.run();
+    assert_eq!(h.state().screen, Screen::Edit);
+    h.state_mut().form.shortcut_id = "4294967295".into();
+    h.state_mut().form.name = "GZDoom 2".into();
+    h.get_by_label("Save").click();
+    h.run();
+    assert_eq!(h.state().screen, Screen::Library);
+    let text = host.config();
+    assert!(
+        text.contains("name = \"GZDoom 2\"\nsteam_shortcut = 4294967295"),
+        "{text}"
+    );
+
+    // A Steam game can be moved onto a shortcut, and back.
+    h.state_mut().edit(0);
+    h.run();
+    h.get_by_label("Steam shortcut").click();
+    h.run();
+    h.state_mut().form.shortcut_id = "3237998081".into();
+    h.get_by_label("Save").click();
+    h.run();
+    let hades = h.state().library.games()[0].clone();
+    assert_eq!(
+        hades.plan,
+        LaunchPlan::SteamShortcut {
+            appid: 3_237_998_081
+        }
+    );
+    h.state_mut().edit(0);
+    h.run();
+    h.get_by_label("Steam").click();
+    h.run();
+    h.get_by_label("Steam app ID");
+    h.state_mut().form.app_id = "1145360".into();
+    h.get_by_label("Save").click();
+    h.run();
+    let hades = h.state().library.games()[0].clone();
+    assert_eq!(hades.plan, LaunchPlan::Steam { appid: 1145360 });
 }
 
 #[test]

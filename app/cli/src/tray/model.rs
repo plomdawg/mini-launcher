@@ -324,6 +324,11 @@ pub const CONFIG_TEMPLATE: &str = r#"# Mini Launcher library. Changes are picked
 # battlenet = "WoWF"              # Battle.net launch code
 #
 # [[games]]
+# id = "doom"
+# name = "Doom"
+# steam_shortcut = 3237998081     # a non-Steam game added to Steam
+#
+# [[games]]
 # id = "my-game"
 # name = "My Game"
 # exe = 'C:\Games\MyGame\game.exe'

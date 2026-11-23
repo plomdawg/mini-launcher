@@ -20,7 +20,7 @@ use mini_launcher_core::launch::LaunchPlan;
 use mini_launcher_core::payload::{Payload, Slug};
 use mini_launcher_core::reader::Uid;
 use mini_launcher_core::session::{SessionClient, Update, WriteFailure};
-use mini_launcher_core::steam::SteamGame;
+use mini_launcher_core::steam::{SteamGame, SteamKind};
 
 #[cfg(test)]
 use crate::library::Field;
@@ -58,7 +58,7 @@ impl Link for SessionClient {
 pub struct Installed {
     pub name: String,
     pub plan: LaunchPlan,
-    /// The STORE column: `Steam 620`, `Battle.net WoWF`.
+    /// The STORE column: `Steam 620`, `Steam shortcut`, `Battle.net WoWF`.
     pub store: String,
 }
 
@@ -185,13 +185,21 @@ impl Wizard {
         }
     }
 
-    /// Every installed game (Steam, then Battle.net), unfiltered.
+    /// Every installed game (Steam apps and shortcuts, then Battle.net),
+    /// unfiltered.
     pub fn installed(&self) -> Vec<Installed> {
         let steam = self.steam.as_deref().unwrap_or_default();
-        let steam = steam.iter().map(|g| Installed {
-            name: g.name.clone(),
-            plan: LaunchPlan::Steam { appid: g.appid },
-            store: format!("Steam {}", g.appid),
+        let steam = steam.iter().map(|g| match g.kind {
+            SteamKind::App => Installed {
+                name: g.name.clone(),
+                plan: LaunchPlan::Steam { appid: g.appid },
+                store: format!("Steam {}", g.appid),
+            },
+            SteamKind::Shortcut => Installed {
+                name: g.name.clone(),
+                plan: LaunchPlan::SteamShortcut { appid: g.appid },
+                store: "Steam shortcut".to_owned(),
+            },
         });
         let battlenet = self.battlenet.iter().map(|g| Installed {
             name: g.name.clone(),
@@ -204,22 +212,30 @@ impl Wizard {
     }
 
     /// The installed games matching the search, case-insensitively, by
-    /// name, Steam appid or Battle.net code.
+    /// name, Steam appid (or shortcut appid) or Battle.net code.
     pub fn filtered(&self) -> Vec<Installed> {
         let needle = self.search.trim().to_lowercase();
         let mut games = self.installed();
         games.retain(|g| {
             let key = match &g.plan {
-                LaunchPlan::Steam { appid } => appid.to_string(),
+                LaunchPlan::Steam { appid } | LaunchPlan::SteamShortcut { appid } => {
+                    appid.to_string()
+                }
                 LaunchPlan::BattleNet { code } => code.as_str().to_lowercase(),
                 _ => String::new(),
             };
             g.name.to_lowercase().contains(&needle) || key == needle
         });
-        // By store groups Battle.net and Steam games, each by name.
+        // By store groups Battle.net games, Steam games and Steam
+        // shortcuts, each by name.
         let by_store = self.sort.column == 1;
         games.sort_by_cached_key(|g| {
-            let store = by_store.then(|| g.store.split(' ').next().unwrap_or_default().to_owned());
+            let store = by_store.then_some(match g.plan {
+                LaunchPlan::BattleNet { .. } => "Battle.net",
+                LaunchPlan::Steam { .. } => "Steam",
+                LaunchPlan::SteamShortcut { .. } => "Steam shortcut",
+                _ => "",
+            });
             (store, g.name.to_lowercase())
         });
         if self.sort.descending {
@@ -786,7 +802,7 @@ fn describe(
                 let games = steam.as_deref().unwrap_or_default();
                 games
                     .iter()
-                    .find(|g| g.appid == *appid)
+                    .find(|g| g.kind == SteamKind::App && g.appid == *appid)
                     .map(|g| g.name.clone())
             }),
         Payload::Id(slug) => config.and_then(|c| c.by_id(slug)).map(|g| g.name.clone()),
@@ -948,6 +964,7 @@ mod tests {
                 name: name.into(),
                 installdir: name.into(),
                 library: "C:\\Steam".into(),
+                kind: SteamKind::App,
             })
             .collect()
     }
@@ -1614,5 +1631,64 @@ mod tests {
             location: "C:\\OW".into(),
         }];
         assert_eq!(w.filtered().len(), 1);
+    }
+
+    #[test]
+    fn steam_shortcuts_are_listed_and_tagged_by_id() {
+        let r = rig("shortcut");
+        let mut config = r.library.config().unwrap().clone();
+        let mut games = steam_games();
+        let doom = 0xC0FF_EE01;
+        games.push(SteamGame {
+            appid: doom,
+            name: "Doom".into(),
+            installdir: r"C:\Games\gzdoom.exe".into(),
+            library: r"C:\Steam\userdata\1".into(),
+            kind: SteamKind::Shortcut,
+        });
+        // A shortcut whose id looks like a store appid on a tag.
+        games.push(SteamGame {
+            appid: 620,
+            name: "Portal Mod".into(),
+            installdir: String::new(),
+            library: r"C:\Steam\userdata\1".into(),
+            kind: SteamKind::Shortcut,
+        });
+        let mut w = Wizard::new(Ok(games));
+        let plan = LaunchPlan::SteamShortcut { appid: doom };
+        let all = w.filtered();
+        assert!(all
+            .iter()
+            .any(|g| g.plan == plan && g.store == "Steam shortcut" && g.name == "Doom"));
+        // By store: Steam games, then shortcuts.
+        w.sort.click(1);
+        let stores: Vec<_> = w.filtered().iter().map(|g| g.store.clone()).collect();
+        assert_eq!(stores[..3], ["Steam 504230", "Steam 1145360", "Steam 620"]);
+        assert_eq!(stores[3..], ["Steam shortcut", "Steam shortcut"]);
+        w.sort.click(1);
+        w.sort.click(0);
+        w.search = doom.to_string();
+        assert_eq!(w.filtered().len(), 1);
+        w.search = "doom".into();
+        w.selected = Some(plan.clone());
+        assert!(w.pick_installed(&config));
+        let game = w.game.clone().unwrap();
+        assert_eq!((game.id.as_str(), &game.plan), ("doom", &plan));
+        // An id: tag, never steam://.
+        assert_eq!(w.payload(), Some(Payload::Id(game.id.clone())));
+        // Once in the library, picking it again finds that entry by plan.
+        let mut existing = game.clone();
+        existing.id = Slug::new("my-doom").unwrap();
+        config.games.push(existing);
+        assert_eq!(
+            Wizard::in_library(Some(&config), &plan).map(|g| g.id.as_str()),
+            Some("my-doom")
+        );
+        assert!(w.pick_installed(&config));
+        assert_eq!(w.game.as_ref().unwrap().id.as_str(), "my-doom");
+        // A steam:// tag names a store app, never a shortcut.
+        let steam = Ok(w.steam.clone().unwrap());
+        let text = describe(&Payload::Steam(620), None, &steam);
+        assert_eq!(text, "\"Portal 2\" (steam://620)");
     }
 }

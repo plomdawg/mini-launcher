@@ -11,13 +11,17 @@ use std::process::{Command, Stdio};
 
 use crate::battlenet::{self, Code};
 use crate::config::Config;
-use crate::payload::{steam_launch_uri, Payload, Slug};
+use crate::payload::{steam_launch_uri, steam_shortcut_uri, Payload, Slug};
 
 /// What to launch.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LaunchPlan {
     /// Open `steam://rungameid/{appid}` with the desktop opener.
     Steam { appid: u32 },
+    /// A non-Steam game added to Steam: open
+    /// `steam://rungameid/<appid << 32 | 0x0200_0000>` like [`LaunchPlan::Steam`],
+    /// so it keeps the Steam overlay, Steam Input and Proton.
+    SteamShortcut { appid: u32 },
     /// Start `Battle.net.exe --exec="launch <code>"` (Windows only), sent
     /// again once the client is up if it wasn't running.
     BattleNet { code: Code },
@@ -44,6 +48,9 @@ impl fmt::Display for LaunchPlan {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             LaunchPlan::Steam { appid } => write!(f, "open {}", steam_launch_uri(*appid)),
+            LaunchPlan::SteamShortcut { appid } => {
+                write!(f, "open {}", steam_shortcut_uri(*appid))
+            }
             LaunchPlan::BattleNet { code } => write!(f, "launch Battle.net game {code}"),
             LaunchPlan::Exe { path, args, cwd } => write_run(f, path, args, cwd),
             LaunchPlan::Emulator {
@@ -140,6 +147,7 @@ pub fn execute(plan: &LaunchPlan, dry_run: bool) -> std::io::Result<Outcome> {
         // opener) on Linux — never the `steam` binary, which Flatpak Steam
         // lacks. The URI is rebuilt from the number, never taken from the tag.
         LaunchPlan::Steam { appid } => open::that_detached(steam_launch_uri(*appid))?,
+        LaunchPlan::SteamShortcut { appid } => open::that_detached(steam_shortcut_uri(*appid))?,
         // The code is validated (letters, digits, `_`), so the raw argument
         // can't break out of its quotes.
         LaunchPlan::BattleNet { code } => {
@@ -309,6 +317,12 @@ mod tests {
             code: Code::new("WoWF").unwrap(),
         };
         assert_eq!(bnet.to_string(), "launch Battle.net game WoWF");
+        let shortcut = LaunchPlan::SteamShortcut { appid: 0xC0FF_EE01 };
+        assert_eq!(
+            shortcut.to_string(),
+            "open steam://rungameid/13907095862439313408"
+        );
+        assert_eq!(execute(&shortcut, true).unwrap(), Outcome::DryRun);
         // Dry run never touches the system, even for a path that doesn't exist.
         assert_eq!(execute(&bnet, true).unwrap(), Outcome::DryRun);
         assert_eq!(execute(&steam, true).unwrap(), Outcome::DryRun);
