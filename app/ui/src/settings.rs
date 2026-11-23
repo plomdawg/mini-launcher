@@ -5,7 +5,7 @@
 pub mod backup;
 pub mod emulators;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use egui::{pos2, vec2, Align, Layout, Rect, Sense, Ui};
@@ -15,11 +15,12 @@ use mini_launcher_core::config::{format_uid, Config};
 use mini_launcher_core::emulators::EmulatorPreset;
 use mini_launcher_core::launch::LaunchPlan;
 use mini_launcher_core::payload::Slug;
+use mini_launcher_core::program;
 use mini_launcher_core::steam::SteamGame;
 
 use crate::library::{Field, Form, Library};
 use crate::theme::{self, BIG, BLUE, FACE, INK, PAPER, ROW, SHADE, SIGNAL, TEXT, U};
-use crate::wizard::{Link, Wizard};
+use crate::wizard::{Link, Step, Wizard};
 
 /// What the window needs from the app hosting it (the tray).
 pub trait Host: Send + Sync {
@@ -328,12 +329,20 @@ impl Settings {
         let text = path.display().to_string();
         match pick {
             Pick::Exe => {
-                if self.form.cwd.trim().is_empty() {
+                // The working dir follows the exe until the user sets another.
+                let old_dir = Path::new(self.form.exe.trim()).parent();
+                let cwd = self.form.cwd.trim();
+                if cwd.is_empty() || old_dir.is_some_and(|d| d.as_os_str() == cwd) {
                     if let Some(dir) = path.parent() {
                         self.form.cwd = dir.display().to_string();
                     }
                 }
                 self.form.exe = text;
+                if let (Some(w), Some(config)) = (&mut self.wizard, self.library.config()) {
+                    if w.step == Step::Program {
+                        w.exe_picked(&mut self.form, program::exe_name(&path), config);
+                    }
+                }
             }
             Pick::Cwd => self.form.cwd = text,
             Pick::EmulatorExe => self.emulators.form.exe = text,

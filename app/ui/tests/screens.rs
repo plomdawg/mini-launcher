@@ -338,6 +338,48 @@ fn invalid_form_shows_errors_and_saves_nothing() {
 }
 
 #[test]
+fn a_picked_program_fills_in_its_name_and_tag_id_but_never_a_typed_name() {
+    let mut h = harness(host("exe-first"), 1.0);
+    h.run();
+    h.get_by_label("Add game").click();
+    h.run();
+    h.get_by_label("Program...").click();
+    h.run();
+    h.get_by_label("Choose program...").click();
+    h.run();
+    let pick = h.state_mut().take_browse().map(|(pick, _)| pick);
+    assert_eq!(pick, Some(Pick::Exe));
+    // No such file, so no version info on any OS: named after the file.
+    let games = std::env::temp_dir().join("mini-launcher-no-such-dir");
+    h.state_mut()
+        .picked(Pick::Exe, games.join("Sky Drifter (x64).exe"));
+    h.run();
+    let s = h.state();
+    assert_eq!(s.form.name, "Sky Drifter");
+    assert_eq!(s.wizard.as_ref().unwrap().slug, "sky-drifter");
+    assert_eq!(s.form.cwd, games.display().to_string());
+    // Another pick replaces the filled-in name.
+    h.state_mut().picked(Pick::Exe, games.join("hades.exe"));
+    h.run();
+    assert_eq!(h.state().form.name, "hades");
+    assert_eq!(h.state().wizard.as_ref().unwrap().slug, "hades-2");
+    // A typed name is kept, and the tag ID follows it.
+    h.state_mut().form.name.clear();
+    h.run();
+    h.get_by_label("Name").focus();
+    h.run();
+    h.get_by_label("Name").type_text("Hades Remix");
+    h.run();
+    assert_eq!(h.state().form.name, "Hades Remix");
+    h.state_mut().picked(Pick::Exe, games.join("sky.exe"));
+    h.run();
+    let s = h.state();
+    assert_eq!(s.form.name, "Hades Remix");
+    assert_eq!(s.wizard.as_ref().unwrap().slug, "hades-remix");
+    assert!(s.form.exe.ends_with("sky.exe"));
+}
+
+#[test]
 fn remove_asks_first() {
     let host = host("remove");
     let mut h = harness(host.clone(), 1.0);

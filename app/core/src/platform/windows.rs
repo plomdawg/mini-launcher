@@ -436,3 +436,111 @@ pub(crate) fn has_visible_window(pids: &[u32]) -> bool {
     unsafe { EnumWindows(Some(visit), &mut search as *mut Search as LPARAM) };
     search.found
 }
+
+/// The largest version-info block read (real ones are a few KB).
+const MAX_VERSION_INFO: u32 = 1 << 20;
+
+/// The exe's `FileDescription` and `ProductName`, in the language its
+/// `\VarFileInfo\Translation` lists first, else US English.
+pub(crate) fn version_info(path: &std::path::Path) -> Option<crate::program::VersionInfo> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{GetFileVersionInfoSizeW, GetFileVersionInfoW};
+
+    let path: Vec<u16> = path.as_os_str().encode_wide().collect();
+    if path.contains(&0) {
+        return None;
+    }
+    let path: Vec<u16> = path.into_iter().chain([0]).collect();
+    let mut handle = 0;
+    // SAFETY: `path` is NUL-terminated and outlives the call.
+    let size = unsafe { GetFileVersionInfoSizeW(path.as_ptr(), &mut handle) };
+    if size == 0 || size > MAX_VERSION_INFO {
+        return None;
+    }
+    let mut block = vec![0u8; size as usize];
+    // SAFETY: `block` is `size` bytes, as the call is told. The file is
+    // loaded as data only; none of its code runs.
+    let ok = unsafe { GetFileVersionInfoW(path.as_ptr(), 0, size, block.as_mut_ptr().cast()) };
+    if ok == 0 {
+        return None;
+    }
+    let mut languages: Vec<String> = query(&mut block, r"\VarFileInfo\Translation", 1)
+        .map(|r| block[r].to_vec())
+        .unwrap_or_default()
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .take(8)
+        .map(|p| {
+            let lang = u16::from_le_bytes([p[0], p[1]]);
+            let codepage = u16::from_le_bytes([p[2], p[3]]);
+            format!("{lang:04X}{codepage:04X}")
+        })
+        .collect();
+    languages.extend(["040904B0".into(), "040904E4".into()]);
+    let mut string = |name: &str| {
+        languages.iter().find_map(|l| {
+            let range = query(&mut block, &format!(r"\StringFileInfo\{l}\{name}"), 2)?;
+            let units: Vec<u16> = block[range]
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|&c| u16::from_le_bytes(c))
+                .take_while(|&u| u != 0)
+                .take(1024)
+                .collect();
+            let s = String::from_utf16_lossy(&units);
+            (!s.trim().is_empty()).then_some(s)
+        })
+    };
+    Some(crate::program::VersionInfo {
+        file_description: string("FileDescription"),
+        product_name: string("ProductName"),
+    })
+}
+
+/// Where in `block` `VerQueryValueW` finds `sub`, clipped to the block.
+/// Its length comes in `unit`s: UTF-16 units (2) for strings, bytes (1)
+/// for the translation table. `block` is passed mutably: Windows may
+/// convert it in place (16-bit images), so it must not sit behind `&`.
+fn query(block: &mut [u8], sub: &str, unit: usize) -> Option<std::ops::Range<usize>> {
+    use windows_sys::Win32::Storage::FileSystem::VerQueryValueW;
+
+    let sub = wide(sub);
+    let mut ptr = ptr::null_mut();
+    let mut len = 0u32;
+    let base = block.as_mut_ptr();
+    // SAFETY: `block` came from GetFileVersionInfoW and is exclusively
+    // borrowed for the call; `sub` is NUL-terminated; the out pointers are
+    // valid. The result points into `block` (checked below).
+    let ok = unsafe { VerQueryValueW(base.cast_const().cast(), sub.as_ptr(), &mut ptr, &mut len) };
+    if ok == 0 || ptr.is_null() {
+        return None;
+    }
+    let start = (ptr as usize).checked_sub(base as usize)?;
+    if start >= block.len() {
+        return None;
+    }
+    let end = start
+        .saturating_add((len as usize).saturating_mul(unit))
+        .min(block.len());
+    Some(start..end)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn version_info_reads_a_system_exe() {
+        let windir = std::env::var_os("SystemRoot").unwrap_or_else(|| r"C:\Windows".into());
+        let notepad = PathBuf::from(windir).join(r"System32\notepad.exe");
+        let info = version_info(&notepad).expect("notepad.exe has version info");
+        let description = info.file_description.unwrap_or_default();
+        let product = info.product_name.unwrap_or_default();
+        assert!(!description.trim().is_empty(), "{description:?}");
+        assert!(!product.trim().is_empty(), "{product:?}");
+        assert!(version_info(Path::new(r"C:\no-such-dir\game.exe")).is_none());
+    }
+}
