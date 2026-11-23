@@ -38,7 +38,8 @@ Run the setup. It installs for your user only and never asks for admin rights:
   app, and `mini-launcher.exe`, the command-line tool used below).
 - It adds **Mini Launcher** to the Start menu.
 - **Start Mini Launcher when I sign in** (ticked by default) starts the tray app at login.
-  You can change this later with **Start at login** in the tray menu.
+  You can change this later with **Start at login** in the tray menu, or on the
+  **Settings** screen of the settings window.
 - **Launch Mini Launcher** on the last page starts the tray app right away.
 
 The setup isn't code-signed yet, so Windows SmartScreen may say "Windows protected your PC":
@@ -49,6 +50,20 @@ The tray app runs in the background without a console window: use its notificati
 to open **Settings…**, pause, open the config or logs, turn **Start at login** on or off, or quit. It works like
 `mini-launcher run`, and only one of the two can use the reader at a time. Pausing switches the
 reader's antenna off until you resume; a cart left in the reader does not launch on resume.
+The settings window has the same **Pause** / **Resume** button in its library toolbar.
+
+The settings window's **Settings** button (top right of the library) opens the app preferences:
+
+- **Start Mini Launcher when I sign in**: the same switch as the tray's **Start at login**.
+- **When a cart is already in the reader at startup**: **Wait until it's re-inserted** (the
+  default) records the cart without launching it, so signing in with a cart left in the reader
+  doesn't start a game; take it out and put it back to play. **Launch it** starts it right away.
+  Either way, a cart that stays in while the reader is unplugged and plugged back in is not
+  launched again.
+- **Text size**: 90 % to 150 % for the settings window (it grows to fit).
+- **Library file**: **Import...**, **Export...** and **Folder...** (see `docs/config.md`).
+
+These are saved in `[settings]` in `config.toml`, except start at login (see `docs/config.md`).
 
 When you insert a cart that has no game yet, the tray shows a **New cart — click to add a game**
 notification. Click it to open **Settings** on **Add game**: pick the game, and if the cart is
@@ -239,7 +254,7 @@ Keep the window open while you play; the launcher only works while `run` is runn
 ### Start at login
 
 If you installed with the setup, the tray app already handles this (the setup task or the
-tray's **Start at login**). The commands below are for the console `run` instead; they use the
+tray's **Start at login**, or the settings window's **Settings** screen). The commands below are for the console `run` instead; they use the
 same single start-at-login entry, so enabling one replaces the other.
 
 To start `run` automatically when you sign in (per user, no admin rights needed):

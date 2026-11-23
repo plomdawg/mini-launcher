@@ -2,7 +2,7 @@
 //! `--ignored`) renders the design screenshots in `docs/design/` through wgpu.
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -94,6 +94,8 @@ struct TestHost {
     /// kept so sessions stay open in screenshots.
     server: Mutex<Option<SessionServer>>,
     launches: Mutex<Vec<LaunchPlan>>,
+    paused: AtomicBool,
+    login: AtomicBool,
 }
 
 impl Host for TestHost {
@@ -130,6 +132,19 @@ impl Host for TestHost {
     fn launch(&self, plan: &LaunchPlan) -> Result<(), String> {
         self.launches.lock().unwrap().push(plan.clone());
         Ok(())
+    }
+    fn start_at_login(&self) -> Option<bool> {
+        Some(self.login.load(Ordering::SeqCst))
+    }
+    fn set_start_at_login(&self, on: bool) -> Result<(), String> {
+        self.login.store(on, Ordering::SeqCst);
+        Ok(())
+    }
+    fn paused(&self) -> Option<bool> {
+        Some(self.paused.load(Ordering::SeqCst))
+    }
+    fn set_paused(&self, paused: bool) {
+        self.paused.store(paused, Ordering::SeqCst);
     }
 }
 
@@ -220,6 +235,8 @@ fn host_at(dir: PathBuf) -> (Arc<TestHost>, Loop) {
         sessions,
         server: Mutex::new(Some(server)),
         launches: Mutex::default(),
+        paused: AtomicBool::new(false),
+        login: AtomicBool::new(true),
     });
     let server = host.server.lock().unwrap().take().unwrap();
     let run_loop = Loop {
@@ -1019,6 +1036,8 @@ fn config_folder_moves_and_resets() {
     std::fs::create_dir(&synced).unwrap();
     let mut h = harness(host.clone(), 1.0);
     h.run();
+    h.get_by_label("Settings").click();
+    h.run();
     h.get_by_label("Folder...").click();
     h.run();
     h.get_by_label("Default folder:");
@@ -1049,6 +1068,63 @@ fn config_folder_moves_and_resets() {
     assert_eq!(h.state().library.games().len(), 0);
 }
 
+#[test]
+fn settings_save_boot_behaviour_and_text_size_to_the_config() {
+    let host = host("prefs");
+    let mut h = harness(host.clone(), 1.0);
+    h.run();
+    h.get_by_label("Settings").click();
+    h.run();
+    assert_eq!(h.state().screen, Screen::Settings);
+    // The default: wait for a re-insert, nothing written yet.
+    assert!(!host.config().contains("[settings]"));
+    h.get_by_label("Launch it").click();
+    h.run();
+    let text = host.config();
+    assert!(text.starts_with("# My carts"), "{text}");
+    assert!(
+        text.contains("[settings]\nboot_cart = \"launch\""),
+        "{text}"
+    );
+    assert_eq!(host.saves.load(Ordering::SeqCst), 1);
+    h.get_by_label("150%").click();
+    h.run();
+    assert!(
+        host.config().contains("font_scale = 1.5"),
+        "{}",
+        host.config()
+    );
+    // Applied to the window at once.
+    h.run();
+    assert_eq!(h.ctx.zoom_factor(), 1.5);
+    h.get_by_label("Wait until it's re-inserted").click();
+    h.run();
+    let text = host.config();
+    assert!(text.contains("boot_cart = \"wait\""), "{text}");
+    assert_eq!(host.saves.load(Ordering::SeqCst), 3);
+    // Start at login goes to the host, not the config.
+    h.get_by_label("Start Mini Launcher when I sign in").click();
+    h.run();
+    assert!(!host.login.load(Ordering::SeqCst));
+    assert!(!host.config().contains("login"));
+    h.get_by_label("Back").click();
+    h.run();
+    assert_eq!(h.state().screen, Screen::Library);
+}
+
+#[test]
+fn the_library_pauses_and_resumes_launching() {
+    let host = host("pause");
+    let mut h = harness(host.clone(), 1.0);
+    h.run();
+    h.get_by_label("Pause").click();
+    h.run();
+    assert!(host.paused.load(Ordering::SeqCst));
+    h.get_by_label("Resume").click();
+    h.run();
+    assert!(!host.paused.load(Ordering::SeqCst));
+}
+
 /// `cargo test -p mini-launcher-ui -- --ignored` writes the PNGs (needs a
 /// wgpu adapter; on Linux, Mesa's lavapipe works).
 #[test]
@@ -1057,7 +1133,7 @@ fn design_screenshots() {
     let out = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/design");
     std::fs::create_dir_all(&out).unwrap();
     type Setup = fn(&mut Settings);
-    let shots: [(&str, Setup); 18] = [
+    let shots: [(&str, Setup); 19] = [
         ("library", |_| {}),
         ("edit-game", |s| {
             s.edit(0);
@@ -1161,6 +1237,7 @@ fn design_screenshots() {
             s.emulators.form.args = "-f -g".into();
             s.save_emulator();
         }),
+        ("settings", |s| s.open_prefs()),
         ("config-folder", |s| s.open_folder()),
         ("config-folder-existing", |s| {
             let synced = config_dir(s).parent().unwrap().join("OneDrive");

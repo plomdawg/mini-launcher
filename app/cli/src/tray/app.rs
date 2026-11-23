@@ -15,7 +15,7 @@ use mini_launcher_core::autostart::{self, Status};
 use mini_launcher_core::battlenet::{self, BattleNetGame};
 use mini_launcher_core::config::edit::saved_by_this_process;
 use mini_launcher_core::config::location::{ConfigLocation, POINTER_FILE};
-use mini_launcher_core::config::{self, Config};
+use mini_launcher_core::config::{self, BootCart, Config};
 use mini_launcher_core::launch::{self, LaunchPlan};
 use mini_launcher_core::reconnect::{Backoff, ReaderState, Reconnector, SystemClock};
 use mini_launcher_core::runner::{self, Notice, Runner};
@@ -97,7 +97,6 @@ fn run(log_dir: Option<PathBuf>, mut reopen: usize) -> Result<()> {
     let mut config = model::ConfigStatus::default();
     let exe = std::env::current_exe().context("cannot find this program's path")?;
     let stop = Arc::new(AtomicBool::new(false));
-    let paused = Arc::new(AtomicBool::new(false));
     // Set when "Open config" finds the folder gone: the worker checks again.
     let recheck = Arc::new(AtomicBool::new(false));
     let (tx, rx) = mpsc::channel();
@@ -108,6 +107,9 @@ fn run(log_dir: Option<PathBuf>, mut reopen: usize) -> Result<()> {
         reload: AtomicBool::new(false),
         relocate: AtomicBool::new(false),
         sessions,
+        paused: AtomicBool::new(false),
+        exe: exe.clone(),
+        changed: AtomicBool::new(false),
     });
     // Setup signals this to close the app before it upgrades it.
     let quit_listener = instance::QuitListener::create()
@@ -117,9 +119,9 @@ fn run(log_dir: Option<PathBuf>, mut reopen: usize) -> Result<()> {
     let worker = thread::Builder::new()
         .name("run-loop".into())
         .spawn({
-            let (stop, paused, recheck) = (stop.clone(), paused.clone(), recheck.clone());
+            let (stop, recheck) = (stop.clone(), recheck.clone());
             let host = host.clone();
-            move || work(&stop, &paused, &recheck, &host, server, &tx)
+            move || work(&stop, &recheck, &host, server, &tx)
         })
         .context("cannot start the run loop")?;
 
@@ -170,7 +172,7 @@ fn run(log_dir: Option<PathBuf>, mut reopen: usize) -> Result<()> {
     let mut reader: Option<ReaderState> = None;
     let mut limiter = RateLimiter::new(NOTIFY_GAP);
     let mut refresh = |reader: Option<&ReaderState>, config_problem: Option<&str>| {
-        let is_paused = paused.load(Ordering::Relaxed);
+        let is_paused = host.paused.load(Ordering::Relaxed);
         let (text, ready) = model::reader_cell(reader, is_paused);
         lock(&host.state).1 = ReaderStatus { text, ready };
         let view = model::view(reader, is_paused, config_problem);
@@ -229,8 +231,8 @@ fn run(log_dir: Option<PathBuf>, mut reopen: usize) -> Result<()> {
                 // Opens it, or brings the open one to the front.
                 window.show();
             } else if id == pause.id() {
-                let now_paused = !paused.load(Ordering::Relaxed);
-                paused.store(now_paused, Ordering::Relaxed);
+                let now_paused = !host.paused.load(Ordering::Relaxed);
+                host.paused.store(now_paused, Ordering::Relaxed);
                 tracing::info!(paused = now_paused, "pause toggled from the tray");
                 refresh(reader.as_ref(), config.problem());
             } else if id == open_config.id() {
@@ -269,9 +271,17 @@ fn run(log_dir: Option<PathBuf>, mut reopen: usize) -> Result<()> {
                     }
                 }
             } else if id == start_at_login.id() {
-                toggle_start_at_login(&exe);
+                if let Err(e) = set_start_at_login(&exe, !starts_at_login(&exe)) {
+                    balloon(Level::Warning, "Start at login not changed", &e);
+                }
                 start_at_login.set_checked(starts_at_login(&exe));
             }
+        }
+        // The settings window paused / resumed or changed start at login:
+        // the menu, tooltip and status cell follow, as for the menu items.
+        if host.changed.swap(false, Ordering::Relaxed) {
+            start_at_login.set_checked(starts_at_login(&exe));
+            refresh(reader.as_ref(), config.problem());
         }
         if quit_listener.as_ref().is_some_and(|q| q.requested()) {
             match quit_requests.handle(window.is_open(), Instant::now()) {
@@ -411,6 +421,14 @@ struct TrayHost {
     sessions: Sessions,
     /// Set when the window changed `location.toml`; the worker switches.
     relocate: AtomicBool,
+    /// Pause / Resume (the tray menu's and the window's); the worker reads
+    /// it every poll.
+    paused: AtomicBool,
+    /// This program, for start at login.
+    exe: PathBuf,
+    /// Set when the window paused / resumed or changed start at login; the
+    /// UI thread then updates the menu, tooltip and status cell.
+    changed: AtomicBool,
 }
 
 impl Host for TrayHost {
@@ -446,6 +464,27 @@ impl Host for TrayHost {
         })
     }
 
+    fn start_at_login(&self) -> Option<bool> {
+        Some(starts_at_login(&self.exe))
+    }
+
+    fn set_start_at_login(&self, on: bool) -> Result<(), String> {
+        let result = set_start_at_login(&self.exe, on);
+        self.changed.store(true, Ordering::Relaxed);
+        result
+    }
+
+    fn paused(&self) -> Option<bool> {
+        Some(self.paused.load(Ordering::Relaxed))
+    }
+
+    fn set_paused(&self, paused: bool) {
+        if self.paused.swap(paused, Ordering::Relaxed) != paused {
+            tracing::info!(paused, "pause toggled from the settings window");
+        }
+        self.changed.store(true, Ordering::Relaxed);
+    }
+
     fn moved(&self) {
         // The window shows the new folder at once; the worker follows on
         // its next poll (the same switch as when the folder comes back).
@@ -464,7 +503,6 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 /// in the background so a missing reader never stops the app.
 fn work(
     stop: &AtomicBool,
-    paused: &AtomicBool,
     recheck: &AtomicBool,
     host: &TrayHost,
     mut sessions: SessionServer,
@@ -474,6 +512,16 @@ fn work(
     let mut watch = ConfigWatch::default();
     if watch.switch(Config::location(), &mut runner, tx).is_none() {
         return;
+    }
+    // A cart left in the reader when the app starts (usually at login)
+    // launches only if the config says so. A reconnect later never
+    // relaunches the cart that stayed in (see `Debouncer::disconnect`).
+    match runner.config().settings.boot_cart {
+        BootCart::Wait => {
+            tracing::info!("a cart already in the reader launches when re-inserted");
+            runner.wait_for_reseat();
+        }
+        BootCart::Launch => tracing::info!("a cart already in the reader launches now"),
     }
     let mut reader = Reconnector::unopened(
         AUTO_PORT.to_owned(),
@@ -486,7 +534,7 @@ fn work(
         // Paused: the reader idles with its RF field off (no polling),
         // unless the settings window's wizard has a tag session (then it
         // polls and nothing launches until the session ends).
-        let is_paused = paused.load(Ordering::Relaxed);
+        let is_paused = host.paused.load(Ordering::Relaxed);
         polls = polls.wrapping_add(1);
         // The settings window moved the config folder: follow it now.
         if host.relocate.swap(false, Ordering::Relaxed) {
@@ -726,19 +774,23 @@ fn starts_at_login(exe: &Path) -> bool {
     )
 }
 
-/// Points start-at-login at this exe (no arguments), or turns it off when it
-/// already does.
-fn toggle_start_at_login(exe: &Path) {
-    let result = if starts_at_login(exe) {
-        autostart::disable().map(|()| "disabled".to_owned())
-    } else {
+/// Points start-at-login at this exe (no arguments), or turns it off. Any
+/// thread may call it (the settings window does); the error is for the
+/// caller to show.
+fn set_start_at_login(exe: &Path, on: bool) -> Result<(), String> {
+    let result = if on {
         autostart::enable(exe, &[]).map(|cmd| format!("enabled: {cmd}"))
+    } else {
+        autostart::disable().map(|()| "disabled".to_owned())
     };
     match result {
-        Ok(msg) => tracing::info!("start at login {msg}"),
+        Ok(msg) => {
+            tracing::info!("start at login {msg}");
+            Ok(())
+        }
         Err(e) => {
             tracing::warn!("cannot change start at login: {e}");
-            balloon(Level::Warning, "Start at login not changed", &e.to_string());
+            Err(e.to_string())
         }
     }
 }

@@ -4,6 +4,7 @@
 
 pub mod backup;
 pub mod emulators;
+pub mod prefs;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -51,6 +52,22 @@ pub trait Host: Send + Sync {
     fn moved(&self) {
         self.saved();
     }
+    /// Whether the app starts at login; `None` if this host can't tell
+    /// (the Settings screen then disables the checkbox).
+    fn start_at_login(&self) -> Option<bool> {
+        None
+    }
+    /// Turns start at login on or off.
+    fn set_start_at_login(&self, _on: bool) -> Result<(), String> {
+        Err("start at login is not available here".to_owned())
+    }
+    /// Whether launching is paused; `None` if this host has no run loop
+    /// to pause (the library then shows no Pause button).
+    fn paused(&self) -> Option<bool> {
+        None
+    }
+    /// Pauses or resumes launching (the tray menu's Pause / Resume).
+    fn set_paused(&self, _paused: bool) {}
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -68,6 +85,9 @@ pub enum Screen {
     /// The `[[emulators]]` list, and its edit form.
     Emulators,
     EditEmulator,
+    /// App preferences: start at login, start-up cart, text size (see
+    /// [`prefs`]).
+    Settings,
 }
 
 /// Which path a Browse button fills in.
@@ -108,6 +128,8 @@ pub struct Settings {
     pub launched: Option<Result<(), String>>,
     /// The form as it was launched, to tell when it changed since.
     launched_form: Form,
+    /// The Settings screen.
+    pub prefs: prefs::Prefs,
 }
 
 impl Settings {
@@ -128,6 +150,7 @@ impl Settings {
             emulators: emulators::Emulators::default(),
             launched: None,
             launched_form: Form::new(),
+            prefs: prefs::Prefs::default(),
         }
     }
 
@@ -154,7 +177,11 @@ impl Settings {
     /// unless that would throw something away (a wizard already running,
     /// or an edit form), in which case the window is only focused.
     pub fn from_tray_add(&mut self) {
-        if self.wizard.is_none() && matches!(self.screen, Screen::Library | Screen::Emulators) {
+        let lists = matches!(
+            self.screen,
+            Screen::Library | Screen::Emulators | Screen::Settings
+        );
+        if self.wizard.is_none() && self.transfer.dialog.is_none() && lists {
             self.add();
         }
     }
@@ -402,9 +429,13 @@ impl Settings {
 
 /// The whole window: masthead, screen, status bar.
 pub fn show(ui: &mut Ui, s: &mut Settings) {
-    if matches!(s.screen, Screen::Library | Screen::Emulators) {
+    if matches!(
+        s.screen,
+        Screen::Library | Screen::Emulators | Screen::Settings
+    ) {
         s.refresh();
     }
+    prefs::apply_zoom(ui.ctx(), &s.library);
     if s.screen == Screen::Wizard {
         s.poll_wizard();
         // Updates from the run loop and the folder scan don't wake the
@@ -424,6 +455,7 @@ pub fn show(ui: &mut Ui, s: &mut Settings) {
         (Screen::Emulators, _) => "EMULATORS",
         (Screen::EditEmulator, _) if s.emulators.form.id.is_some() => "EDIT EMULATOR",
         (Screen::EditEmulator, _) => "ADD EMULATOR",
+        (Screen::Settings, _) => "SETTINGS",
     };
     egui::Panel::top("masthead")
         .frame(egui::Frame::NONE.fill(BLUE))
@@ -450,6 +482,7 @@ pub fn show(ui: &mut Ui, s: &mut Settings) {
             Screen::Wizard => crate::wizard_view::show(ui, s),
             Screen::Emulators => emulators::list(ui, s),
             Screen::EditEmulator => emulators::edit(ui, s),
+            Screen::Settings => prefs::show(ui, s),
         });
 }
 
@@ -564,10 +597,14 @@ fn library(ui: &mut Ui, s: &mut Settings) {
             s.open_emulators();
         }
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            backup::toolbar(ui, s);
+            if theme::button(ui, "Settings", true, false).clicked() {
+                s.open_prefs();
+            }
+            prefs::pause_button(ui, s);
         });
     });
     ui.add_space(U);
+    // Export / import (on the Settings screen) can finish here too.
     backup::dialogs(ui, s);
     if let Some(problem) = s.library.problem() {
         let problem = format!("The library can't be shown: {problem}");
