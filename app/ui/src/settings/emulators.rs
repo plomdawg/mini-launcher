@@ -2,7 +2,7 @@
 //! editing it and removing it (refused while games still use it).
 
 use egui::{pos2, vec2, Align, Layout, Rect, Ui};
-use mini_launcher_core::emulators::EDEN;
+use mini_launcher_core::emulators::{EmulatorPreset, PRESETS};
 use mini_launcher_core::launch::LaunchPlan;
 use mini_launcher_core::payload::Slug;
 
@@ -22,6 +22,8 @@ pub struct Emulators {
     /// The form was opened from the add-game wizard: Save and Cancel go
     /// back there.
     pub for_wizard: bool,
+    /// The preset a new entry in the form comes from.
+    pub preset: Option<&'static EmulatorPreset>,
 }
 
 impl Settings {
@@ -34,9 +36,11 @@ impl Settings {
         self.screen = Screen::Emulators;
     }
 
-    /// The form for a new Eden entry, with its exe if it is installed.
-    pub fn add_emulator(&mut self) {
-        self.emulators.form = EmuForm::from_preset(&EDEN, EDEN.detect_exe());
+    /// The form for a new entry from `preset`, with its exe if it is
+    /// installed.
+    pub fn add_emulator(&mut self, preset: &'static EmulatorPreset) {
+        self.emulators.form = EmuForm::from_preset(preset, preset.detect_exe());
+        self.emulators.preset = Some(preset);
         self.screen = Screen::EditEmulator;
     }
 
@@ -44,6 +48,7 @@ impl Settings {
         if let Some(e) = self.library.emulators().get(i) {
             self.emulators.selected = Some(i);
             self.emulators.form = EmuForm::from_emulator(e);
+            self.emulators.preset = None;
             self.screen = Screen::EditEmulator;
         }
     }
@@ -104,8 +109,10 @@ pub(super) fn list(ui: &mut Ui, s: &mut Settings) {
     let editable = s.library.problem().is_none();
     let selected = s.emulators.selected.filter(|_| editable);
     ui.horizontal(|ui| {
-        if theme::button(ui, "Add Eden", editable, false).clicked() {
-            s.add_emulator();
+        for p in PRESETS {
+            if theme::button(ui, &format!("Add {}", p.name), editable, false).clicked() {
+                s.add_emulator(p);
+            }
         }
         if theme::button(ui, "Edit", selected.is_some(), false).clicked() {
             s.edit_emulator(selected.unwrap_or_default());
@@ -148,7 +155,7 @@ pub(super) fn list(ui: &mut Ui, s: &mut Settings) {
     if emulators.is_empty() {
         let at = pos2(body.min.x + 2.0 * U, body.min.y + ROW / 2.0);
         let row = Rect::from_center_size(at, vec2(0.0, ROW));
-        let text = "No emulators yet: click Add Eden.";
+        let text = "No emulators yet: add one above.";
         theme::label_at(ui, row, at.x, text, SHADE);
     }
     if let Some(id) = s.emulators.confirm_remove.clone() {
@@ -188,10 +195,15 @@ pub(super) fn edit(ui: &mut Ui, s: &mut Settings) {
                 browse = theme::button(ui, "Browse", true, false).clicked();
             });
             note(ui, &errors, Field::Exe);
-            if f.id.is_none() && f.exe.is_empty() && !errors.iter().any(|e| e.0 == Field::Exe) {
-                row(ui, "", |ui, _| {
-                    ui.colored_label(SHADE, "Eden was not found: Browse for eden.exe.");
-                });
+            let preset = s.emulators.preset.filter(|_| f.id.is_none());
+            if let Some(p) = preset.filter(|_| f.exe.is_empty()) {
+                if !errors.iter().any(|e| e.0 == Field::Exe) {
+                    let exe = p.exe_names().next().unwrap_or_default();
+                    let text = format!("{} was not found: Browse for {exe}.", p.name);
+                    row(ui, "", |ui, _| {
+                        ui.colored_label(SHADE, text);
+                    });
+                }
             }
             row(ui, "Arguments", |ui, id| {
                 theme::field(ui, &mut f.args, field_w(ui, false), true, id);
