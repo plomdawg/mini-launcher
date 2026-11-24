@@ -182,7 +182,7 @@ pub(super) fn list(ui: &mut Ui, s: &mut Settings) {
 pub(super) fn edit(ui: &mut Ui, s: &mut Settings) {
     let problem = s.emulators.form.problem.clone();
     let mut browse = false;
-    let (save, cancel) = form_screen(ui, problem.as_deref(), |ui| {
+    let clicked = form_screen(ui, problem.as_deref(), None, None, |ui| {
         let f = &mut s.emulators.form;
         let errors = f.errors.clone();
         theme::group(ui, "Emulator", |ui| {
@@ -217,12 +217,12 @@ pub(super) fn edit(ui: &mut Ui, s: &mut Settings) {
     if browse {
         s.browse = Some(Pick::EmulatorExe);
     }
-    if cancel {
+    if clicked.cancel {
         s.screen = match s.emulators.for_wizard {
             true => Screen::Wizard,
             false => Screen::Emulators,
         };
-    } else if save {
+    } else if clicked.save {
         s.save_emulator();
     }
 }

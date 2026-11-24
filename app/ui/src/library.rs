@@ -13,6 +13,8 @@ use mini_launcher_core::emulators::EmulatorPreset;
 use mini_launcher_core::launch::LaunchPlan;
 use mini_launcher_core::payload::Slug;
 
+use crate::wizard::tag_payload;
+
 /// The library as last read from (or written to) the config file.
 pub struct Library {
     location: Option<ConfigLocation>,
@@ -382,13 +384,22 @@ impl Form {
                 })
         };
         match plan {
-            Some(plan) if errors.is_empty() => Ok(Game {
-                id: self.id.clone().unwrap_or_else(|| new_id(name, config)),
-                name: name.to_owned(),
-                uid: self.uid.clone(),
-                plan,
-                tag_written: self.tag_written,
-            }),
+            Some(plan) if errors.is_empty() => {
+                let mut game = Game {
+                    id: self.id.clone().unwrap_or_else(|| new_id(name, config)),
+                    name: name.to_owned(),
+                    uid: self.uid.clone(),
+                    plan,
+                    tag_written: false,
+                };
+                // The written tag still names this game only if it would be
+                // written the same now (e.g. not after a new Steam app ID,
+                // or Steam -> Program): else "no tag yet" until rewritten.
+                let saved = self.id.as_ref().and_then(|id| config.by_id(id));
+                game.tag_written =
+                    self.tag_written && saved.is_some_and(|g| tag_payload(g) == tag_payload(&game));
+                Ok(game)
+            }
             _ => Err(errors),
         }
     }
@@ -694,8 +705,32 @@ mod tests {
         assert!(doom.tag_written);
         let mut form = Form::from_game(doom);
         form.name = "DOOM II".into();
+        form.args = "-iwad plutonia.wad".into();
         assert!(form.to_game(&config).unwrap().tag_written);
         assert!(!Form::new().tag_written);
+        // The tag says id:doom; as a Steam game it would say steam://620.
+        form.steam = true;
+        form.app_id = "620".into();
+        assert!(!form.to_game(&config).unwrap().tag_written);
+        // A new entry has no saved tag to match.
+        let mut new = Form::from_game(doom);
+        new.id = None;
+        assert!(!new.to_game(&config).unwrap().tag_written);
+    }
+
+    #[test]
+    fn a_new_steam_app_id_drops_the_tag_marker() {
+        let text = LIBRARY.replace(
+            "steam_appid = 1145360\n",
+            "steam_appid = 1145360\ntag = \"written\"\n",
+        );
+        let config = Config::parse(&text).unwrap();
+        let mut form = Form::from_game(&config.games[0]);
+        assert!(form.tag_written);
+        form.name = "Hades II".into();
+        assert!(form.to_game(&config).unwrap().tag_written);
+        form.app_id = "999".into();
+        assert!(!form.to_game(&config).unwrap().tag_written);
     }
 
     #[test]
