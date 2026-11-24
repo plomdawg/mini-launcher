@@ -20,6 +20,7 @@ use mini_launcher_core::launch::{self, LaunchPlan};
 use mini_launcher_core::reconnect::{Backoff, ReaderState, Reconnector, SystemClock};
 use mini_launcher_core::runner::{self, Notice, Runner};
 use mini_launcher_core::session::{self, SessionServer, Sessions};
+use mini_launcher_core::sound::{self, Sound};
 use mini_launcher_core::steam::{self, SteamGame};
 use mini_launcher_core::{instance, logs};
 use mini_launcher_ui::settings::{Host, ReaderStatus};
@@ -485,6 +486,10 @@ impl Host for TrayHost {
         self.changed.store(true, Ordering::Release);
     }
 
+    fn play(&self, sound: Sound, volume: u8) {
+        sound::play(sound, volume);
+    }
+
     fn moved(&self) {
         // The window shows the new folder at once; the worker follows on
         // its next poll (the same switch as when the folder comes back).
@@ -530,6 +535,8 @@ fn work(
     );
     let mut last_state = None;
     let mut polls = 0u32;
+    // `[settings.sounds]` as last loaded, for the launch sound.
+    let sounds = Cell::new(runner.config().settings.sounds);
     let next = |runner: &mut Runner, now| {
         // Paused: the reader idles with its RF field off (no polling),
         // unless the settings window's wizard has a tag session (then it
@@ -549,6 +556,7 @@ fn work(
         if saved || polls.is_multiple_of(CONFIG_CHECK_POLLS) {
             watch.check(runner, recheck.swap(false, Ordering::Relaxed), tx)?;
         }
+        sounds.set(runner.config().settings.sounds);
         let tick = sessions.tick(&mut reader, runner, is_paused, now);
         if last_state.as_ref() != Some(reader.state()) {
             last_state = Some(reader.state().clone());
@@ -556,7 +564,12 @@ fn work(
         }
         Some(tick)
     };
-    let notify = |notice| tx.send(Update::Notice(notice)).map_err(drop);
+    let notify = |notice| {
+        if let Some(cue) = model::notice_sound(&notice, &sounds.get()) {
+            sound::play(cue, sounds.get().volume);
+        }
+        tx.send(Update::Notice(notice)).map_err(drop)
+    };
     // A send error means the UI is gone: stop quietly.
     let _ = runner::poll_loop(&mut runner, stop, &mut SystemClock, next, notify);
 }

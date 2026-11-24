@@ -1,5 +1,5 @@
 //! The Settings screen: app preferences (start at login, a cart left in the
-//! reader at start-up, text size), the library file (import / export /
+//! reader at start-up, text size, sound effects), the library file (import / export /
 //! folder), and the Pause button the library toolbar shows.
 //!
 //! Preferences other than start at login live in `[settings]` in
@@ -7,7 +7,10 @@
 //! change; start at login is the Windows "Run" entry the tray manages.
 
 use egui::{Align, Context, Layout, Ui};
-use mini_launcher_core::config::{self, BootCart, FONT_SCALE_MAX, FONT_SCALE_MIN};
+use mini_launcher_core::config::{
+    self, BootCart, Sounds, FONT_SCALE_MAX, FONT_SCALE_MIN, VOLUME_MAX,
+};
+use mini_launcher_core::sound::Sound;
 
 use super::{backup, Screen, Settings};
 use crate::library::Library;
@@ -100,6 +103,7 @@ pub(super) fn show(ui: &mut Ui, s: &mut Settings) {
     let prefs = s.library.settings();
     let login = s.host.start_at_login();
     let (mut login_to, mut boot_to, mut size_to) = (None, None, None);
+    let (mut sounds_to, mut test) = (None, None);
     egui::ScrollArea::vertical()
         .auto_shrink(false)
         .show(ui, |ui| {
@@ -143,9 +147,8 @@ pub(super) fn show(ui: &mut Ui, s: &mut Settings) {
                     ui.colored_label(SHADE, "(this window)");
                 });
             });
-            // #162 adds the sound controls here (they edit `settings.sounds`).
             theme::group(ui, "Sounds", |ui| {
-                ui.colored_label(SHADE, "Sound settings come in a later version.");
+                sounds_to = sound_controls(ui, readable, &prefs.sounds, &mut test);
             });
             theme::group(ui, "Library file", |ui| {
                 ui.horizontal(|ui| {
@@ -163,4 +166,98 @@ pub(super) fn show(ui: &mut Ui, s: &mut Settings) {
     if let Some(size) = size_to.filter(|&z| z != prefs.font_scale) {
         s.save_prefs(|p| p.font_scale = size);
     }
+    if let Some((sounds, preview)) = sounds_to.filter(|(to, _)| *to != prefs.sounds) {
+        s.save_prefs(|p| p.sounds = sounds);
+        // Let the user hear what they turned on, at the new volume.
+        if let Some(sound) = preview.filter(|&p| sounds.plays(p)) {
+            s.host.play(sound, sounds.volume);
+        }
+    }
+    if let Some(sound) = test {
+        // An explicit Test plays even with sounds off.
+        s.host.play(sound, prefs.sounds.volume);
+    }
+}
+
+/// The events on the Sounds group, with their check labels.
+pub const SOUND_EVENTS: [(Sound, &str); 5] = [
+    (Sound::Waiting, "Waiting for tag"),
+    (Sound::Writing, "Writing"),
+    (Sound::Success, "Success"),
+    (Sound::Failure, "Failure"),
+    (Sound::Launch, "Game launch"),
+];
+
+/// How much one segment of the volume meter (and `-` / `+`) is worth.
+const VOLUME_STEP: u8 = 10;
+
+/// The Sounds group: master switch, volume and one switch per event.
+/// Returns the changed settings with the sound to preview, if any; `test`
+/// is set when the Test button was clicked.
+fn sound_controls(
+    ui: &mut Ui,
+    readable: bool,
+    now: &Sounds,
+    test: &mut Option<Sound>,
+) -> Option<(Sounds, Option<Sound>)> {
+    let mut to = None;
+    let on = readable && now.enabled;
+    ui.horizontal(|ui| {
+        if theme::check(ui, readable && now.enabled, "Play sounds", readable).clicked() {
+            to = Some((
+                Sounds {
+                    enabled: !now.enabled,
+                    ..*now
+                },
+                Some(Sound::Success),
+            ));
+        }
+        ui.add_space(4.0 * U);
+        ui.label("Volume");
+        let volume = |v: u8| {
+            let sounds = Sounds {
+                volume: v.min(VOLUME_MAX),
+                ..*now
+            };
+            Some((sounds, Some(Sound::Success)))
+        };
+        let down = now.volume.saturating_sub(1) / VOLUME_STEP * VOLUME_STEP;
+        if theme::small_button(ui, "-", on && now.volume > 0).clicked() {
+            to = volume(down);
+        }
+        let steps = usize::from(VOLUME_MAX / VOLUME_STEP);
+        let lit = usize::from(now.volume / VOLUME_STEP);
+        if let (_, Some(n)) = theme::level(ui, lit, steps, on, "Volume") {
+            to = volume(n as u8 * VOLUME_STEP);
+        }
+        let up = (now.volume / VOLUME_STEP + 1) * VOLUME_STEP;
+        if theme::small_button(ui, "+", on && now.volume < VOLUME_MAX).clicked() {
+            to = volume(up);
+        }
+        ui.label(format!("{}%", now.volume));
+        ui.add_space(4.0 * U);
+        if theme::button(ui, "Test", readable && now.volume > 0, false).clicked() {
+            *test = Some(Sound::Success);
+        }
+    });
+    ui.horizontal_wrapped(|ui| {
+        ui.add_space(3.0 * U);
+        for (sound, label) in SOUND_EVENTS {
+            let mut next = *now;
+            let flag = match sound {
+                Sound::Waiting => &mut next.waiting,
+                Sound::Writing => &mut next.writing,
+                Sound::Success => &mut next.success,
+                Sound::Failure => &mut next.failure,
+                Sound::Launch => &mut next.launch,
+            };
+            let was = *flag;
+            if theme::check(ui, readable && was, label, on).clicked() && on {
+                *flag = !was;
+                to = Some((next, (!was).then_some(sound)));
+            }
+            ui.add_space(2.0 * U);
+        }
+    });
+    to
 }

@@ -61,6 +61,11 @@ The settings window's **Settings** button (top right of the library) opens the a
   Either way, a cart that stays in while the reader is unplugged and plugged back in is not
   launched again.
 - **Text size**: 90 % to 150 % for the settings window (it grows to fit).
+- **Sounds**: short retro sound effects. **Play sounds** turns them all on or off, **Volume**
+  sets their level (**-** / **+** or click the meter; **Test** plays the "saved" jingle), and one
+  box per event turns that sound off: **Waiting for tag**, **Writing**, **Success**, **Failure**
+  (while writing a tag in **Add game** or **Write tag...**) and **Game launch** (when a cart
+  starts a game).
 - **Library file**: **Import...**, **Export...** and **Folder...** (see `docs/config.md`).
 
 These are saved in `[settings]` in `config.toml`, except start at login (see `docs/config.md`).
