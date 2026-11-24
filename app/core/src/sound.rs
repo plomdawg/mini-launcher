@@ -1,5 +1,5 @@
-//! Sound effects: short chiptune cues synthesized in code (pulse waves,
-//! 8-bit-style arpeggios and sweeps), so no audio files or audio crates.
+//! Sound effects: short, soft chimes synthesized in code (bell-like notes
+//! in a major key), so no audio files or audio crates.
 //!
 //! [`wav`] builds a cue as an in-memory 16-bit mono WAV with the volume
 //! applied to the samples; [`play`] hands it to the OS (`PlaySoundW` on
@@ -11,15 +11,15 @@ use crate::config::{Sounds, VOLUME_MAX};
 /// Something the app can make a noise about.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Sound {
-    /// The add-game wizard is waiting for a tag: a "ready" chirp.
+    /// The add-game wizard is waiting for a tag: a "ready" chime.
     Waiting,
-    /// A tag write started: a rising arpeggio.
+    /// A tag write started: a quick rising run.
     Writing,
-    /// The tag was written (or bound): a coin jingle.
+    /// The tag was written (or bound): a major arpeggio.
     Success,
-    /// The write failed: a low descending buzz.
+    /// The write failed: a gentle falling third.
     Failure,
-    /// A cart launched a game: a power-on sweep.
+    /// A cart launched a game: a pentatonic sparkle.
     Launch,
 }
 
@@ -32,54 +32,55 @@ impl Sound {
         Sound::Launch,
     ];
 
-    /// The notes, in order.
-    fn tones(self) -> &'static [Tone] {
+    /// The notes. They may overlap: each rings on under the next.
+    fn notes(self) -> &'static [Note] {
         match self {
-            Sound::Waiting => {
-                const {
-                    &[
-                        Tone::note(E6, 0.045, 0.25, 0.6),
-                        Tone::rest(0.02),
-                        Tone::note(B6, 0.07, 0.25, 0.6).fading(),
-                    ]
-                }
-            }
+            // A soft rising fourth: "ding-dong, ready".
+            Sound::Waiting => const { &[Note::at(0.0, G5, 0.12), Note::at(0.09, C6, 0.3)] },
+            // A quick, light climb while the tag is written.
             Sound::Writing => {
                 const {
                     &[
-                        Tone::note(C5, 0.055, 0.5, 0.8),
-                        Tone::note(E5, 0.055, 0.5, 0.8),
-                        Tone::note(G5, 0.055, 0.5, 0.8),
-                        Tone::note(C6, 0.09, 0.5, 0.8).fading(),
+                        Note::at(0.0, C5, 0.1),
+                        Note::at(0.06, E5, 0.1),
+                        Note::at(0.12, G5, 0.2),
                     ]
                 }
             }
+            // A bright major arpeggio that rings out: "ta-da!".
             Sound::Success => {
                 const {
                     &[
-                        Tone::note(B5, 0.075, 0.5, 1.0),
-                        Tone::note(E6, 0.4, 0.5, 1.0).fading(),
+                        Note::at(0.0, C5, 0.15),
+                        Note::at(0.07, E5, 0.15),
+                        Note::at(0.14, G5, 0.15),
+                        Note::at(0.21, C6, 0.34),
                     ]
                 }
             }
-            Sound::Failure => {
-                const {
-                    &[
-                        Tone::note(185.0, 0.14, 0.125, 1.0),
-                        Tone::rest(0.04),
-                        Tone::slide(147.0, 92.0, 0.32, 0.125, 1.0).fading(),
-                    ]
-                }
-            }
+            // A gentle falling third: "uh-oh", not an alarm.
+            Sound::Failure => const { &[Note::at(0.0, E5, 0.16), Note::at(0.15, C5, 0.33)] },
+            // A quick pentatonic sparkle up to a held high note.
             Sound::Launch => {
                 const {
                     &[
-                        Tone::slide(220.0, 1760.0, 0.26, 0.25, 0.8),
-                        Tone::rest(0.03),
-                        Tone::note(A6, 0.1, 0.5, 0.8).fading(),
+                        Note::at(0.0, C5, 0.08),
+                        Note::at(0.035, D5, 0.08),
+                        Note::at(0.07, E5, 0.08),
+                        Note::at(0.105, G5, 0.08),
+                        Note::at(0.14, A5, 0.08),
+                        Note::at(0.175, C6, 0.35),
                     ]
                 }
             }
+        }
+    }
+
+    /// How loud the cue is next to the others (its peak, before volume).
+    fn level(self) -> f32 {
+        match self {
+            Sound::Waiting | Sound::Writing | Sound::Failure => 0.7,
+            Sound::Success | Sound::Launch => 1.0,
         }
     }
 }
@@ -99,88 +100,76 @@ impl Sounds {
     }
 }
 
-/// Samples per second: plenty for square waves, and small buffers.
+/// Samples per second: plenty for these soft tones, and small buffers.
 pub const SAMPLE_RATE: u32 = 22_050;
 
-/// The loudest sample at full volume, as a fraction of full scale: square
-/// waves are harsh, so even 100 % stays well below clipping.
-const HEADROOM: f32 = 0.4;
+/// The loudest sample at full volume, as a fraction of full scale. Kept
+/// low: these play over games and music, so 100 % should still be polite.
+const HEADROOM: f32 = 0.2;
 
 // Note frequencies (Hz), equal temperament.
 const C5: f32 = 523.25;
+const D5: f32 = 587.33;
 const E5: f32 = 659.26;
 const G5: f32 = 783.99;
-const B5: f32 = 987.77;
+const A5: f32 = 880.00;
 const C6: f32 = 1046.50;
-const E6: f32 = 1318.51;
-const A6: f32 = 1760.00;
-const B6: f32 = 1975.53;
 
-/// One pulse-wave note (or a rest, at 0 Hz).
+/// One chime note: a sine with a touch of overtones, struck and left to
+/// ring down (a music-box / mallet sound rather than a buzzy square wave).
 #[derive(Debug, Clone, Copy)]
-struct Tone {
-    /// Start and end frequency (an exponential slide when they differ).
-    from: f32,
-    to: f32,
+struct Note {
+    /// When it starts, seconds from the start of the cue.
+    at: f32,
+    hz: f32,
+    /// How long it rings before it is faded out.
     secs: f32,
-    /// The pulse's high fraction: 0.5 is a square, 0.125 a thin buzz.
-    duty: f32,
-    level: f32,
-    /// Fades out over the whole note instead of only at its end.
-    fade: bool,
 }
 
-impl Tone {
-    const fn note(hz: f32, secs: f32, duty: f32, level: f32) -> Tone {
-        Tone::slide(hz, hz, secs, duty, level)
-    }
-
-    const fn slide(from: f32, to: f32, secs: f32, duty: f32, level: f32) -> Tone {
-        Tone {
-            from,
-            to,
-            secs,
-            duty,
-            level,
-            fade: false,
-        }
-    }
-
-    const fn rest(secs: f32) -> Tone {
-        Tone::note(0.0, secs, 0.5, 0.0)
-    }
-
-    const fn fading(self) -> Tone {
-        Tone { fade: true, ..self }
+impl Note {
+    const fn at(at: f32, hz: f32, secs: f32) -> Note {
+        Note { at, hz, secs }
     }
 }
 
-/// The cue as samples in -1..=1 (before volume).
+/// The cue as samples in -1..=1 (before volume), peaking at its level.
 fn samples(sound: Sound) -> Vec<f32> {
-    // Short ramps at each note's edges, so notes don't click.
-    const ATTACK: f32 = 0.003;
-    const RELEASE: f32 = 0.008;
+    use std::f32::consts::TAU;
+    // A short attack so notes don't click, a decay that makes them ring
+    // like a struck bell, and a release that ends them at exactly zero.
+    const ATTACK: f32 = 0.005;
+    const DECAY: f32 = 0.12;
+    const RELEASE: f32 = 0.03;
     let rate = SAMPLE_RATE as f32;
-    let mut out = Vec::new();
-    let mut phase = 0.0f32;
-    for tone in sound.tones() {
-        let n = (tone.secs * rate).round() as usize;
+    let notes = sound.notes();
+    let span = |n: &Note| {
+        let first = (n.at * rate).round() as usize;
+        (first, (n.secs * rate).round() as usize)
+    };
+    let len = notes
+        .iter()
+        .map(|n| {
+            let (first, count) = span(n);
+            first + count
+        })
+        .max()
+        .unwrap_or(0);
+    let mut out = vec![0.0f32; len];
+    for note in notes {
+        let (first, n) = span(note);
         for i in 0..n {
             let t = i as f32 / rate;
-            if tone.from <= 0.0 {
-                out.push(0.0);
-                continue;
-            }
-            let hz = tone.from * (tone.to / tone.from).powf(t / tone.secs);
-            phase = (phase + hz / rate).fract();
-            let wave = if phase < tone.duty { 1.0 } else { -1.0 };
-            let left = tone.secs - t;
-            let mut env = (t / ATTACK).min(1.0) * (left / RELEASE).min(1.0);
-            if tone.fade {
-                env *= 1.0 - t / tone.secs;
-            }
-            out.push(wave * env * tone.level);
+            let x = TAU * note.hz * t;
+            let wave = x.sin() + 0.25 * (2.0 * x).sin() + 0.06 * (3.0 * x).sin();
+            let left = note.secs - t;
+            let env = (t / ATTACK).min(1.0) * (-t / DECAY).exp() * (left / RELEASE).min(1.0);
+            out[first + i] += wave * env;
         }
+    }
+    let peak = out.iter().fold(0.0f32, |m, s| m.max(s.abs()));
+    if peak > 0.0 {
+        let scale = sound.level() / peak;
+        out.iter_mut().for_each(|s| *s *= scale);
     }
     out
 }
