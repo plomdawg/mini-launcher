@@ -74,6 +74,13 @@ impl Debouncer {
         }
     }
 
+    /// Whether the tag seated when the reader went away is being waited for
+    /// (see [`Debouncer::disconnect`]): a `Reseated` for it now means it was
+    /// never lifted.
+    pub fn holding(&self) -> bool {
+        self.held.is_some()
+    }
+
     /// Processes one poll result taken at `now` and returns the events it
     /// causes (a swap to a different tag yields `Removed` then `Inserted`).
     pub fn update(&mut self, reading: Option<Reading>, now: Instant) -> Vec<Event> {

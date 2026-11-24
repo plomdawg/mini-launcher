@@ -25,7 +25,10 @@ launch = true        # a game is launching
 ```
 
 - `boot_cart`: what to do with a cart that is already in the reader when the app starts:
-  `"wait"` until it is taken out and put back, or `"launch"` it.
+  `"wait"` until it is taken out and put back, or `"launch"` it. With `"wait"`, putting it back
+  launches it however quickly that happens. If the config is in a custom folder that isn't
+  available yet when the app starts (e.g. a network share at login), the app can't read this
+  setting and uses `"wait"`.
 - `font_scale`: text size in the settings window. Values outside 0.75 to 2.0 are an error. The
   Settings screen offers 90 % to 150 %; the window grows with the text, so larger sizes would
   not fit smaller screens (a hand-edited larger value still works).

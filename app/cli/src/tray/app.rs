@@ -172,7 +172,7 @@ fn run(log_dir: Option<PathBuf>, mut reopen: usize) -> Result<()> {
     let mut reader: Option<ReaderState> = None;
     let mut limiter = RateLimiter::new(NOTIFY_GAP);
     let mut refresh = |reader: Option<&ReaderState>, config_problem: Option<&str>| {
-        let is_paused = host.paused.load(Ordering::Relaxed);
+        let is_paused = host.paused.load(Ordering::Acquire);
         let (text, ready) = model::reader_cell(reader, is_paused);
         lock(&host.state).1 = ReaderStatus { text, ready };
         let view = model::view(reader, is_paused, config_problem);
@@ -231,8 +231,8 @@ fn run(log_dir: Option<PathBuf>, mut reopen: usize) -> Result<()> {
                 // Opens it, or brings the open one to the front.
                 window.show();
             } else if id == pause.id() {
-                let now_paused = !host.paused.load(Ordering::Relaxed);
-                host.paused.store(now_paused, Ordering::Relaxed);
+                let now_paused = !host.paused.load(Ordering::Acquire);
+                host.paused.store(now_paused, Ordering::Release);
                 tracing::info!(paused = now_paused, "pause toggled from the tray");
                 refresh(reader.as_ref(), config.problem());
             } else if id == open_config.id() {
@@ -279,7 +279,7 @@ fn run(log_dir: Option<PathBuf>, mut reopen: usize) -> Result<()> {
         }
         // The settings window paused / resumed or changed start at login:
         // the menu, tooltip and status cell follow, as for the menu items.
-        if host.changed.swap(false, Ordering::Relaxed) {
+        if host.changed.swap(false, Ordering::AcqRel) {
             start_at_login.set_checked(starts_at_login(&exe));
             refresh(reader.as_ref(), config.problem());
         }
@@ -470,19 +470,19 @@ impl Host for TrayHost {
 
     fn set_start_at_login(&self, on: bool) -> Result<(), String> {
         let result = set_start_at_login(&self.exe, on);
-        self.changed.store(true, Ordering::Relaxed);
+        self.changed.store(true, Ordering::Release);
         result
     }
 
     fn paused(&self) -> Option<bool> {
-        Some(self.paused.load(Ordering::Relaxed))
+        Some(self.paused.load(Ordering::Acquire))
     }
 
     fn set_paused(&self, paused: bool) {
-        if self.paused.swap(paused, Ordering::Relaxed) != paused {
+        if self.paused.swap(paused, Ordering::AcqRel) != paused {
             tracing::info!(paused, "pause toggled from the settings window");
         }
-        self.changed.store(true, Ordering::Relaxed);
+        self.changed.store(true, Ordering::Release);
     }
 
     fn moved(&self) {
@@ -534,7 +534,7 @@ fn work(
         // Paused: the reader idles with its RF field off (no polling),
         // unless the settings window's wizard has a tag session (then it
         // polls and nothing launches until the session ends).
-        let is_paused = host.paused.load(Ordering::Relaxed);
+        let is_paused = host.paused.load(Ordering::Acquire);
         polls = polls.wrapping_add(1);
         // The settings window moved the config folder: follow it now.
         if host.relocate.swap(false, Ordering::Relaxed) {

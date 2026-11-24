@@ -90,6 +90,10 @@ pub struct Runner {
     paused: bool,
     /// Set while the post-resume silent window is open.
     resuming: Option<Resume>,
+    /// The tag last recorded without launching (paused, or in a silent
+    /// window), until a launch. Taking it out and putting it back launches
+    /// it even within the re-seat window: it never started a game.
+    unlaunched: Option<Uid>,
     debouncer: Debouncer,
 }
 
@@ -102,6 +106,7 @@ impl Runner {
             dry_run,
             paused: false,
             resuming: None,
+            unlaunched: None,
             debouncer: Debouncer::new(DebounceConfig::default()),
         }
     }
@@ -160,6 +165,21 @@ impl Runner {
                 if let Some(resume) = &mut self.resuming {
                     resume.since.get_or_insert(now);
                 }
+                // A tag still on the reader after a reconnect was never
+                // lifted: its `Reseated` is not a re-insert.
+                if self.debouncer.holding() {
+                    let events = self.debouncer.update(reading, now);
+                    return events
+                        .into_iter()
+                        .map(|e| match e {
+                            Event::Reseated { uid, .. } => {
+                                tracing::info!(%uid, "still on the reader after reconnecting");
+                                Notice::Reseated { uid }
+                            }
+                            e => self.handle(e, silent),
+                        })
+                        .collect();
+                }
                 self.debouncer.update(reading, now)
             }
             Tick::Lost { port, error } => {
@@ -198,9 +218,14 @@ impl Runner {
     }
 
     /// Turns `event` into a notice, launching unless `silent`.
-    fn handle(&self, event: Event, silent: bool) -> Notice {
+    fn handle(&mut self, event: Event, silent: bool) -> Notice {
         let (uid, payload) = match event {
             Event::Inserted { uid, payload } => (uid, payload),
+            // Re-inserted after it was only recorded: a launch.
+            Event::Reseated { uid, payload } if self.unlaunched == Some(uid) && !silent => {
+                tracing::info!(%uid, "re-inserted after it was recorded without launching");
+                (uid, payload)
+            }
             Event::Reseated { uid, .. } => {
                 tracing::info!(%uid, "reseated; not relaunching");
                 return Notice::Reseated { uid };
@@ -216,8 +241,10 @@ impl Runner {
             } else {
                 tracing::info!(%uid, "already on the reader; launches when re-inserted");
             }
+            self.unlaunched = Some(uid);
             return Notice::Paused { uid };
         }
+        self.unlaunched = None;
         match launch::resolve(&self.config, uid.as_bytes(), &payload) {
             Resolution::Launch { plan, via } => match launch::execute(&plan, self.dry_run) {
                 Ok(outcome) => {
@@ -452,18 +479,99 @@ mod tests {
         for i in 2..20 {
             assert_eq!(runner.step(read("04a1b2c3", 440), first + i * POLL), []);
         }
-        // Taken out (after the debounce's missed polls) and put back once the
-        // re-seat window has passed: launches.
-        let mut now = first + 20 * POLL;
-        let mut removed = Vec::new();
-        for _ in 0..10 {
-            now += POLL;
-            removed.extend(runner.step(Tick::<Infallible>::Reading(None), now));
-        }
+        // Taken out and put back about 1.5 s later, well inside the re-seat
+        // window: it never started a game, so it launches now.
+        let now = first + 20 * POLL;
+        let (removed, back) = lift(&mut runner, now);
         assert_eq!(removed, [Notice::Removed { uid: uid() }]);
-        now += Duration::from_secs(10);
+        assert_eq!(back, Duration::from_millis(1400));
+        let notices = runner.step(read("04a1b2c3", 440), now + back);
+        assert!(
+            matches!(&notices[..], [Notice::Launched { .. }]),
+            "{notices:?}"
+        );
+        // Launched now: a quick bump no longer relaunches it.
+        let now = now + back + POLL;
+        let (_, back) = lift(&mut runner, now);
+        assert_eq!(
+            runner.step(read("04a1b2c3", 440), now + back),
+            [Notice::Reseated { uid: uid() }]
+        );
+    }
+
+    /// Lifts the seated tag at `now`: missed polls until it counts as
+    /// removed, then two more. Returns the notices and the time taken.
+    fn lift(runner: &mut Runner, now: Instant) -> (Vec<Notice>, Duration) {
+        let mut notices = Vec::new();
+        let mut at = now;
+        for _ in 0..7 {
+            at += POLL;
+            notices.extend(runner.step(Tick::<Infallible>::Reading(None), at));
+        }
+        (notices, at - now)
+    }
+
+    #[test]
+    fn a_cart_recorded_on_resume_launches_when_quickly_reinserted() {
+        let mut runner = Runner::new(Config::default(), true);
+        let t0 = Instant::now();
+        runner.set_paused(true);
+        assert_eq!(runner.step(Tick::<Infallible>::Paused, t0), []);
+        runner.set_paused(false);
+        assert_eq!(
+            runner.step(read("04a1b2c3", 440), t0 + POLL),
+            [Notice::Paused { uid: uid() }]
+        );
+        let now = t0 + 5 * POLL;
+        assert_eq!(runner.step(read("04a1b2c3", 440), now), []);
+        let (removed, back) = lift(&mut runner, now);
+        assert_eq!(removed, [Notice::Removed { uid: uid() }]);
         assert!(matches!(
-            &runner.step(read("04a1b2c3", 440), now)[..],
+            &runner.step(read("04a1b2c3", 440), now + back)[..],
+            [Notice::Launched { .. }]
+        ));
+    }
+
+    #[test]
+    fn a_launched_cart_bumped_during_play_does_not_relaunch() {
+        let mut runner = Runner::new(Config::default(), true);
+        let t0 = Instant::now();
+        assert!(matches!(
+            &runner.step(read("04a1b2c3", 440), t0)[..],
+            [Notice::Launched { .. }]
+        ));
+        let (_, back) = lift(&mut runner, t0);
+        assert_eq!(
+            runner.step(read("04a1b2c3", 440), t0 + back),
+            [Notice::Reseated { uid: uid() }]
+        );
+    }
+
+    #[test]
+    fn a_cart_recorded_at_boot_survives_a_replug_then_launches_when_reinserted() {
+        let mut runner = Runner::new_waiting_for_reseat(Config::default(), true);
+        let t0 = Instant::now();
+        assert_eq!(
+            runner.step(read("04a1b2c3", 440), t0),
+            [Notice::Paused { uid: uid() }]
+        );
+        let now = t0 + RESUME_SILENCE;
+        assert_eq!(runner.step(read("04a1b2c3", 440), now), []);
+        let lost = Tick::Lost {
+            port: "COM7".into(),
+            error: "gone",
+        };
+        runner.step(lost, now);
+        // Back with the cart never lifted: not a re-insert.
+        let now = now + 2 * POLL;
+        assert_eq!(
+            runner.step(read("04a1b2c3", 440), now),
+            [Notice::Reseated { uid: uid() }]
+        );
+        // Lifted and put back for real: launches.
+        let (_, back) = lift(&mut runner, now);
+        assert!(matches!(
+            &runner.step(read("04a1b2c3", 440), now + back)[..],
             [Notice::Launched { .. }]
         ));
     }
