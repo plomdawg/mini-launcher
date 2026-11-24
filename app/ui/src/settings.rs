@@ -103,9 +103,11 @@ pub struct Settings {
     /// Export / import / config folder dialogs.
     pub transfer: backup::Transfer,
     pub emulators: emulators::Emulators,
-    /// What the edit form's Launch did last (cleared when the form opens
-    /// or closes).
+    /// What the edit form's Launch did last (cleared when the form opens,
+    /// closes or changes).
     pub launched: Option<Result<(), String>>,
+    /// The form as it was launched, to tell when it changed since.
+    launched_form: Form,
 }
 
 impl Settings {
@@ -125,6 +127,7 @@ impl Settings {
             transfer: backup::Transfer::default(),
             emulators: emulators::Emulators::default(),
             launched: None,
+            launched_form: Form::new(),
         }
     }
 
@@ -263,6 +266,7 @@ impl Settings {
             Ok(game) => {
                 self.form.errors.clear();
                 self.launched = Some(self.host.launch(&game.plan));
+                self.launched_form = self.form.clone();
             }
             Err(errors) => self.form.errors = errors,
         }
@@ -657,7 +661,10 @@ pub fn launch_label(plan: &LaunchPlan, emulators: &[Emulator]) -> String {
         LaunchPlan::Steam { appid } => format!("steam://{appid}"),
         LaunchPlan::SteamShortcut { appid } => format!("Steam shortcut {appid}"),
         LaunchPlan::BattleNet { code } => format!("battlenet://{code}"),
-        LaunchPlan::Exe { path, .. } => format!("Program: {}", file_name(path)),
+        LaunchPlan::Exe { path, .. } => match file_name(path) {
+            name if name.is_empty() => format!("Program: {}", path.display()),
+            name => format!("Program: {name}"),
+        },
         LaunchPlan::Emulator { emulator, rom, .. } => {
             let e = emulators.iter().find(|e| &e.id == emulator);
             let name = e.map_or(emulator.as_str(), |e| e.name.as_str());
@@ -676,6 +683,10 @@ fn file_name(path: &std::path::Path) -> String {
 }
 
 fn edit(ui: &mut Ui, s: &mut Settings) {
+    if s.form != s.launched_form {
+        // Edited since: the note was about other options.
+        s.launched = None;
+    }
     let problem = s.form.problem.clone();
     let failed = match &s.launched {
         Some(Err(e)) => format!("Not launched: {e}"),

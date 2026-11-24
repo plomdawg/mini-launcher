@@ -859,6 +859,42 @@ fn library_shows_how_each_game_is_detected() {
 }
 
 #[test]
+fn editing_what_a_written_tag_says_drops_the_marker() {
+    let host = host("tag-edit");
+    let text = host.config().replace(
+        "steam_appid = 427520\n",
+        "steam_appid = 427520\ntag = \"written\"\n",
+    );
+    std::fs::write(host.dir.join("config.toml"), text).unwrap();
+    let mut h = harness(host.clone(), 1.0);
+    h.run();
+    let factorio = |h: &Harness<'static, Settings>| {
+        let games = h.state().library.games();
+        games
+            .iter()
+            .find(|g| g.id.as_str() == "factorio")
+            .cloned()
+            .unwrap()
+    };
+    // A new name keeps it: the tag still says steam://427520.
+    h.state_mut().edit(7);
+    h.state_mut().form.name = "Factorio: Space Age".into();
+    h.run();
+    h.get_by_label("Save").click();
+    h.run();
+    assert!(factorio(&h).tag_written, "{}", host.config());
+    // A new app ID doesn't: the cart still says steam://427520.
+    h.state_mut().edit(7);
+    h.state_mut().form.app_id = "999".into();
+    h.run();
+    h.get_by_label("Save").click();
+    h.run();
+    let game = factorio(&h);
+    assert!(!game.tag_written && settings::tag_label(&game).is_none());
+    assert!(!host.config().contains("tag = \"written\""));
+}
+
+#[test]
 fn launch_labels_show_what_starts_the_game() {
     use mini_launcher_core::battlenet::Code;
     use std::path::PathBuf;
@@ -878,6 +914,13 @@ fn launch_labels_show_what_starts_the_game() {
         };
         assert_eq!(label(plan), "Program: gzdoom.exe");
     }
+    // No file name to show: the whole path.
+    let plan = LaunchPlan::Exe {
+        path: PathBuf::from("/"),
+        args: Vec::new(),
+        cwd: None,
+    };
+    assert_eq!(label(plan), "Program: /");
     // An emulator missing from the list (never in a loaded config) shows
     // its id.
     let plan = LaunchPlan::Emulator {
@@ -909,6 +952,11 @@ fn launch_in_the_edit_form_tries_the_unsaved_options() {
     assert_eq!(h.state().screen, Screen::Edit);
     assert_eq!(host.saves.load(Ordering::SeqCst), 0);
     assert_eq!(host.config(), before);
+    // Editing the form again drops the note about the old options.
+    h.state_mut().form.args = "-iwad tnt.wad".into();
+    h.run();
+    assert!(h.query_by_label_contains("Launched:").is_none());
+    assert!(h.state().launched.is_none());
     // A form that can't make a game shows why and launches nothing.
     h.state_mut().form.exe = String::new();
     h.get_by_label("Launch").click();
@@ -1013,7 +1061,7 @@ fn design_screenshots() {
         ("library", |_| {}),
         ("edit-game", |s| {
             s.edit(0);
-            s.launched = Some(Ok(()));
+            s.launch_form();
         }),
         ("add-game-errors", |s| {
             // The edit form for a new entry (Add game opens the wizard).
