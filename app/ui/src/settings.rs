@@ -17,6 +17,7 @@ use mini_launcher_core::emulators::EmulatorPreset;
 use mini_launcher_core::launch::LaunchPlan;
 use mini_launcher_core::payload::Slug;
 use mini_launcher_core::program;
+use mini_launcher_core::sound::Sound;
 use mini_launcher_core::steam::SteamGame;
 
 use crate::library::{Field, Form, Library};
@@ -68,6 +69,9 @@ pub trait Host: Send + Sync {
     }
     /// Pauses or resumes launching (the tray menu's Pause / Resume).
     fn set_paused(&self, _paused: bool) {}
+    /// Plays a sound effect at `volume` (0 to 100), without waiting; the
+    /// caller already checked `[settings.sounds]`. Silent by default.
+    fn play(&self, _sound: Sound, _volume: u8) {}
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -85,7 +89,7 @@ pub enum Screen {
     /// The `[[emulators]]` list, and its edit form.
     Emulators,
     EditEmulator,
-    /// App preferences: start at login, start-up cart, text size (see
+    /// App preferences: start at login, start-up cart, text size, sounds (see
     /// [`prefs`]).
     Settings,
 }
@@ -307,6 +311,17 @@ impl Settings {
             if w.take_saved() {
                 self.host.saved();
             }
+            for sound in w.take_cues() {
+                self.cue(sound);
+            }
+        }
+    }
+
+    /// Plays `sound` if `[settings.sounds]` has it on.
+    pub fn cue(&self, sound: Sound) {
+        let sounds = self.library.settings().sounds;
+        if sounds.plays(sound) {
+            self.host.play(sound, sounds.volume);
         }
     }
 

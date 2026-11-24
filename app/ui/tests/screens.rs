@@ -15,6 +15,7 @@ use mini_launcher_core::reader::{Simulated, Uid};
 use mini_launcher_core::reconnect::{Backoff, Reconnector};
 use mini_launcher_core::runner::{Notice, Runner};
 use mini_launcher_core::session::{self, SessionServer, Sessions, WriteFailure};
+use mini_launcher_core::sound::Sound;
 use mini_launcher_core::steam::{SteamGame, SteamKind};
 use mini_launcher_ui::library::EmuForm;
 use mini_launcher_ui::settings::{self, Host, Pick, ReaderStatus, Screen, Settings};
@@ -96,6 +97,8 @@ struct TestHost {
     launches: Mutex<Vec<LaunchPlan>>,
     paused: AtomicBool,
     login: AtomicBool,
+    /// The sound effects asked for, with their volume.
+    played: Mutex<Vec<(Sound, u8)>>,
 }
 
 impl Host for TestHost {
@@ -146,11 +149,17 @@ impl Host for TestHost {
     fn set_paused(&self, paused: bool) {
         self.paused.store(paused, Ordering::SeqCst);
     }
+    fn play(&self, sound: Sound, volume: u8) {
+        self.played.lock().unwrap().push((sound, volume));
+    }
 }
 
 impl TestHost {
     fn config(&self) -> String {
         std::fs::read_to_string(self.dir.join("config.toml")).unwrap()
+    }
+    fn played(&self) -> Vec<(Sound, u8)> {
+        std::mem::take(&mut self.played.lock().unwrap())
     }
 }
 
@@ -237,6 +246,7 @@ fn host_at(dir: PathBuf) -> (Arc<TestHost>, Loop) {
         launches: Mutex::default(),
         paused: AtomicBool::new(false),
         login: AtomicBool::new(true),
+        played: Mutex::default(),
     });
     let server = host.server.lock().unwrap().take().unwrap();
     let run_loop = Loop {
@@ -643,6 +653,8 @@ fn wizard_adds_a_steam_game_by_writing_the_tag_while_launches_wait() {
     run_loop.pump(1);
     h.run();
     h.get_by_label("SAVED");
+    let cues = [Sound::Waiting, Sound::Writing, Sound::Success];
+    assert_eq!(host.played(), cues.map(|c| (c, 60)), "the default volume");
     assert!(
         matches!(&run_loop.notices[..], [Notice::Paused { .. }]),
         "{:?}",
@@ -1110,6 +1122,118 @@ fn settings_save_boot_behaviour_and_text_size_to_the_config() {
     h.get_by_label("Back").click();
     h.run();
     assert_eq!(h.state().screen, Screen::Library);
+}
+
+#[test]
+fn settings_save_sounds_and_volume_to_the_config() {
+    let host = host("sounds");
+    let mut h = harness(host.clone(), 1.0);
+    h.run();
+    h.get_by_label("Settings").click();
+    h.run();
+    // Turning an event off saves it and plays nothing.
+    h.get_by_label("Failure").click();
+    h.run();
+    let text = host.config();
+    assert!(
+        text.contains("[settings.sounds]\nfailure = false"),
+        "{text}"
+    );
+    assert_eq!(host.played(), []);
+    // Turning it back on lets the user hear it.
+    h.get_by_label("Failure").click();
+    h.run();
+    assert!(host.config().contains("failure = true"));
+    assert_eq!(host.played(), [(Sound::Failure, 60)]);
+    // The volume steps by 10 and previews at the new level.
+    h.get_by_label("+").click();
+    h.run();
+    assert!(host.config().contains("volume = 70"), "{}", host.config());
+    assert_eq!(host.played(), [(Sound::Success, 70)]);
+    h.get_by_label("70%");
+    for _ in 0..2 {
+        h.get_by_label("-").click();
+        h.run();
+    }
+    assert!(host.config().contains("volume = 50"), "{}", host.config());
+    assert_eq!(host.played(), [(Sound::Success, 60), (Sound::Success, 50)]);
+    // Test plays the jingle at the set volume.
+    h.get_by_label("Test").click();
+    h.run();
+    assert_eq!(host.played(), [(Sound::Success, 50)]);
+    // The master switch: off saves and silences, and greys out the rest.
+    h.get_by_label("Play sounds").click();
+    h.run();
+    assert!(
+        host.config().contains("enabled = false"),
+        "{}",
+        host.config()
+    );
+    assert_eq!(host.played(), []);
+    h.get_by_label("Writing").click();
+    h.run();
+    assert!(!host.config().contains("writing"), "disabled while off");
+    h.get_by_label("Play sounds").click();
+    h.run();
+    assert!(
+        host.config().contains("enabled = true"),
+        "{}",
+        host.config()
+    );
+    assert_eq!(host.played(), [(Sound::Success, 50)]);
+}
+
+#[test]
+fn the_wizard_plays_only_the_sounds_that_are_on() {
+    for (name, settings, want) in [
+        (
+            "sounds-some",
+            "writing = false\nvolume = 30\n",
+            &[(Sound::Waiting, 30), (Sound::Success, 30)][..],
+        ),
+        ("sounds-off", "enabled = false\n", &[][..]),
+    ] {
+        let (host, mut run_loop) = host_with_loop(name);
+        let text = format!("{}\n[settings.sounds]\n{settings}", host.config());
+        std::fs::write(host.dir.join("config.toml"), text).unwrap();
+        let mut h = harness(host.clone(), 1.0);
+        h.run();
+        pick_vampire(h.state_mut());
+        run_loop.pump(1);
+        h.run();
+        run_loop.line("insert 04a1b2c3d4e5f6");
+        run_loop.pump(2);
+        h.run();
+        run_loop.pump(1);
+        h.run();
+        h.get_by_label("SAVED");
+        assert_eq!(host.played(), want, "{name}");
+    }
+}
+
+#[test]
+fn a_failed_write_buzzes() {
+    let (host, mut run_loop) = host_with_loop("sounds-failure");
+    let mut h = harness(host.clone(), 1.0);
+    h.run();
+    pick_vampire(h.state_mut());
+    run_loop.pump(1);
+    h.run();
+    // The tag is lifted before the write: back to the tap step.
+    run_loop.line("insert 04a1b2c3d4e5f6");
+    run_loop.pump(2);
+    run_loop.line("remove");
+    run_loop.pump(1);
+    h.run();
+    assert!(matches!(
+        h.state().wizard.as_ref().unwrap().step,
+        Step::Writing { .. }
+    ));
+    run_loop.pump(1);
+    h.run();
+    assert_eq!(h.state().wizard.as_ref().unwrap().step, Step::Tap);
+    let cues = [Sound::Waiting, Sound::Writing, Sound::Failure];
+    assert_eq!(host.played(), cues.map(|c| (c, 60)));
 }
 
 #[test]

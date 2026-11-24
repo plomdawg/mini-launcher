@@ -6,8 +6,10 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
 
 use mini_launcher_core::config::location::ConfigLocation;
+use mini_launcher_core::config::Sounds;
 use mini_launcher_core::reconnect::ReaderState;
 use mini_launcher_core::runner::Notice;
+use mini_launcher_core::sound::Sound;
 
 pub const APP: &str = "Mini Launcher";
 
@@ -197,6 +199,13 @@ pub fn click_action(notice: &Notice, config_problem: Option<&str>) -> Option<Cli
         }
         _ => None,
     }
+}
+
+/// The sound effect for `notice`, if `sounds` has it on: the power-on
+/// sweep when a cart really launched a game.
+pub fn notice_sound(notice: &Notice, sounds: &Sounds) -> Option<Sound> {
+    let launched = matches!(notice, Notice::Launched { dry_run: false, .. });
+    (launched && sounds.plays(Sound::Launch)).then_some(Sound::Launch)
 }
 
 /// A mouse event on the tray icon (tray-icon's own types are Windows-only
@@ -681,6 +690,35 @@ mod tests {
         };
         assert_eq!(click_action(&failed, None), None);
         assert_eq!(click_action(&Notice::Removed { uid }, None), None);
+    }
+
+    #[test]
+    fn a_launch_plays_the_launch_sound_if_it_is_on() {
+        let uid = Uid::from_hex("04a1b2c3").unwrap();
+        let launched = |dry_run| Notice::Launched {
+            uid,
+            plan: LaunchPlan::Steam { appid: 440 },
+            via: Via::TagSteam,
+            dry_run,
+        };
+        let on = Sounds::default();
+        assert_eq!(notice_sound(&launched(false), &on), Some(Sound::Launch));
+        assert_eq!(notice_sound(&launched(true), &on), None, "dry run");
+        assert_eq!(notice_sound(&Notice::Removed { uid }, &on), None);
+        let off = [
+            Sounds {
+                launch: false,
+                ..on
+            },
+            Sounds {
+                enabled: false,
+                ..on
+            },
+            Sounds { volume: 0, ..on },
+        ];
+        for sounds in off {
+            assert_eq!(notice_sound(&launched(false), &sounds), None);
+        }
     }
 
     #[test]

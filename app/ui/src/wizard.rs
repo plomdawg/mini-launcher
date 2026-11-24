@@ -20,6 +20,7 @@ use mini_launcher_core::launch::LaunchPlan;
 use mini_launcher_core::payload::{Payload, Slug};
 use mini_launcher_core::reader::Uid;
 use mini_launcher_core::session::{SessionClient, Update, WriteFailure};
+use mini_launcher_core::sound::Sound;
 use mini_launcher_core::steam::{SteamGame, SteamKind};
 
 #[cfg(test)]
@@ -149,6 +150,8 @@ pub struct Wizard {
     resume: Option<Outcome>,
     /// Set when the config was saved; see [`Wizard::take_saved`].
     saved: bool,
+    /// Sound effects due since the last [`Wizard::take_cues`].
+    cues: Vec<Sound>,
 }
 
 impl Wizard {
@@ -176,6 +179,7 @@ impl Wizard {
             unbind: Vec::new(),
             resume: None,
             saved: false,
+            cues: Vec::new(),
         }
     }
 
@@ -509,7 +513,10 @@ impl Wizard {
         self.reader = None;
         self.step = Step::Tap;
         match &self.link {
-            Some(link) => link.watch(None),
+            Some(link) => {
+                link.watch(None);
+                self.cues.push(Sound::Waiting);
+            }
             None => self.problem = Some(NO_READER.to_owned()),
         }
     }
@@ -531,6 +538,9 @@ impl Wizard {
                 self.step,
                 Step::Tap | Step::Overwrite { .. } | Step::Writing { .. }
             ) {
+                if matches!(self.step, Step::Writing { .. }) {
+                    self.cues.push(Sound::Failure);
+                }
                 self.step = Step::Tap;
                 self.problem = Some(LINK_CLOSED.to_owned());
             }
@@ -554,6 +564,7 @@ impl Wizard {
                     self.finish(Outcome::Bound { uid, failure }, library)
                 }
                 Err(failure) => {
+                    self.cues.push(Sound::Failure);
                     self.problem = Some(format!(
                         "{} Lift the cart off and put it back to try again.",
                         failure_text(&failure)
@@ -609,6 +620,7 @@ impl Wizard {
             Some(link) => {
                 link.write(uid, want);
                 self.step = Step::Writing { uid };
+                self.cues.push(Sound::Writing);
             }
             None => self.problem = Some(LINK_CLOSED.to_owned()),
         }
@@ -720,10 +732,20 @@ impl Wizard {
             Outcome::Skipped => library.save_game(&game),
         };
         self.link = None;
+        // A UID binding works as well as a written tag: no failure buzz
+        // (the test step says why the tag wasn't written).
+        if result.is_ok() && !matches!(outcome, Outcome::Skipped) {
+            self.cues.push(Sound::Success);
+        }
         self.saved |= result.is_ok();
         self.problem = result.err().map(|e| format!("Not saved: {e}"));
         self.game = Some(game);
         self.step = Step::Test { outcome };
+    }
+
+    /// The sound effects due since the last call, in order.
+    pub fn take_cues(&mut self) -> Vec<Sound> {
+        std::mem::take(&mut self.cues)
     }
 
     /// Whether the config was saved since the last call.
@@ -1040,7 +1062,9 @@ mod tests {
         assert_eq!(r.wizard.step, Step::Writing { uid: uid(A) });
         assert_eq!(r.sent(), [Sent::Write(uid(A), Payload::Steam(504230))]);
         assert!(!r.released());
+        assert_eq!(r.wizard.take_cues(), [Sound::Waiting, Sound::Writing]);
         r.written(A, Ok(()));
+        assert_eq!(r.wizard.take_cues(), [Sound::Success]);
         assert_eq!(
             r.wizard.step,
             Step::Test {
@@ -1079,6 +1103,8 @@ mod tests {
             assert_eq!(game.name, "Celeste");
             assert!(!game.tag_written, "the tag still says nothing usable");
             assert!(r.released());
+            let cues = [Sound::Waiting, Sound::Writing, Sound::Success];
+            assert_eq!(r.wizard.take_cues(), cues, "the game works all the same");
         }
     }
 
@@ -1095,6 +1121,8 @@ mod tests {
             r.sent();
             r.written(A, Err(failure.clone()));
             assert_eq!(r.wizard.step, Step::Tap, "{failure:?}");
+            let cues = [Sound::Waiting, Sound::Writing, Sound::Failure];
+            assert_eq!(r.wizard.take_cues(), cues);
             let problem = r.wizard.problem.clone().unwrap();
             assert!(problem.starts_with(&failure_text(&failure)), "{problem}");
             assert_eq!(r.sent(), [Sent::Watch(Some(uid(A)))]);
@@ -1161,6 +1189,7 @@ mod tests {
             }
         );
         assert_eq!(r.sent(), []);
+        assert_eq!(r.wizard.take_cues(), [Sound::Waiting, Sound::Success]);
         let config = r.config();
         let celeste = config.games.iter().find(|g| g.name == "Celeste");
         assert!(celeste.unwrap().tag_written);
@@ -1200,6 +1229,8 @@ mod tests {
         assert_eq!(r.wizard.step, Step::Tap);
         assert_eq!(r.wizard.problem.as_deref(), Some(LINK_CLOSED));
         assert!(!r.wizard.has_reader());
+        let cues = [Sound::Waiting, Sound::Writing, Sound::Failure];
+        assert_eq!(r.wizard.take_cues(), cues);
         // Skip still saves.
         r.wizard.skip(&mut r.library);
         assert_eq!(
@@ -1377,6 +1408,7 @@ mod tests {
         // No reader in this host: only Skip.
         w.begin(None);
         assert_eq!(w.problem.as_deref(), Some(NO_READER));
+        assert_eq!(w.take_cues(), [], "nothing to wait for");
     }
 
     #[test]

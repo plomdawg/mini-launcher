@@ -22,6 +22,7 @@ pub mod reader;
 pub mod reconnect;
 pub mod runner;
 pub mod session;
+pub mod sound;
 pub mod steam;
 #[cfg(test)]
 mod test_util;

@@ -220,8 +220,17 @@ fn embossed(p: &Painter, pos: egui::Pos2, g: Arc<Galley>) {
 
 /// A push button. `default` draws the thick outline of the dialog's default action.
 pub fn button(ui: &mut Ui, label: &str, enabled: bool, default: bool) -> Response {
+    push_button(ui, label, enabled, default, 18.0 * U)
+}
+
+/// A small push button (e.g. `-` / `+` steppers): as wide as its label.
+pub fn small_button(ui: &mut Ui, label: &str, enabled: bool) -> Response {
+    push_button(ui, label, enabled, false, ROW)
+}
+
+fn push_button(ui: &mut Ui, label: &str, enabled: bool, default: bool, min: f32) -> Response {
     let g = galley(ui, label, TEXT, INK);
-    let width = (g.size().x + 4.0 * U).max(18.0 * U).round();
+    let width = (g.size().x + 4.0 * U).max(min).round();
     let sense = if enabled {
         Sense::click()
     } else {
@@ -382,6 +391,74 @@ pub fn check(ui: &mut Ui, on: bool, label: &str, enabled: bool) -> Response {
         );
     }
     resp
+}
+
+/// A level meter (e.g. a volume): `steps` segments in a sunken well, the
+/// first `lit` of them filled. Clicking segment `i` (or the arrow keys
+/// while focused) returns the new level `i + 1` (`0` for Left at 1).
+pub fn level(
+    ui: &mut Ui,
+    lit: usize,
+    steps: usize,
+    enabled: bool,
+    label: &str,
+) -> (Response, Option<usize>) {
+    let seg = 3.0 * U;
+    let size = vec2(steps as f32 * seg + 2.0 * U, ROW);
+    let sense = if enabled {
+        Sense::click()
+    } else {
+        Sense::hover()
+    };
+    let (rect, resp) = ui.allocate_exact_size(size, sense);
+    resp.widget_info(|| {
+        let mut info = WidgetInfo::labeled(Role::Slider, enabled, label);
+        info.value = Some(lit as f64);
+        info
+    });
+    let well = snap(rect.shrink2(vec2(0.0, U / 2.0)));
+    let p = ui.painter();
+    sunken(p, well, if enabled { PAPER } else { FACE });
+    let inner = well.shrink(U);
+    let ink = if enabled { BLUE } else { SHADE };
+    for i in 0..steps {
+        let x = inner.min.x + i as f32 * seg;
+        let bar = snap(Rect::from_min_max(
+            pos2(x, inner.min.y),
+            pos2(x + seg - U / 2.0, inner.max.y),
+        ));
+        if i < lit {
+            p.rect_filled(bar, 0.0, ink);
+        } else {
+            outline(p, bar, FACE);
+        }
+    }
+    if resp.has_focus() {
+        focus_dots(p, well.expand(2.0));
+    }
+    let mut to = None;
+    if resp.clicked() {
+        if let Some(at) = resp.interact_pointer_pos() {
+            let i = ((at.x - inner.min.x) / seg)
+                .floor()
+                .clamp(0.0, steps as f32 - 1.0);
+            to = Some(i as usize + 1);
+        }
+    }
+    if enabled && resp.has_focus() {
+        let (left, right) = ui.input(|i| {
+            (
+                i.key_pressed(egui::Key::ArrowLeft),
+                i.key_pressed(egui::Key::ArrowRight),
+            )
+        });
+        if left {
+            to = Some(lit.saturating_sub(1));
+        } else if right {
+            to = Some((lit + 1).min(steps));
+        }
+    }
+    (resp, to.filter(|&n| n != lit))
 }
 
 /// An etched group box with its title set into the top line.

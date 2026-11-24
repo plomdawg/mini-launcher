@@ -33,7 +33,12 @@ launch = true        # a game is launching
   Settings screen offers 90 % to 150 %; the window grows with the text, so larger sizes would
   not fit smaller screens (a hand-edited larger value still works).
 - `[settings.sounds]`: `enabled` turns all sounds off at once; the other switches turn single
-  events off.
+  events off. The sounds are short chiptune cues synthesized by the app (no sound files). The
+  first four play while the settings window writes a tag (**Add game** or **Write tag...**):
+  `waiting` when it asks for the cart, `writing` when the write starts, `success` once the tag
+  is written and verified (or bound by its UID), `failure` when the write failed and it asks
+  to try again. `launch` plays in the tray app when a cart starts a game. `volume = 0` is
+  silent. Sounds play on Windows only for now.
 
 Start at login is not stored here; it is the Windows "Run" entry the app manages.
 
