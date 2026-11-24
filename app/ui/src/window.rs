@@ -28,6 +28,11 @@ use crate::theme;
 
 const ICON: &[u8] = include_bytes!("../../assets/icon/mini-launcher.png");
 
+/// The window's size and minimum size at 100 % text size, in points; both
+/// grow with the text size (see [`settings::prefs::apply_zoom`]).
+const SIZE: egui::Vec2 = egui::vec2(640.0, 440.0);
+const MIN_SIZE: egui::Vec2 = egui::vec2(560.0, 400.0);
+
 /// What a request to open the window should show.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Open {
@@ -274,10 +279,14 @@ fn run(
     what: Open,
     pending: &Arc<Mutex<Option<Open>>>,
 ) -> Result<(), eframe::Error> {
+    // The saved text size, so the window opens at the matching size.
+    let zoom = crate::library::Library::load(host.location())
+        .settings()
+        .font_scale;
     let mut viewport = egui::ViewportBuilder::default()
         .with_title("Mini Launcher")
-        .with_inner_size([640.0, 440.0])
-        .with_min_inner_size([560.0, 400.0]);
+        .with_inner_size(SIZE * zoom)
+        .with_min_inner_size(MIN_SIZE * zoom);
     if let Ok(icon) = eframe::icon_data::from_png_bytes(ICON) {
         viewport = viewport.with_icon(icon);
     }
@@ -304,17 +313,40 @@ fn run(
         options,
         Box::new(move |cc| {
             theme::install(&cc.egui_ctx);
+            // The text size is a setting: Ctrl +/- would only be undone.
+            cc.egui_ctx.options_mut(|o| o.zoom_with_keyboard = false);
+            cc.egui_ctx.set_zoom_factor(zoom);
             *lock(&ctx_slot) = Some(cc.egui_ctx.clone());
             let mut settings = Settings::new(host);
             if what == Open::AddGame {
                 settings.from_tray_add();
             }
-            Ok(Box::new(App(settings, nudge, pending)))
+            Ok(Box::new(App(settings, nudge, pending, zoom)))
         }),
     )
 }
 
-struct App(Settings, Nudge, Arc<Mutex<Option<Open>>>);
+/// The screens, the close helper, a pending open request, and the zoom the
+/// window was last sized for.
+struct App(Settings, Nudge, Arc<Mutex<Option<Open>>>, f32);
+
+impl App {
+    /// Keeps the window as large (in points) as at 100 % after the text size
+    /// changed: sizes are in points, so they are resent at the new zoom.
+    fn fit_zoom(&mut self, ctx: &egui::Context) {
+        let zoom = ctx.zoom_factor();
+        if zoom == self.3 {
+            return;
+        }
+        self.3 = zoom;
+        ctx.send_viewport_cmd(egui::ViewportCommand::MinInnerSize(MIN_SIZE));
+        let now = ctx.content_rect().size();
+        if now.x < SIZE.x || now.y < SIZE.y {
+            let size = now.max(SIZE);
+            ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(size));
+        }
+    }
+}
 
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
@@ -322,6 +354,7 @@ impl eframe::App for App {
             self.0.from_tray_add();
         }
         settings::show(ui, &mut self.0);
+        self.fit_zoom(ui.ctx());
         if let Some((pick, start)) = self.0.take_browse() {
             let types = self.0.game_file_types();
             if let Some(path) = browse(frame, pick, start, types) {

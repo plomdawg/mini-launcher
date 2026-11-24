@@ -343,6 +343,47 @@ pub fn choice(ui: &mut Ui, selected: bool, label: &str) -> Response {
     resp
 }
 
+/// A checkbox: the [`choice`] well with a pixel tick when `on`.
+pub fn check(ui: &mut Ui, on: bool, label: &str, enabled: bool) -> Response {
+    let g = galley(ui, label, TEXT, INK);
+    let size = vec2(3.0 * U + U + g.size().x, ROW);
+    let sense = if enabled {
+        Sense::click()
+    } else {
+        Sense::hover()
+    };
+    let (rect, resp) = ui.allocate_exact_size(size, sense);
+    resp.widget_info(|| WidgetInfo::selected(Role::CheckBox, enabled, on, label));
+    let p = ui.painter();
+    let well = snap(Rect::from_min_size(
+        pos2(rect.min.x, rect.center().y - 6.0),
+        Vec2::splat(12.0),
+    ));
+    sunken(p, well, if enabled { PAPER } else { FACE });
+    if on {
+        // A 2-point stroke tick, drawn as squares on the point grid.
+        let ink = if enabled { INK } else { SHADE };
+        let o = well.min;
+        for (x, y) in [(3, 6), (4, 7), (5, 8), (6, 7), (7, 6), (8, 5), (9, 4)] {
+            let at = o + vec2(x as f32 - 0.5, y as f32 - 1.5);
+            p.rect_filled(Rect::from_min_size(at.round(), Vec2::splat(2.0)), 0.0, ink);
+        }
+    }
+    let pos = pos2(well.max.x + U, rect.center().y - g.size().y / 2.0);
+    if enabled {
+        text(p, pos, g);
+    } else {
+        embossed(p, pos, g);
+    }
+    if resp.has_focus() {
+        focus_dots(
+            p,
+            Rect::from_min_max(pos - vec2(2.0, 2.0), rect.max + vec2(2.0, 0.0)),
+        );
+    }
+    resp
+}
+
 /// An etched group box with its title set into the top line.
 pub fn group<R>(ui: &mut Ui, title: &str, add: impl FnOnce(&mut Ui) -> R) -> R {
     ui.add_space(U);

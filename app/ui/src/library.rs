@@ -8,7 +8,7 @@ use std::time::SystemTime;
 use mini_launcher_core::battlenet::Code;
 use mini_launcher_core::config::edit::ConfigDocument;
 use mini_launcher_core::config::location::ConfigLocation;
-use mini_launcher_core::config::{check_rom_arg, emulator_plan, Config, Emulator, Game};
+use mini_launcher_core::config::{check_rom_arg, emulator_plan, Config, Emulator, Game, Settings};
 use mini_launcher_core::emulators::EmulatorPreset;
 use mini_launcher_core::launch::LaunchPlan;
 use mini_launcher_core::payload::Slug;
@@ -65,6 +65,27 @@ impl Library {
 
     pub fn emulators(&self) -> &[Emulator] {
         self.config().map_or(&[], |c| &c.emulators)
+    }
+
+    /// The `[settings]` table (the defaults while the library can't be read).
+    pub fn settings(&self) -> Settings {
+        self.config().map(|c| c.settings).unwrap_or_default()
+    }
+
+    /// Replaces the `[settings]` table and saves (other changes made to the
+    /// file meanwhile are kept).
+    pub fn save_settings(&mut self, settings: &Settings) -> Result<(), String> {
+        let location = self
+            .location
+            .clone()
+            .ok_or("this system has no config folder")?;
+        let path = location.writable_file().map_err(|e| e.to_string())?;
+        let mut doc = ConfigDocument::load_or_empty(&path).map_err(|e| chain(&e))?;
+        doc.set_settings(settings).map_err(|e| chain(&e))?;
+        doc.save_to(&location).map_err(|e| chain(&e))?;
+        self.stamp = modified(&path);
+        self.doc = Ok(doc);
+        Ok(())
     }
 
     /// Adds or updates `emulator` and saves.

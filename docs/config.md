@@ -25,8 +25,13 @@ launch = true        # a game is launching
 ```
 
 - `boot_cart`: what to do with a cart that is already in the reader when the app starts:
-  `"wait"` until it is taken out and put back, or `"launch"` it.
-- `font_scale`: text size in the settings window. Values outside 0.75 to 2.0 are an error.
+  `"wait"` until it is taken out and put back, or `"launch"` it. With `"wait"`, putting it back
+  launches it however quickly that happens. If the config is in a custom folder that isn't
+  available yet when the app starts (e.g. a network share at login), the app can't read this
+  setting and uses `"wait"`.
+- `font_scale`: text size in the settings window. Values outside 0.75 to 2.0 are an error. The
+  Settings screen offers 90 % to 150 %; the window grows with the text, so larger sizes would
+  not fit smaller screens (a hand-edited larger value still works).
 - `[settings.sounds]`: `enabled` turns all sounds off at once; the other switches turn single
   events off.
 
@@ -111,7 +116,7 @@ name = "Half-Life 2"
 steam_appid = 220
 ```
 
-In the settings window, **Export...** saves one (suggested name
+On the settings window's **Settings** screen, **Export...** saves one (suggested name
 `mini-launcher-backup-<date>.toml`) and **Import...** reads one, shows how many games and tag
 bindings it has and asks before replacing your library. The current config is first copied to
 `config.toml.import-<date>-<time>.bak` (UTC), which, unlike `config.toml.bak`, later saves don't
@@ -128,7 +133,7 @@ programs launchable by tags, so only import files you made or trust.
 
 ## Keeping the config in another folder
 
-The easiest way is the settings window: **Folder...** shows where the config lives now (default
+The easiest way is the settings window (**Settings → Folder...**), which shows where the config lives now (default
 folder, a custom folder, or why the custom folder is unavailable). **Move to folder...** picks a
 folder and writes `location.toml` for you; if that folder already has a `config.toml` you choose
 between using the one there and copying yours over it (the one there is then kept as
