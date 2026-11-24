@@ -732,7 +732,7 @@ impl Wizard {
             Outcome::Skipped => library.save_game(&game),
         };
         self.link = None;
-        // A UID binding works as well as a written tag: no failure buzz
+        // A UID binding works as well as a written tag: no failure sound
         // (the test step says why the tag wasn't written).
         if result.is_ok() && !matches!(outcome, Outcome::Skipped) {
             self.cues.push(Sound::Success);
